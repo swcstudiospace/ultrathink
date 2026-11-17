@@ -68,6 +68,12 @@ import type { ShipConfig } from "../ship/types.ts";
 import { teachContext, teachEnabled } from "../teach/context.ts";
 import { digestFromAgentMessages } from "../teach/digest.ts";
 import { spawnObserveDetached } from "../teach/spawn.ts";
+import { createGreptileKnowledge } from "../greptile/knowledge.ts";
+import { runExplicitRecall } from "../recall/explicit.ts";
+import { createBudgetState, createCooldownState, createDedupeState } from "../recall/gates.ts";
+import { lessonsLookup, recallLessons } from "../teach/recall.ts";
+import { runSkillsCommand } from "../teach/skill-controls.ts";
+import { recallSkills, skillsLookup } from "../teach/skills.ts";
 import { status as authStatus } from "../mcp/oauth.ts";
 import { storePath } from "../mcp/store.ts";
 import {
@@ -120,6 +126,7 @@ import {
 	activityFallbackLine,
 	PENDING_TYPE,
 	PLAN_TYPE,
+	RECALL_TYPE,
 	registerUltrathinkRenderers,
 	SHIP_TYPE,
 	SYNC_TYPE,
@@ -1291,6 +1298,9 @@ const COMMANDS: Record<UltrathinkVerb, string> = {
 export const QUICK_USAGE =
 	"Usage: /ultrathink-quick <message>. Sends the message to the agent as typed, without planning.";
 
+export const RECALL_USAGE =
+	"Usage: /ultrathink-recall <query>. Recalls the knowledge base, lessons and skills for <query> now.";
+
 const TRACK_COMPLETIONS = [
 	{ value: "on", label: "on", description: "Create Linear/Notion rows for planned prompts" },
 	{ value: "off", label: "off", description: "Plan without creating Linear/Notion rows" },
@@ -2450,6 +2460,77 @@ export function createOmpExtension(
 		// re-runs of it) skip planning, tracking and the bar. Any other prompt disarms it, so a quick
 		// message queued as a steer never swallows the next one.
 		let quick: { sessionId: string; text: string; submission?: number } | undefined;
+		/**
+		 * `/ultrathink-recall <query>`: one explicit recall over the knowledge base, lessons and skills. Off unless
+		 * `recall.enabled` is set. The panels go to the transcript as a display-only card, never a model turn. The
+		 * reply is computed across awaits, so it is dropped when the session changed or the extension shut down.
+		 */
+		const runRecallCommand = async (
+			args: string,
+			ctx: ExtensionContext | undefined,
+		): Promise<void> => {
+			const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
+			const cwd = ctx?.cwd || process.cwd();
+			const config = flightConfig(cwd);
+			const reader = createGreptileKnowledge(config);
+			const teachCtx = (options.teachContext ?? teachContext)({
+				host: "omp",
+				cwd,
+				env: { ...environment.read(), ULTRATHINK_HOST: "omp" },
+				sessionId,
+				stateDir: stateDir(cwd),
+				config: {
+					teach: config.teach,
+					hindsight: config.hindsight,
+					decisions: config.decisions,
+					gateway: config.gateway,
+				},
+			});
+			const result = await runExplicitRecall({
+				query: args,
+				nowMs: Date.now(),
+				settings: config.recallSettings,
+				state: {
+					cooldown: createCooldownState(),
+					budget: createBudgetState(),
+					dedupe: createDedupeState(),
+				},
+				fetch: {
+					...(reader && {
+						knowledge: async (topic: string) => {
+							const session = reader.start({ repo: resolveRepoSlug(cwd) });
+							try {
+								return (await session.read(topic)).lookup;
+							} finally {
+								session.close();
+							}
+						},
+					}),
+					lessons: async (topic: string) =>
+						lessonsLookup(await recallLessons({ query: topic }, teachCtx, { countUse: false })),
+					skills: async (topic: string) =>
+						skillsLookup(await recallSkills({ query: topic }, teachCtx)),
+				},
+			});
+			if (!result.ok) {
+				if (result.reason === "empty_query") return ctx?.ui?.notify?.(RECALL_USAGE, "info");
+				if (result.reason === "recall_off")
+					return ctx?.ui?.notify?.(
+						"Recall is off: set recall.enabled to use /ultrathink-recall.",
+						"info",
+					);
+				return ctx?.ui?.notify?.(`Recall refused: ${result.reason}.`, "info");
+			}
+			const summary = `Recall: ${result.audit.map((entry) => `${entry.source} ${entry.outcome}`).join(", ")}`;
+			if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return;
+			guard(() =>
+				pi.sendMessage(
+					{ customType: RECALL_TYPE, content: summary, display: true, details: result.panels },
+					{ triggerTurn: false },
+				),
+			);
+		};
+
 		if (typeof pi.registerCommand === "function") {
 			// Each command's handler is also held in this map; the registered wrapper dispatches through the port.
 			const commandHandlers = new Map<string, OmpCommandHandler>();
@@ -2537,6 +2618,45 @@ export function createOmpExtension(
 							await openInsightUi(args, ctx);
 						} catch {
 							// reason: a failed dashboard open must not reject into the host command runner
+						}
+					}),
+				}),
+			);
+			// `/ultrathink-recall <query>`: one explicit recall over the knowledge base, lessons and skills (needs
+			// `recall.enabled`). The panels are a display-only card; no model turn starts.
+			guard(() =>
+				pi.registerCommand?.("ultrathink-recall", {
+					description:
+						"Recall knowledge, lessons and skills for <query> now (needs recall.enabled)",
+					handler: routed("ultrathink-recall", async (args, ctx) => {
+						try {
+							await runRecallCommand(args ?? "", ctx);
+						} catch (error) {
+							ctx?.ui?.notify?.(
+								`Recall failed: ${error instanceof Error ? error.message : String(error)}`,
+								"info",
+							);
+						}
+					}),
+				}),
+			);
+			// `/ultrathink-skills [list | disable <name> | delete <name>]`: manages the generated skills
+			// in the state dir's generated-skills store. It never generates a skill.
+			guard(() =>
+				pi.registerCommand?.("ultrathink-skills", {
+					description: "List, disable or delete generated skills (never generates)",
+					handler: routed("ultrathink-skills", async (args, ctx) => {
+						try {
+							const cwd = ctx?.cwd || process.cwd();
+							const reply = await runSkillsCommand(args ?? "", {
+								storeDir: join(stateDir(cwd), "generated-skills"),
+							});
+							ctx?.ui?.notify?.(reply, "info");
+						} catch (error) {
+							ctx?.ui?.notify?.(
+								`Skills failed: ${error instanceof Error ? error.message : String(error)}`,
+								"info",
+							);
 						}
 					}),
 				}),

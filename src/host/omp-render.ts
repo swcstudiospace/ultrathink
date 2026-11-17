@@ -27,6 +27,8 @@ export const INSIGHT_TYPE = "ultrathink-insight";
 export const SWARM_TYPE = "ultrathink-swarm";
 /** Display-only card of what a substrate flow accessed. Names and retain state only. */
 export const ACTIVITY_TYPE = "ultrathink-activity";
+/** Display-only card of one explicit recall's information panels (`/ultrathink-recall`); details are a TurnPanels object. */
+export const RECALL_TYPE = "ultrathink-recall";
 /**
  * Delivery for activity cards. Default delivery steers the running turn while the session streams, which injects the
  * card into the model's context. `triggerTurn: false` alone only stops an idle turn start. `nextTurn` with
@@ -1228,6 +1230,21 @@ export function registerUltrathinkRenderers(pi: {
 		try {
 			const p = paint(theme);
 			return card(() => activityRows(message.details, p), p, { border: "borderMuted", padY: 0 });
+		} catch {
+			return undefined;
+		}
+	});
+	pi.registerMessageRenderer(RECALL_TYPE, (message, _options, theme) => {
+		// details are untrusted session data: anything that is not a panel record falls back to Omp's default card
+		try {
+			const { details } = message;
+			if (!isRecord(details)) return undefined;
+			const p = paint(theme);
+			const label = p.fg("customMessageLabel", p.bold(RECALL_TYPE));
+			return card((room) => [label, ...panelSectionRows(details, room)], p, {
+				border: "borderMuted",
+				padY: 0,
+			});
 		} catch {
 			return undefined;
 		}
