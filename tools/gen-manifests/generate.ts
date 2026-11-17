@@ -5,8 +5,9 @@
 // plugin/source/plugin.source.yaml. Hosts with any other status write nothing.
 // Run with: bun tools/gen-manifests/generate.ts
 
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
@@ -126,6 +127,33 @@ export function requireMaps(verifiedIds: readonly string[], mapped: ReadonlySet<
 	}
 }
 
+// Writes each manifest atomically. Phase one stages every content in a temp file beside its target,
+// so a failure there removes the temp files and leaves every existing manifest untouched. Phase two
+// renames each temp file over its target, which replaces a file in one step and never leaves it torn.
+// A rename failure can still leave earlier hosts regenerated, since each rename commits one file.
+export async function writeManifests(
+	generated: ReadonlyMap<string, string>,
+	generatedDir: string,
+): Promise<void> {
+	const staged: { target: string; temp: string }[] = [];
+	try {
+		for (const [id, content] of generated) {
+			const dir = join(generatedDir, id);
+			await mkdir(dir, { recursive: true });
+			const target = join(dir, "manifest.json");
+			const entry = { target, temp: `${target}.${randomUUID()}.tmp` };
+			staged.push(entry);
+			await writeFile(entry.temp, content);
+		}
+		for (const { target, temp } of staged) {
+			await rename(temp, target);
+		}
+	} catch (error) {
+		await Promise.allSettled(staged.map(({ temp }) => rm(temp, { force: true })));
+		throw error;
+	}
+}
+
 async function main(): Promise<void> {
 	const source = validateSource(parse(await readFile(SOURCE_PATH, "utf8")));
 	const generated = buildGenerated(source);
@@ -135,11 +163,7 @@ async function main(): Promise<void> {
 		),
 	);
 	requireMaps([...generated.keys()], mapped);
-	for (const [id, content] of generated) {
-		const dir = join(GENERATED_DIR, id);
-		await mkdir(dir, { recursive: true });
-		await writeFile(join(dir, "manifest.json"), content);
-	}
+	await writeManifests(generated, GENERATED_DIR);
 	for (const [id, host] of Object.entries(source.hosts).sort(([a], [b]) => (a < b ? -1 : 1))) {
 		if (host.status !== "verified") console.log(`skipped ${id}: no verified mapping`);
 	}
