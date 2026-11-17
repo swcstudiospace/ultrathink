@@ -2043,6 +2043,22 @@ describe("durable state writes", () => {
 		expect(readFileSync(path, "utf8")).toBe("old");
 		expect(readdirSync(dir)).toEqual(["state.json"]);
 	});
+
+	test("a failed rename removes the temp file and rethrows", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-oauth-durable-"));
+		harnessDirs.push(dir);
+		const path = join(dir, "state.json");
+		writeFileSync(path, "old");
+		const failing: DurableFs = {
+			...nodeFs,
+			renameSync() {
+				throw new Error("rename refused");
+			},
+		};
+		expect(() => writeFileDurably(dir, path, "new", failing)).toThrow("rename refused");
+		expect(readFileSync(path, "utf8")).toBe("old");
+		expect(readdirSync(dir)).toEqual(["state.json"]);
+	});
 });
 
 describe("OAuth token rollback when the state save fails", () => {
