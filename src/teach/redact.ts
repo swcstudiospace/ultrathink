@@ -39,8 +39,11 @@ function redactPaths(text: string, home: string, repoRoot: string | undefined): 
 		"g",
 	);
 	return text.replace(pattern, (match) => {
-		const trailing = /[.:]+$/.exec(match)?.[0] ?? "";
-		const path = trailing ? match.slice(0, -trailing.length) : match;
+		// reason: a linear scan for trailing dots and colons; a regex here rescans each dot run from every start.
+		let end = match.length;
+		while (end > 0 && (match[end - 1] === "." || match[end - 1] === ":")) end--;
+		const trailing = match.slice(end);
+		const path = match.slice(0, end);
 		if (exempt && (path === exempt || path.startsWith(`${exempt}/`))) return match;
 		const segments = path.slice(base.length).split("/").filter(Boolean);
 		const shown = segments.length <= 2 ? segments.join("/") : `.../${segments.slice(-2).join("/")}`;

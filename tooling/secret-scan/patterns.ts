@@ -59,8 +59,9 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
 		// NAME containing TOKEN, SECRET, KEY, or PASSWORD assigned a literal of 8+ chars.
 		// Group 1: optional quote. Group 2: the value.
 		name: "secret-assignment",
+		// The name is one word run; the lookahead finds a keyword without re-scanning the run per keyword.
 		pattern:
-			/\b[A-Za-z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD)[A-Za-z0-9_]*\b["']?\s*[:=]\s*(["'`])(?!<[^>\n]*>|\$\{|process\.env|Bun\.env|import\.meta)([^"'`\n]{8,})\1/i,
+			/\b(?=[A-Za-z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD))[A-Za-z0-9_]+\b["']?\s*[:=]\s*(["'`])(?!<[^>\n]*>|\$\{|process\.env|Bun\.env|import\.meta)([^"'`\n]{8,})\1/i,
 		valueGroup: 2,
 	},
 	{
@@ -68,8 +69,9 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
 		// secret word. Group 1: the name. Group 2: the value, which ends at whitespace.
 		// Quoted values are left to secret-assignment.
 		name: "secret-env-assignment",
+		// The name is one uppercase run; the lookahead finds a keyword without re-scanning the run per keyword.
 		pattern:
-			/^\s*(?:export\s+)?(?![A-Z0-9_]*_(?:COUNT|LIMIT|MAX|MIN|NUM|TTL|TIMEOUT)\s*=)([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY)(?!S(?![A-Z0-9_]))[A-Z0-9_]*)\s*=\s*([^\s"'`#]\S{7,})/,
+			/^\s*(?:export\s+)?(?![A-Z0-9_]*_(?:COUNT|LIMIT|MAX|MIN|NUM|TTL|TIMEOUT)\s*=)(?=[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY)(?!S(?![A-Z0-9_])))([A-Z0-9_]+)\s*=\s*([^\s"'`#]\S{7,})/,
 		valueGroup: 2,
 		isPlaceholder: isPlaceholderValue,
 		appliesTo: (file) => /(?:^|\/)\.env(?:\.[^/]*)?$/.test(file),

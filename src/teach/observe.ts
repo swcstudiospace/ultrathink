@@ -115,31 +115,50 @@ function renderTurn(turn: DigestTurn): string {
 	return `[${turn.role}] ${turn.text}`;
 }
 
-/** Finds each balanced `{...}` span in `text` (string and escape aware) and returns the first that parses as JSON. */
+/**
+ * Finds the first `{...}` span in `text` (string and escape aware) that parses as JSON. Each `{` starts its own span,
+ * read with a fresh string state, so prose quotes before it do not hide it. A walk from one `{` records the closing
+ * brace of every `{` it passes outside a string, so a later `{` that a walk already covered is never rescanned.
+ */
 function firstJsonObject(text: string): unknown {
+	/** Start index -> index of its closing brace, or null when the text ends first. */
+	const closes = new Map<number, number | null>();
 	for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
-		let depth = 0;
-		let inString = false;
-		let escaped = false;
-		for (let i = start; i < text.length; i++) {
-			const ch = text[i];
-			if (inString) {
-				if (escaped) escaped = false;
-				else if (ch === "\\") escaped = true;
-				else if (ch === '"') inString = false;
-			} else if (ch === '"') inString = true;
-			else if (ch === "{") depth++;
-			else if (ch === "}" && --depth === 0) {
-				try {
-					return JSON.parse(text.slice(start, i + 1));
-				} catch {
-					// reason: a balanced span that is not valid JSON is skipped; the scan moves on to the next "{"
-					break;
-				}
-			}
+		if (!closes.has(start)) recordSpans(text, start, closes);
+		const end = closes.get(start);
+		if (typeof end !== "number") continue;
+		try {
+			return JSON.parse(text.slice(start, end + 1));
+		} catch {
+			// reason: a balanced span that is not valid JSON is skipped; the scan moves on to the next "{"
 		}
 	}
 	return undefined;
+}
+
+/**
+ * Reads the span opened at `start` (fresh string state) up to the brace that closes it, recording the closing index
+ * of each `{` it passes outside a string, or null when the text ends first. Stops as soon as `start` closes, so every
+ * record it writes is final.
+ */
+function recordSpans(text: string, start: number, closes: Map<number, number | null>): void {
+	const open: number[] = [start];
+	let inString = false;
+	let escaped = false;
+	for (let i = start + 1; i < text.length && open.length > 0; i++) {
+		const ch = text[i];
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (ch === "\\") escaped = true;
+			else if (ch === '"') inString = false;
+		} else if (ch === '"') inString = true;
+		else if (ch === "{") open.push(i);
+		else if (ch === "}") {
+			const opened = open.pop();
+			if (opened !== undefined) closes.set(opened, i);
+		}
+	}
+	for (const unclosed of open) closes.set(unclosed, null);
 }
 
 /**
