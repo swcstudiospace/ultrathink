@@ -120,4 +120,13 @@ describe("buildTurnPanels: one envelope per supplied lookup", () => {
 			items: [{ id: "skill:bun-snapshot-tests" }],
 		});
 	});
+
+	test("a Substrate brief lookup is a substrate panel and no other key", () => {
+		const panels = buildTurnPanels(
+			{ substrate: { text: "## Brief\n- widget edited", state: "complete" } },
+			settings(true),
+		);
+		expect(Object.keys(panels ?? {})).toEqual(["substrate"]);
+		expect(panels?.substrate).toMatchObject({ status: "success" });
+	});
 });

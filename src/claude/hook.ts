@@ -1719,7 +1719,15 @@ export async function runPromptSubmit(
 			output.systemMessage = briefNotice ? `${summary} · ${briefNotice}` : summary;
 		}
 		outcome = "planned";
-		const panels = buildTurnPanels({ knowledge, lessons, skills }, deps.config.recallSettings);
+		const panels = buildTurnPanels(
+			{
+				knowledge,
+				lessons,
+				skills,
+				substrate: { text: brief, state: briefResult.state, reason: briefResult.reason },
+			},
+			deps.config.recallSettings,
+		);
 		return {
 			output,
 			record,
