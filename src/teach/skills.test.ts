@@ -633,13 +633,26 @@ describe("formatSkillsSection", () => {
 });
 
 describe("skillsLookup", () => {
-	test("names only, with the reason passed through", () => {
+	test("names and pointer rows, with the reason passed through", () => {
 		expect(
 			skillsLookup(used([skillObj({ name: "aaa" }), skillObj({ name: "bbb" })])),
 		).toMatchObject({
 			outcome: "used",
 			count: 2,
 			names: ["aaa", "bbb"],
+		});
+		expect(
+			skillsLookup(
+				used([
+					skillObj({ name: "aaa" }),
+					skillObj({ name: "ddd", target: "omp", description: "Use when lint fails." }),
+				]),
+			),
+		).toMatchObject({
+			rows: [
+				{ name: "aaa", target: "drafts", description: "Use when running the test suite." },
+				{ name: "ddd", target: "omp", description: "Use when lint fails." },
+			],
 		});
 		expect(
 			skillsLookup({ status: "error", skills: [], chars: 0, ms: 1, reason: "nope" }),

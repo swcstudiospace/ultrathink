@@ -11,6 +11,7 @@ import {
 	type RecallHit,
 	type RecallQuery,
 } from "../hindsight/types.ts";
+import { PREVIEW_MAX_CHARS } from "../recall/panel-model.ts";
 import { contentFor, documentIdFor, metadataFor, tagsFor } from "./mapping.ts";
 import { formatLessonsSection, lessonsLookup, recallLessons } from "./recall.ts";
 import { openStore, storeDir } from "./store.ts";
@@ -173,6 +174,21 @@ describe("recallLessons: Hindsight", () => {
 		expect(outcome.chars).toBeGreaterThan(0);
 	});
 
+	test("carries Hindsight's stored confidence onto each lesson, and leaves it out when the metadata has none", async () => {
+		const a = moment("a", { name: "first lesson", description: "d1", body: "b1" });
+		const b = moment("b", { name: "second lesson", description: "d2", body: "b2" });
+		const { client } = fakeClient(async () =>
+			ok([
+				hitFor(a, { metadata: { ...metadataFor(a), confidence: "0.4" } }),
+				hitFor(b, { metadata: { ...metadataFor(b), confidence: "" } }),
+			]),
+		);
+		const { ctx } = setup({ client });
+		const outcome = await recallLessons({ query: "lesson" }, ctx);
+		expect(outcome.lessons.map((l) => l.confidence)).toEqual([0.4, undefined]);
+		expect(outcome.lessons[0]?.matchReason).toBe("Matched the prompt in Hindsight recall");
+	});
+
 	test('project scoping: an explicit project is tagged (sanitized), "*" drops the project tag', async () => {
 		const { client, calls } = fakeClient(async () => ok([]));
 		const { ctx } = setup({ client });
@@ -273,6 +289,18 @@ describe("recallLessons: local fallback", () => {
 		expect(outcome.lessons.every((l) => l.source === "local")).toBe(true);
 		for (const excluded of ["candidate", "old", "elsewhere", "miss"])
 			expect(outcome.lessons.map((l) => l.id)).not.toContain(excluded);
+	});
+
+	test("names the lesson fields the prompt's terms reached as the match reason", async () => {
+		const { ctx, store } = setup();
+		seed(store);
+		const outcome = await recallLessons({ query: "mock hoisting" }, ctx);
+		expect(Object.fromEntries(outcome.lessons.map((l) => [l.id, l.matchReason]))).toEqual({
+			"name-hit": "Prompt terms matched the lesson name",
+			"desc-hit": "Prompt terms matched the lesson description",
+			"body-hit": "Prompt terms matched the lesson body",
+			promoted: "Prompt terms matched the lesson body",
+		});
 	});
 
 	test('a repeated lesson outranks an equal single one; "*" searches every project', async () => {
@@ -602,15 +630,20 @@ describe("formatLessonsSection", () => {
 });
 
 describe("lessonsLookup", () => {
-	test("records ids and counts, never lesson text", () => {
+	test("records ids, counts and one capped row per lesson, never the full body", () => {
+		const long = "x".repeat(PREVIEW_MAX_CHARS + 50);
 		const outcome: RecallOutcome = {
 			status: "used",
-			lessons: [lessonObj({ id: "a" }), lessonObj({ id: "b" })],
+			lessons: [
+				lessonObj({ id: "a", body: long, confidence: 0.8, matchReason: "Matched the prompt" }),
+				lessonObj({ id: "b" }),
+			],
 			source: "hindsight",
 			chars: 321,
 			ms: 12,
 		};
-		expect(lessonsLookup(outcome)).toEqual({
+		const lookup = lessonsLookup(outcome);
+		expect(lookup).toMatchObject({
 			outcome: "used",
 			count: 2,
 			ids: ["a", "b"],
@@ -618,6 +651,25 @@ describe("lessonsLookup", () => {
 			ms: 12,
 			source: "hindsight",
 		});
+		expect(lookup.rows).toEqual([
+			{
+				id: "a",
+				kind: "decision",
+				title: "Pin the lockfile",
+				preview: long.slice(0, PREVIEW_MAX_CHARS),
+				createdAt: "2026-01-01T00:00:00.000Z",
+				matchReason: "Matched the prompt",
+				score: 0.8,
+			},
+			{
+				id: "b",
+				kind: "decision",
+				title: "Pin the lockfile",
+				preview: "Commit bun.lock and use --frozen-lockfile.",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				matchReason: "Matched the prompt",
+			},
+		]);
 		const errored: RecallOutcome = {
 			status: "error",
 			lessons: [],
@@ -634,7 +686,27 @@ describe("lessonsLookup", () => {
 			ms: 3,
 			source: "none",
 			reason: "hindsight recall timed out",
+			rows: [],
 		});
-		expect(JSON.stringify(lessonsLookup(outcome))).not.toContain("lockfile");
+	});
+
+	test("a secret-shaped token in a lesson's name or body never reaches its row title or preview", () => {
+		const token = `ghp_${"a1".repeat(18)}`;
+		const outcome: RecallOutcome = {
+			status: "used",
+			lessons: [
+				lessonObj({
+					id: "s",
+					name: `Deploy with ${token}`,
+					body: `Export ${token} before the run.`,
+				}),
+			],
+			source: "local",
+			chars: 40,
+			ms: 1,
+		};
+		const row = lessonsLookup(outcome).rows?.[0];
+		expect(row?.title).not.toContain(token);
+		expect(row?.preview).not.toContain(token);
 	});
 });

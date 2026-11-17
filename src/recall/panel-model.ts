@@ -42,8 +42,8 @@ type PanelExcludedReason =
 	| "trimmed_budget";
 /** Why an expected source has no item. Closed. */
 type PanelMissingReason = "index_empty" | "no_match" | "not_generated" | "source_unavailable";
-type PanelSourceKind = "greptile_doc";
-type PanelScoreKind = "lexical_overlap";
+type PanelSourceKind = "greptile_doc" | "lesson" | "skill";
+type PanelScoreKind = "lexical_overlap" | "confidence";
 type PanelScoreDirection = "higher_is_better" | "lower_is_better";
 
 interface PanelSource {
@@ -73,6 +73,8 @@ export interface PanelItem {
 interface PanelExcluded {
 	ref: string;
 	reason: PanelExcludedReason;
+	/** The candidate's score when it has one, kept visible so an exclusion can be judged (e.g. below_floor). */
+	score?: PanelScore;
 }
 
 interface PanelMissing {
