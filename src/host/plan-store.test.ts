@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadPlan, markDelivered, planKey, savePlan, type StoredPlan } from "./plan-store.ts";
+import { claimPlan, loadPlan, planKey, savePlan, type StoredPlan } from "./plan-store.ts";
 
 const input = {
 	sessionId: "session-1",
@@ -13,6 +13,7 @@ const input = {
 	cwd: "/work/repo",
 };
 const CREATED_AT = "2026-11-17T00:00:00.000Z";
+const HOUR_MS = 60 * 60 * 1000;
 
 let dir: string;
 
@@ -30,7 +31,6 @@ function samplePlan(overrides: Partial<StoredPlan> = {}): StoredPlan {
 		text: "# Plan\n- step one",
 		view: { title: "Plan", items: [1, "two"] },
 		createdAt: CREATED_AT,
-		deliveredAt: undefined,
 		...overrides,
 	};
 }
@@ -73,8 +73,8 @@ describe("savePlan and loadPlan", () => {
 		expect(loadPlan(dir, plan.key)).toEqual(plan);
 	});
 
-	test("returns undefined for a missing key", () => {
-		expect(loadPlan(dir, planKey(input))).toBeUndefined();
+	test("returns 'absent' for a missing key", () => {
+		expect(loadPlan(dir, planKey(input))).toBe("absent");
 	});
 
 	test("savePlan throws when the state directory cannot hold the plans directory", () => {
@@ -97,23 +97,23 @@ describe("savePlan and loadPlan", () => {
 	test("leftover temp file alone is not a record", () => {
 		const key = planKey(input);
 		writeNamed(`${key}.json.tmp-1-deadbeef`, JSON.stringify(samplePlan()));
-		expect(loadPlan(dir, key)).toBeUndefined();
+		expect(loadPlan(dir, key)).toBe("absent");
 	});
 
 	test("rejects keys that could escape the plans directory", () => {
-		expect(loadPlan(dir, "../escape")).toBeUndefined();
-		expect(loadPlan(dir, "")).toBeUndefined();
+		expect(loadPlan(dir, "../escape")).toBe("absent");
+		expect(loadPlan(dir, "")).toBe("absent");
 		expect(() => savePlan(dir, samplePlan({ key: "../escape" }))).toThrow();
 	});
 
-	test("returns undefined for corrupt JSON without throwing", () => {
+	test("returns 'unreadable' for corrupt JSON without throwing", () => {
 		const key = planKey(input);
 		writeRaw(key, "{not json");
 		expect(() => loadPlan(dir, key)).not.toThrow();
-		expect(loadPlan(dir, key)).toBeUndefined();
+		expect(loadPlan(dir, key)).toBe("unreadable");
 	});
 
-	test("returns undefined for shape-invalid JSON", () => {
+	test("returns 'unreadable' for shape-invalid JSON", () => {
 		const key = planKey(input);
 		const invalid = [
 			"null",
@@ -122,36 +122,74 @@ describe("savePlan and loadPlan", () => {
 			JSON.stringify({ key, text: 3, view: null, createdAt: CREATED_AT }),
 			JSON.stringify({ key, text: "t", view: null, createdAt: 7 }),
 			JSON.stringify({ key, text: "t", createdAt: CREATED_AT }),
-			JSON.stringify({ key, text: "t", view: null, createdAt: CREATED_AT, deliveredAt: 5 }),
 			JSON.stringify({ key: "other-key", text: "t", view: null, createdAt: CREATED_AT }),
 		];
 		for (const content of invalid) {
 			writeRaw(key, content);
-			expect(loadPlan(dir, key)).toBeUndefined();
+			expect(loadPlan(dir, key)).toBe("unreadable");
 		}
+	});
+
+	test("savePlan removes a record older than 24 hours and keeps a fresh one", () => {
+		const staleKey = planKey(input);
+		const freshKey = planKey({ ...input, prompt: "fresh prompt" });
+		savePlan(dir, samplePlan({ createdAt: new Date(Date.now() - 25 * HOUR_MS).toISOString() }));
+		const fresh = samplePlan({ key: freshKey, createdAt: new Date().toISOString() });
+		savePlan(dir, fresh);
+		expect(loadPlan(dir, staleKey)).toBe("absent");
+		expect(loadPlan(dir, freshKey)).toEqual(fresh);
+	});
+
+	test("savePlan writes the new record and does not throw when a stale record cannot be removed", () => {
+		// A directory at a record path is never parsed as a record, so prune skips it and the removal cannot fail
+		// through this path. The point is that the save proceeds and does not throw.
+		const blockedKey = planKey({ ...input, prompt: "blocked prompt" });
+		mkdirSync(recordFile(blockedKey), { recursive: true });
+		const plan = samplePlan();
+		expect(() => savePlan(dir, plan)).not.toThrow();
+		expect(loadPlan(dir, plan.key)).toEqual(plan);
+		expect(statSync(recordFile(blockedKey)).isDirectory()).toBe(true);
+	});
+
+	test("savePlan leaves unparseable records and non-record files alone", () => {
+		writeNamed("corrupt.json", "{not json");
+		writeNamed("notes.txt", "keep");
+		const plan = samplePlan();
+		savePlan(dir, plan);
+		expect(readdirSync(join(dir, "plans")).sort()).toEqual(
+			["corrupt.json", "notes.txt", `${plan.key}.json`].sort(),
+		);
 	});
 });
 
-describe("markDelivered", () => {
-	test("first call sets deliveredAt and returns true; second call returns false and keeps the first value", () => {
+describe("claimPlan", () => {
+	test("returns 'claimed' once, then 'lost', and the record is gone", () => {
 		const plan = samplePlan();
 		savePlan(dir, plan);
-
-		expect(markDelivered(dir, plan.key, "2026-11-17T01:00:00.000Z")).toBe(true);
-		expect(markDelivered(dir, plan.key, "2026-11-17T02:00:00.000Z")).toBe(false);
-
-		expect(loadPlan(dir, plan.key)).toEqual({ ...plan, deliveredAt: "2026-11-17T01:00:00.000Z" });
+		expect(claimPlan(dir, plan.key)).toBe("claimed");
+		expect(claimPlan(dir, plan.key)).toBe("lost");
+		expect(loadPlan(dir, plan.key)).toBe("absent");
 	});
 
-	test("returns false for a missing key", () => {
-		expect(markDelivered(dir, planKey(input), CREATED_AT)).toBe(false);
+	test("returns 'lost' for an absent key", () => {
+		expect(claimPlan(dir, planKey(input))).toBe("lost");
 	});
 
-	test("returns false for a corrupt record and leaves it untouched", () => {
+	test("claiming one key leaves another key's record untouched", () => {
+		const claimed = samplePlan();
+		const other = samplePlan({ key: planKey({ ...input, prompt: "other prompt" }) });
+		savePlan(dir, claimed);
+		savePlan(dir, other);
+		expect(claimPlan(dir, claimed.key)).toBe("claimed");
+		expect(loadPlan(dir, other.key)).toEqual(other);
+	});
+
+	test("returns 'unwritable' when the record cannot be removed", () => {
+		// A directory at the record path cannot be unlinked: EISDIR on Linux, EPERM on macOS. Neither is ENOENT.
 		const key = planKey(input);
-		writeRaw(key, "{not json");
-		expect(markDelivered(dir, key, CREATED_AT)).toBe(false);
-		expect(loadPlan(dir, key)).toBeUndefined();
+		mkdirSync(recordFile(key), { recursive: true });
+		expect(claimPlan(dir, key)).toBe("unwritable");
+		expect(statSync(recordFile(key)).isDirectory()).toBe(true);
 	});
 });
 

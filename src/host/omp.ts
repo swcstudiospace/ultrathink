@@ -132,7 +132,7 @@ import {
 import { resolveStateDir } from "./paths.ts";
 import type { PrdOutcome } from "../think/tot/stage.ts";
 import { planPrompt, wouldSkipPlanning, type PlanResponse } from "./plan.ts";
-import { loadPlan, markDelivered, planKey, savePlan, type StoredPlan } from "./plan-store.ts";
+import { claimPlan, loadPlan, planKey, savePlan } from "./plan-store.ts";
 import type { ProgressEvent } from "./progress.ts";
 import { toActivityNotice } from "./activity-notice.ts";
 import { readActivity } from "../teach/activity.ts";
@@ -437,9 +437,15 @@ export const NO_PLAN =
 export const planFailedNotice = (reason: string): string =>
 	`Ultrathink's uplift did not complete (${reason}). This prompt runs without it: continue with the user's request as written, and tell the user to re-send the prompt to plan again.`;
 
-/** A failure's message, redacted before it reaches the model-facing text. */
+/** A failure's message, redacted and capped before it reaches the model-facing text. */
 const errorText = (error: unknown): string =>
-	redactSecrets(error instanceof Error ? error.message : String(error));
+	redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 300);
+
+/** Store outcomes that a recovery cannot use: the notice says so, and the stored plan is not re-delivered. */
+const STORE_UNREADABLE =
+	"Ultrathink could not read the stored plan for this prompt, so it is not re-delivered.";
+const STORE_UNWRITABLE =
+	"Ultrathink could not mark the stored plan as delivered, so it is not re-delivered.";
 
 /**
  * Deliberate planner skips. `precheck-*` reasons are the uplift policy's own decisions; the rest are the user's intent
@@ -1555,6 +1561,7 @@ export function createOmpExtension(
 	const maxRunMs = options.maxRunMs ?? 0;
 	const clock = options.clock ?? SYSTEM_CLOCK;
 	const now = options.now ?? (() => clock.now());
+	const instanceStartedAt = now();
 	const timers = options.timers ?? platformTimers;
 	const uiEnabled = options.ui ?? true;
 	const readMcp = options.mcp ?? readMcpState;
@@ -1613,9 +1620,15 @@ export function createOmpExtension(
 			/** This flight is the relaunch of a failed planner; a submission gets no second retry. */
 			retried?: boolean;
 			/** Launches this flight's prompt again through the same path; set by `launch`. */
-			relaunch?: () => Flight;
+			relaunch?: (limitMs: number) => Flight;
 			/** The planner's skip reason. A deliberate skip (deliberateSkip) is silent; any other skip is a planning failure. */
 			skipped?: string;
+			/** Why the flight was cancelled; a model or thinking change during planning is announced, any other cancel stays silent. */
+			cancelReason?: string;
+			/** The plan already reached the model inline: the aside and any re-entry must not repeat it. */
+			deliveredInline?: boolean;
+			/** When planning began (clock ms): a relaunch gets only the budget that is left. */
+			startedAt: number;
 			/** The turn was held with a stop-and-confirm message: the next explicit "proceed" releases it. */
 			held?: "partial" | "invalid";
 			/** The Tree-of-Thought PRD outcome of the settled plan; it makes the gate wait for every PRD to be delivered. */
@@ -1642,6 +1655,8 @@ export function createOmpExtension(
 		// The latest submission's flight per session. A replaced flight is cancelled and delivers nothing:
 		// delivered later, it would steer the newer request toward the old one.
 		const flights = new Map<string, Flight>();
+		// Plans this session has delivered, by record key: a repeat is refused before any store read.
+		const deliveredKeys = new Set<string>();
 		// The latest observed safe resolution per session, for `/ultrathink-status`; extension memory only, never persisted.
 		const resolutions = new Map<string, ModelResolution>();
 		// Overlapping flights share one bar; a newer prompt owns it, older flights only deliver messages.
@@ -1740,6 +1755,7 @@ export function createOmpExtension(
 		const cancel = (flight: Flight, note: string): void => {
 			if (flight.cancelled) return;
 			flight.cancelled = true;
+			flight.cancelReason = note;
 			if (flights.get(flight.sessionId) === flight) flights.delete(flight.sessionId);
 			// Release the waiting consumer through the existing outcome even when the provider ignores abort;
 			// suppression flags are already set, so the settlement publishes nothing.
@@ -2720,6 +2736,44 @@ export function createOmpExtension(
 			return { kind: "notice", text: planFailedNotice(released.detail) };
 		};
 
+		/** An aside, or a notice as one: a refused send is warned and shown display-only, so the model and the user both learn of it. */
+		const sendAside = async (flight: Flight, message: CustomMessage): Promise<boolean> => {
+			try {
+				await Promise.resolve(pi.sendMessage(message, { deliverAs: "aside" }));
+				return true;
+			} catch {
+				// reason: a refused aside must never break the host; the failure is warned, and the display note is best effort
+				const warning = planFailedNotice("the plan could not be delivered");
+				guard(() => flight.ctx?.ui?.notify?.(warning, "warning"));
+				try {
+					await Promise.resolve(
+						pi.sendMessage(
+							{ customType: PENDING_TYPE, content: warning, display: true, attribution: "agent" },
+							{ triggerTurn: false },
+						),
+					);
+				} catch {
+					// reason: the warning already reached the user through the UI notice; a refused display note has no other channel
+				}
+				return false;
+			}
+		};
+		/** The notice for a flight that a model or thinking change ended mid-plan. Any other cancel stays silent. */
+		const changeNotice = (flight: Flight): string | undefined =>
+			flight.cancelReason === MODEL_CHANGED
+				? planFailedNotice("the session model changed while planning")
+				: flight.cancelReason === THINKING_CHANGED
+					? planFailedNotice("the session thinking level changed while planning")
+					: undefined;
+		/**
+		 * A cancelled flight's outcome for the call that waits on it. A flight that a newer call replaced is silent; a flight
+		 * cancelled with nothing replacing it (a model or thinking change) is announced to the waiting call.
+		 */
+		const cancelledOutcome = (flight: Flight): BeforeAgentStartResult | undefined => {
+			if (flights.has(flight.sessionId)) return undefined;
+			const note = changeNotice(flight);
+			return note === undefined ? undefined : { message: planMessage(note) };
+		};
 		/** Delivery once the plan settles: only a still-current flight on an unchanged live model shows or sends anything. */
 		const settle = async (flight: Flight, result: OmpPlan): Promise<void> => {
 			flight.settled = true;
@@ -2759,6 +2813,8 @@ export function createOmpExtension(
 			});
 			barWrite(flight.generation, refreshMcp);
 			if (!flight.deferred) return;
+			// A deliberate skip is intentional silence, deferred or not; an inline delivery already reached the model.
+			if (deliberateSkip(flight.skipped) || flight.deliveredInline) return;
 			// With the gate on, the aside carries only what the gate releases: a partial or unusable plan is shown, never sent.
 			let body = flight.content || (flight.earlyDelivered ? EARLY_RELEASE : failureNotice(flight));
 			if (gate) {
@@ -2784,17 +2840,9 @@ export function createOmpExtension(
 			}
 			// A non-gated plan released to the model is kept durably; the gate saved its own release.
 			if (!gate && flight.content) saveReleased(flight, flight.content);
-			// The aside is the only delivery of a deferred plan: it reads delivered only once the host took it. A rejected
-			// send marks the bar aside-failed and keeps `flight.content`, so the plan is not lost.
-			try {
-				await Promise.resolve(
-					pi.sendMessage(planMessage(body, flight.view), {
-						deliverAs: "aside",
-					}),
-				);
-			} catch {
-				// reason: a refused aside must never break the host; it is shown as aside-failed below
-				// Settled and no longer deferred: the same submission's next before_agent_start delivers the plan inline.
+			// The aside is the only delivery of a deferred plan: it reads delivered only once the host took it. A refused
+			// send keeps `flight.content`, so the plan is not lost, and the same submission's next run delivers it inline.
+			if (!(await sendAside(flight, planMessage(body, flight.view)))) {
 				flight.deferred = false;
 				if (flight.content) barWrite(flight.generation, () => store.skipped("aside failed", now()));
 				return;
@@ -2814,6 +2862,7 @@ export function createOmpExtension(
 				selectors?: TrackedQuery;
 				tracked?: boolean;
 			},
+			limitMs: number,
 		): Flight => {
 			const previous = flights.get(request.sessionId);
 			const generation = ++latestGeneration;
@@ -2843,6 +2892,7 @@ export function createOmpExtension(
 				deadlineTimer: undefined,
 				timedOut: false,
 				content: "",
+				startedAt: clock.now(),
 			};
 			const gating = gateSettings();
 			if (gating.enabled) {
@@ -2868,7 +2918,13 @@ export function createOmpExtension(
 			// Subscribed before the callback boundary below: cancelling the previous flight runs its abort
 			// listeners synchronously, and a reentrant cancellation of this flight still settles through the
 			// existing outcome with no second subscription.
-			void flight.result.then((result) => settle(flight, result));
+			void flight.result
+				.then((result) => settle(flight, result))
+				.catch((error: unknown) => {
+					// A settlement that fails must not vanish: the failure is warned, and the model is told the plan did not reach it.
+					const warning = planFailedNotice(`its delivery failed: ${errorText(error)}`);
+					guard(() => flight.ctx?.ui?.notify?.(warning, "warning"));
+				});
 			// Registered before the planner runs, so a progress callback that fires at once already finds its flight.
 			flights.set(request.sessionId, flight);
 			if (previous) {
@@ -2910,12 +2966,12 @@ export function createOmpExtension(
 				});
 			// The outer deadline exists only for an explicit positive maxRunMs; omitted and zero leave planning unbounded.
 			// A positive deadline still settles independently of provider cooperation; only the inline race keeps the flight running.
-			if (maxRunMs > 0) {
+			if (limitMs > 0) {
 				const timer = timers.setTimeout(() => {
 					flight.timedOut = true;
 					flight.finishFlight({ context: "" });
 					guard(() => flight.controller.abort());
-				}, maxRunMs);
+				}, limitMs);
 				// Like the AbortSignal.timeout it replaces, the limit alone never keeps a process alive.
 				(timer as { unref?: () => void } | undefined)?.unref?.();
 				flight.deadlineTimer = timer;
@@ -2924,7 +2980,7 @@ export function createOmpExtension(
 				plan(
 					{
 						...request,
-						deadline: maxRunMs > 0 ? clock.now() + maxRunMs : undefined,
+						deadline: limitMs > 0 ? clock.now() + limitMs : undefined,
 						isCurrent: () => !flight.timedOut && !flight.settled && current(flight),
 						onUplift: (handoff) => {
 							flight.early = handoff;
@@ -2953,6 +3009,7 @@ export function createOmpExtension(
 			live: LiveTarget | undefined,
 			thinkingLevel: SessionThinkingLevel | undefined,
 			captured: { config?: UltrathinkConfig; control?: ControlState; intent?: FlightIntent },
+			limitMs: number = maxRunMs,
 		): Flight => {
 			let snapshot: LiveTarget | undefined;
 			try {
@@ -2974,14 +3031,21 @@ export function createOmpExtension(
 				...(captured.config ? { config: captured.config } : {}),
 				...(captured.control ? { control: captured.control } : {}),
 			};
-			const flight = start(request, submission, ctx, {
-				live: snapshot,
-				intent: captured.intent,
-				selectors,
-				tracked: trackedOf(captured.config, captured.control),
-			});
-			// The same arguments again: the failed planner's one retry and a deferred flight's relaunch both come through here.
-			flight.relaunch = () => launch(flight.ctx, base, submission, live, thinkingLevel, captured);
+			const flight = start(
+				request,
+				submission,
+				ctx,
+				{
+					live: snapshot,
+					intent: captured.intent,
+					selectors,
+					tracked: trackedOf(captured.config, captured.control),
+				},
+				limitMs,
+			);
+			// The same arguments again, with the budget left: a failed planner's relaunch and a deferred relaunch both come through here.
+			flight.relaunch = (remainingMs) =>
+				launch(flight.ctx, base, submission, live, thinkingLevel, captured, remainingMs);
 			return flight;
 		};
 
@@ -3137,7 +3201,15 @@ export function createOmpExtension(
 						answer = value;
 						return "answered" as const;
 					},
-					() => "answered" as const,
+					(error: unknown) => {
+						guard(() =>
+							ctx.ui?.notify?.(
+								planFailedNotice(`the confirmation dialog failed: ${errorText(error)}`),
+								"warning",
+							),
+						);
+						return "answered" as const;
+					},
 				);
 				const first = await Promise.race([flight.result.then(() => "settled" as const), asked]);
 				if (first === "settled") {
@@ -3176,6 +3248,7 @@ export function createOmpExtension(
 		 * stalled, timed out or deliberately skipped the flight. Every other outcome keeps its own notice or silence.
 		 */
 		const retryDue = (flight: Flight): boolean => {
+			if (maxRunMs > 0 && clock.now() - flight.startedAt >= maxRunMs) return false;
 			if (
 				flight.retried ||
 				flight.cancelled ||
@@ -3190,8 +3263,8 @@ export function createOmpExtension(
 			return flight.settled && flight.content === "";
 		};
 		/**
-		 * Why a flight produced no plan, as the user reads it: the timed-out note, or the reason it did not complete.
-		 * A deliberate planner skip keeps its original note: it is an intentional silence, never a failure to announce.
+		 * Why a flight produced no plan, as the user reads it. A planner that exceeded its deadline gets the no-plan note;
+		 * every other failure gets planFailedNotice with its reason. A deliberate skip keeps the no-plan note too.
 		 */
 		const failureNotice = (flight: Flight): string =>
 			flight.timedOut || deliberateSkip(flight.skipped)
@@ -3199,33 +3272,37 @@ export function createOmpExtension(
 				: planFailedNotice(
 						flight.gate?.reason || flight.endDetail || "the planner produced no plan",
 					);
-		/** Clears the failed flight's gate clock and launches its prompt once more; the new flight carries the retry mark. */
-		const retryFailed = (failed: Flight, relaunch: () => Flight): Flight => {
+		/** Clears the failed flight's gate clock and launches its prompt once more with the budget left; the new flight carries the retry mark. */
+		const retryFailed = (failed: Flight, relaunch: (limitMs: number) => Flight): Flight => {
 			failed.gate?.cancel("the planner failed; relaunching the prompt once");
-			const next = relaunch();
+			const remainingMs = maxRunMs > 0 ? maxRunMs - (clock.now() - failed.startedAt) : 0;
+			const next = relaunch(remainingMs);
 			next.retried = true;
 			// The early uplift already went inline: a relaunch that comes back empty ends with the early release, not a failure.
 			next.earlyDelivered = failed.earlyDelivered;
 			return next;
 		};
-		/** The record key a flight's plan is stored under: the same identity on save and on recovery. */
-		const planRecordKey = (flight: Flight): string =>
-			planKey({
-				sessionId: flight.sessionId,
-				submission: String(flight.submission),
-				prompt: flight.prompt,
-				cwd: flight.cwd,
-			});
+		/** The record key a flight's plan is stored under; a session with no id has no identity to store under, so none. */
+		const planRecordKey = (flight: Flight): string | undefined =>
+			flight.sessionId === ""
+				? undefined
+				: planKey({
+						sessionId: flight.sessionId,
+						submission: String(flight.submission),
+						prompt: flight.prompt,
+						cwd: flight.cwd,
+					});
 		/** Durable copy of a released plan. A store failure never blocks the turn; it is reported as a warning. */
 		const saveReleased = (flight: Flight, text: string): void => {
+			const key = planRecordKey(flight);
+			if (key === undefined) return;
 			try {
 				savePlan(stateDir(flight.cwd), {
-					key: planRecordKey(flight),
+					key,
 					text,
 					// A record without a `view` key is unreadable and JSON drops undefined, so an absent view is stored as null.
 					view: flight.view ?? null,
 					createdAt: new Date(now()).toISOString(),
-					deliveredAt: undefined,
 				});
 			} catch (error) {
 				guard(() =>
@@ -3236,49 +3313,55 @@ export function createOmpExtension(
 				);
 			}
 		};
-		/** A plan the host took, inline or as an aside: the store will not offer it again for this submission. */
+		/** A plan the host took, inline or as an aside: claimed in the store and remembered for this session, so a repeat is refused. */
 		const markPlanDelivered = (flight: Flight): void => {
-			try {
-				markDelivered(stateDir(flight.cwd), planRecordKey(flight), new Date(now()).toISOString());
-			} catch (error) {
-				guard(() =>
-					flight.ctx?.ui?.notify?.(
-						`Ultrathink could not mark this plan as delivered: ${errorText(error)}`,
-						"warning",
-					),
-				);
-			}
+			const key = planRecordKey(flight);
+			if (key === undefined) return;
+			deliveredKeys.add(key);
+			if (claimPlan(stateDir(flight.cwd), key) === "unwritable")
+				guard(() => flight.ctx?.ui?.notify?.(STORE_UNWRITABLE, "warning"));
 		};
+		/** What a recovery found for a flight: a stored plan to deliver now, a store warning, or nothing. */
+		type Recovery =
+			| { kind: "none" }
+			| { kind: "warn"; text: string }
+			| { kind: "recovered"; text: string; view: PlanView | undefined };
 		/**
-		 * The stored copy of a flight's plan when it never reached the model. It is marked delivered before its text is
-		 * returned, so a second recovery finds nothing. A store that cannot be read recovers nothing.
+		 * The stored copy of a flight's plan, when this session has not delivered it yet. A key this session already
+		 * delivered is refused before any store read; a record written before this instance started is ignored; only a
+		 * successful claim delivers. A store that cannot be read or claimed warns, and the stored plan is not re-delivered.
 		 */
-		const recoverPlan = (flight: Flight): StoredPlan | undefined => {
-			try {
-				const dir = stateDir(flight.cwd);
-				const key = planRecordKey(flight);
-				const stored = loadPlan(dir, key);
-				if (stored === undefined || stored.deliveredAt !== undefined) return undefined;
-				return markDelivered(dir, key, new Date(now()).toISOString()) ? stored : undefined;
-			} catch (error) {
-				guard(() =>
-					flight.ctx?.ui?.notify?.(
-						`Ultrathink could not read the stored plan: ${errorText(error)}`,
-						"warning",
-					),
-				);
-				return undefined;
-			}
+		const recoverPlan = (flight: Flight): Recovery => {
+			const key = planRecordKey(flight);
+			if (key === undefined || deliveredKeys.has(key)) return { kind: "none" };
+			const dir = stateDir(flight.cwd);
+			const loaded = loadPlan(dir, key);
+			if (loaded === "absent") return { kind: "none" };
+			if (loaded === "unreadable") return { kind: "warn", text: STORE_UNREADABLE };
+			if (!(Date.parse(loaded.createdAt) >= instanceStartedAt)) return { kind: "none" };
+			const claim = claimPlan(dir, key);
+			if (claim === "unwritable") return { kind: "warn", text: STORE_UNWRITABLE };
+			if (claim === "lost") return { kind: "none" };
+			deliveredKeys.add(key);
+			return {
+				kind: "recovered",
+				text: loaded.text,
+				view: isPlanView(loaded.view) ? loaded.view : undefined,
+			};
 		};
-		/** One loud note per flight. A stored plan that never reached the model replaces the note, delivered once. */
+		/** One loud note per flight. A stored plan that never reached the model replaces the note, delivered once; a store warning is appended. */
 		const noticeOnce = (flight: Flight, notice: string): BeforeAgentStartResult | undefined => {
 			if (flight.noticed || deliberateSkip(flight.skipped)) return undefined;
 			flight.noticed = true;
-			const recovered = recoverPlan(flight);
-			if (!recovered) return { message: planMessage(notice) };
-			const view = isPlanView(recovered.view) ? recovered.view : undefined;
-			barWrite(flight.generation, () => store.delivered("inline", view, now()));
-			return { message: planMessage(recovered.text, view) };
+			const recovery = recoverPlan(flight);
+			if (recovery.kind === "recovered") {
+				flight.deliveredInline = true;
+				barWrite(flight.generation, () => store.delivered("inline", recovery.view, now()));
+				return { message: planMessage(recovery.text, recovery.view) };
+			}
+			return {
+				message: planMessage(recovery.kind === "warn" ? `${notice} ${recovery.text}` : notice),
+			};
 		};
 		/** The message a gated flight's delivery decision puts in front of the model; `none` stays silent. */
 		const gatedMessage = (
@@ -3288,6 +3371,7 @@ export function createOmpExtension(
 		): BeforeAgentStartResult | undefined => {
 			switch (delivery.kind) {
 				case "plan":
+					flight.deliveredInline = true;
 					barWrite(flight.generation, () => store.delivered("inline", flight.view, now()));
 					markPlanDelivered(flight);
 					return { message: planMessage(delivery.text, flight.view) };
@@ -3319,8 +3403,16 @@ export function createOmpExtension(
 								: "Start the session without a plan?"
 						}`,
 					),
-				).catch(() => false);
-				if (flight.cancelled) return;
+				).catch((error: unknown) => {
+					guard(() =>
+						ctx.ui?.notify?.(
+							planFailedNotice(`the confirmation dialog failed: ${errorText(error)}`),
+							"warning",
+						),
+					);
+					return false;
+				});
+				if (flight.cancelled) return cancelledOutcome(flight);
 				if (yes === true) delivery = gateDelivery(flight, gate, true);
 			}
 			return gatedMessage(flight, delivery, ctx);
@@ -3329,10 +3421,13 @@ export function createOmpExtension(
 		pi.on("before_agent_start", async (event, ctx) => {
 			scheduleMount();
 			if (isSubagentSession(ctx, exists)) return;
+			// The session the catch-all may cancel a registered flight of; set once the handler knows it.
+			let failedSession = "";
 			try {
 				const prompt = event?.prompt ?? "";
 				const cwd = ctx?.cwd || process.cwd();
 				const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
+				failedSession = sessionId;
 				guard(() => store.setLiveSession(sessionId));
 				const submission = turns.get(sessionId) ?? 0;
 				if (quick) {
@@ -3375,8 +3470,8 @@ export function createOmpExtension(
 				const namedEngine = captured.intent && captured.intent.engine !== "auto";
 				const thinkingLevel = namedEngine ? undefined : pi.getThinkingLevel?.();
 				const live = observeLive(ctx);
-				// One more launch of this prompt with the arguments this call captured: the failed planner's one retry.
-				const launchPlan = (launchCtx: ExtensionContext | undefined): Flight =>
+				// One more launch of this prompt with the arguments this call captured; a relaunch passes the budget left.
+				const launchPlan = (launchCtx: ExtensionContext | undefined, limitMs?: number): Flight =>
 					launch(
 						launchCtx,
 						{ prompt, cwd, sessionId, stateDir: dir },
@@ -3384,6 +3479,7 @@ export function createOmpExtension(
 						live,
 						thinkingLevel,
 						captured,
+						limitMs,
 					);
 				const existing = flights.get(sessionId);
 				// A follow-up the planner would skip (`continue`, an ack, a command) must not cancel the plan still being
@@ -3434,6 +3530,7 @@ export function createOmpExtension(
 				if (same?.settled && !retryDue(same)) {
 					if (same.gate) return await deliverGated(same, same.gate, ctx);
 					if (same.content) {
+						same.deliveredInline = true;
 						markPlanDelivered(same);
 						return { message: planMessage(same.content, same.view) };
 					}
@@ -3444,13 +3541,13 @@ export function createOmpExtension(
 				let planned = await runAttempt(() => reuse ?? launchPlan(ctx));
 				for (;;) {
 					const { flight, result } = planned;
-					if (flight.cancelled) return;
+					if (flight.cancelled) return cancelledOutcome(flight);
 					const gate = flight.gate;
 					if (gate) {
 						// The turn must not start on a partial plan: wait for the whole one (dialog) or hold explicitly.
 						if (result === null && !flight.settled) {
 							const waited = canDialog(ctx) ? await waitInDialog(flight, ctx) : "unsupported";
-							if (flight.cancelled) return;
+							if (flight.cancelled) return cancelledOutcome(flight);
 							if (waited === "start") {
 								cancel(flight, "cancelled: the user started without the plan");
 								return;
@@ -3463,7 +3560,9 @@ export function createOmpExtension(
 							}
 						}
 						if (retryDue(flight)) {
-							planned = await runAttempt(() => retryFailed(flight, () => launchPlan(ctx)));
+							planned = await runAttempt(() =>
+								retryFailed(flight, (limitMs) => launchPlan(ctx, limitMs)),
+							);
 							continue;
 						}
 						return await deliverGated(flight, gate, ctx);
@@ -3486,17 +3585,23 @@ export function createOmpExtension(
 						return { message: pendingMessage() };
 					}
 					if (retryDue(flight)) {
-						planned = await runAttempt(() => retryFailed(flight, () => launchPlan(ctx)));
+						planned = await runAttempt(() =>
+							retryFailed(flight, (limitMs) => launchPlan(ctx, limitMs)),
+						);
 						continue;
 					}
 					if (!result.context) return noticeOnce(flight, failureNotice(flight));
+					flight.deliveredInline = true;
 					saveReleased(flight, result.context);
 					markPlanDelivered(flight);
 					barWrite(flight.generation, () => store.delivered("inline", result.view, now()));
 					return { message: planMessage(result.context, result.view) };
 				}
 			} catch (error) {
-				// Planning failed outside the flight's own handling: the prompt proceeds without the uplift, and the cause is shown.
+				// The handler failed outside its flight's own handling: a flight it registered is cancelled, and the prompt
+				// proceeds without the uplift. The cause is shown, redacted and capped.
+				const stale = flights.get(failedSession);
+				if (stale) cancel(stale, "cancelled: planning failed inside the handler");
 				return {
 					message: planMessage(
 						planFailedNotice(`an internal error stopped planning: ${errorText(error)}`),

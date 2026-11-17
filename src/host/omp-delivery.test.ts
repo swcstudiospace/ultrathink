@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UPLIFT } from "../test.helpers.ts";
 import { TEST_STATE_DIR_PREFIX } from "../test.state-dir.ts";
 import { loadPlan, planKey, savePlan } from "./plan-store.ts";
-import { setup } from "./omp-test.helpers.ts";
+import { flush, setup } from "./omp-test.helpers.ts";
 
 const roots: string[] = [];
 const newRoot = (): string => {
@@ -52,6 +52,8 @@ const skipping = (reason: string) => {
 
 /** The record key the prompt "do it" in session "s1" at cwd "/repo" is stored under. */
 const KEY = planKey({ sessionId: "s1", submission: "0", prompt: "do it", cwd: "/repo" });
+/** A record written after the extension instance starts; only such records are recovered. */
+const LATER = new Date(Date.now() + 60_000).toISOString();
 
 describe("omp delivery when planning does not produce a plan", () => {
 	test("a failed planner is relaunched once and the retry plan is delivered inline", async () => {
@@ -79,42 +81,24 @@ describe("omp delivery when planning does not produce a plan", () => {
 		expect(planner.count()).toBe(2);
 	});
 
-	test("a settled plan that never reached the model is re-delivered from the store once", async () => {
+	test("a stored plan that never reached the model is re-delivered once", async () => {
 		const root = newRoot();
-		savePlan(root, {
-			key: KEY,
-			text: UPLIFT("do it", "stored"),
-			view: null,
-			createdAt: "2026-01-01T00:00:00.000Z",
-			deliveredAt: undefined,
-		});
+		savePlan(root, { key: KEY, text: UPLIFT("do it", "stored"), view: null, createdAt: LATER });
 		const planner = counting(() => "");
 		const { run } = setup(planner.plan, 1_000, { stateDir: root });
 		expect(textOf(await run("do it"))).toBe(UPLIFT("do it", "stored"));
-		expect(loadPlan(root, KEY)?.deliveredAt).toBeDefined();
+		expect(loadPlan(root, KEY)).toBe("absent");
 		expect(await run("do it")).toBeUndefined();
 	});
 
-	test("a corrupt stored record is treated as absent and the notice runs", async () => {
-		const root = newRoot();
-		mkdirSync(join(root, "plans"), { recursive: true });
-		writeFileSync(join(root, "plans", `${KEY}.json`), "{not json");
-		const planner = counting(() => "");
-		const { run } = setup(planner.plan, 1_000, { stateDir: root });
-		const text = textOf(await run("do it"));
-		expect(text).toContain("did not complete");
-		expect(loadPlan(root, KEY)).toBeUndefined();
-	});
-
-	test("a plan delivered inline is not delivered again by a fallback for the same submission", async () => {
+	test("a plan delivered inline is claimed, so a fresh host's fallback does not deliver it again", async () => {
 		const root = newRoot();
 		const delivered = UPLIFT("do it", "delivered inline");
 		const first = setup(async () => delivered, 1_000, { stateDir: root });
 		expect(textOf(await first.run("do it"))).toBe(delivered);
-		expect(loadPlan(root, KEY)?.deliveredAt).toBeDefined();
+		expect(loadPlan(root, KEY)).toBe("absent");
 		// A fresh host has no flight for this submission, so its planner fails and the store is the only fallback.
-		const planner = counting(() => "");
-		const fallback = setup(planner.plan, 1_000, { stateDir: root });
+		const fallback = setup(counting(() => "").plan, 1_000, { stateDir: root });
 		const text = textOf(await fallback.run("do it"));
 		expect(text).not.toBe(delivered);
 		expect(text).toContain("did not complete");
@@ -123,17 +107,112 @@ describe("omp delivery when planning does not produce a plan", () => {
 	test("a record saved with a null view loads with that view and re-delivers its text", async () => {
 		const root = newRoot();
 		const text = UPLIFT("do it", "null view");
-		savePlan(root, {
-			key: KEY,
-			text,
-			view: null,
-			createdAt: "2026-01-01T00:00:00.000Z",
-			deliveredAt: undefined,
-		});
+		savePlan(root, { key: KEY, text, view: null, createdAt: LATER });
 		expect(loadPlan(root, KEY)).toMatchObject({ key: KEY, text, view: null });
 		const planner = counting(() => "");
 		const { run } = setup(planner.plan, 1_000, { stateDir: root });
 		expect(textOf(await run("do it"))).toBe(text);
+	});
+
+	test("a corrupt stored record warns that it could not be read and does not block a valid one", async () => {
+		const root = newRoot();
+		mkdirSync(join(root, "plans"), { recursive: true });
+		writeFileSync(join(root, "plans", `${KEY}.json`), "{not json");
+		const corrupt = setup(counting(() => "").plan, 1_000, { stateDir: root });
+		const warned = textOf(await corrupt.run("do it"));
+		expect(warned).toContain("could not read the stored plan");
+		expect(loadPlan(root, KEY)).toBe("unreadable");
+		// Control: a valid record under another key, in the same store, is still recovered.
+		const otherKey = planKey({
+			sessionId: "s1",
+			submission: "0",
+			prompt: "other prompt",
+			cwd: "/repo",
+		});
+		savePlan(root, {
+			key: otherKey,
+			text: UPLIFT("other prompt", "control"),
+			view: null,
+			createdAt: LATER,
+		});
+		const control = setup(counting(() => "").plan, 1_000, { stateDir: root });
+		expect(textOf(await control.run("other prompt"))).toBe(UPLIFT("other prompt", "control"));
+	});
+
+	test("a stored plan is not recovered by another session", async () => {
+		const root = newRoot();
+		savePlan(root, {
+			key: KEY,
+			text: UPLIFT("do it", "other session"),
+			view: null,
+			createdAt: LATER,
+		});
+		const planner = counting(() => "");
+		const { run } = setup(
+			planner.plan,
+			1_000,
+			{ stateDir: root },
+			{
+				sessionManager: { getSessionId: () => "s2" },
+			},
+		);
+		expect(textOf(await run("do it"))).toContain("did not complete");
+		expect(typeof loadPlan(root, KEY)).toBe("object");
+	});
+
+	test("a session with no id never touches the store", async () => {
+		const root = newRoot();
+		const emptyKey = planKey({ sessionId: "", submission: "0", prompt: "do it", cwd: "/repo" });
+		savePlan(root, { key: emptyKey, text: UPLIFT("do it", "empty"), view: null, createdAt: LATER });
+		const planner = counting(() => "");
+		const { run } = setup(
+			planner.plan,
+			1_000,
+			{ stateDir: root },
+			{
+				sessionManager: { getSessionId: () => "" },
+			},
+		);
+		expect(textOf(await run("do it"))).toContain("did not complete");
+		expect(typeof loadPlan(root, emptyKey)).toBe("object");
+		expect(existsSync(join(root, "plans", `${emptyKey}.json`))).toBe(true);
+	});
+
+	test("an internal failure in the handler is reported redacted and never leaks the secret", async () => {
+		const root = newRoot();
+		const { run } = setup(
+			counting(() => "").plan,
+			1_000,
+			{ stateDir: root },
+			{
+				sessionManager: {
+					getSessionId: () => {
+						throw new Error("Bearer abcdefghijklmnop0123 rejected");
+					},
+				},
+			},
+		);
+		const text = textOf(await run("do it"));
+		expect(text).toContain("[redacted]");
+		expect(text).not.toContain("abcdefghijklmnop0123");
+	});
+
+	test("a relaunch is refused once the flight's own budget is spent", async () => {
+		const root = newRoot();
+		let clockAt = 0;
+		let calls = 0;
+		const planner = async (): Promise<string> => {
+			calls++;
+			clockAt += 200;
+			return "";
+		};
+		const { run } = setup(planner, 1_000, {
+			stateDir: root,
+			maxRunMs: 100,
+			clock: { now: () => clockAt },
+		});
+		expect(textOf(await run("do it"))).toContain("did not complete");
+		expect(calls).toBe(1);
 	});
 
 	test("native-unavailable is a planning failure: it is retried once and the notice names the reason", async () => {
@@ -145,13 +224,29 @@ describe("omp delivery when planning does not produce a plan", () => {
 		expect(planner.count()).toBe(2);
 	});
 
+	test("a deferred deliberate skip that outlasts the race sends no aside", async () => {
+		const gate = Promise.withResolvers<{ context: string; skipped: string }>();
+		const { run, sent } = setup(() => gate.promise, 1, { stateDir: newRoot() });
+		await run("do it");
+		gate.resolve({ context: "", skipped: "slash-command" });
+		await flush();
+		expect(sent).toEqual([]);
+	});
+
 	for (const reason of [
 		"child-or-disabled",
-		"precheck-disabled",
-		"precheck-over-max-chars",
+		"parent-session",
+		"cron",
+		"empty",
+		"ultrathink-command",
+		"skill-preamble",
+		"aborted",
 		"slash-command",
 		"ultrathink-skill",
 		"nested-child",
+		"precheck-trivial",
+		"precheck-disabled",
+		"precheck-over-max-chars",
 	]) {
 		test(`a deliberate ${reason} skip stays silent and is not retried`, async () => {
 			const planner = skipping(reason);

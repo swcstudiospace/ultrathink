@@ -234,6 +234,8 @@ describe("omp extension", () => {
 		gate.resolve("");
 		// hardened: the relaunched planner settles after more microtask hops than one flush covers (omp-delivery.test.ts)
 		for (let hop = 0; hop < 50 && sent.length === 0; hop++) await flush();
+		// the first attempt and its one relaunch: the planner runs exactly twice before the notice
+		expect(gate.calls()).toBe(2);
 		expect(sent).toHaveLength(1);
 		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
 		expect((sent[0]!.message as { content: string }).content).toBe(
