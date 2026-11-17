@@ -1,0 +1,413 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 SWC Studio
+/**
+ * The store of auto-generated skills (Linear SPE-34396, step 6): one directory per skill holding `SKILL.md`, and a
+ * `manifest.json` at the store root listing every generated skill. The manifest is the ownership record: a directory the
+ * manifest does not list is user-authored and is never written or removed here.
+ *
+ * Every mutation writes the manifest before the skill file it describes. A directory this store creates is therefore
+ * always listed, and a failure between the two writes leaves a listed skill that a retry repairs; it never leaves an
+ * unlisted directory that would later read as user-authored. Files are written through a temporary file in the same
+ * directory and a rename, so a reader sees the old or the new content, never a mix.
+ */
+import { randomBytes } from "node:crypto";
+import type { Stats } from "node:fs";
+import { lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { isRecord } from "../shared.ts";
+import { type AutoSkill, contentHashOf } from "./skill-author.ts";
+
+const MANIFEST = "manifest.json";
+const SKILL_FILE = "SKILL.md";
+const MANIFEST_SCHEMA = 1;
+/** Kebab-case, the same shape `skill-author` gives names. Excludes separators and dot segments by construction. */
+const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const ISO_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const HEX64_RE = /^[0-9a-f]{64}$/;
+const LINE_BREAK_RE = /[\r\n\u2028\u2029]/;
+/** A YAML plain scalar is written bare only when no YAML syntax character can change its meaning. */
+const PLAIN_SCALAR_RE = /^[A-Za-z0-9][^#:"'\\]*$/;
+
+export type GeneratedStatus = AutoSkill["status"];
+
+/** One generated skill as the manifest records it. */
+interface GeneratedEntry {
+	name: string;
+	status: GeneratedStatus;
+	generated_by: "auto";
+	version: number;
+	content_hash: string;
+	/** ISO 8601 UTC: the time the store wrote this version. */
+	generated_at: string;
+	source_ids: string[];
+	stale: boolean;
+}
+
+type StoreReason =
+	| "invalid_name"
+	| "invalid_input"
+	| "user_authored"
+	| "not_found"
+	| "unsafe_path"
+	| "manifest_corrupt"
+	| "skill_corrupt"
+	| "io_error";
+
+interface StoreFailure {
+	ok: false;
+	reason: StoreReason;
+	/** A short explanation: the failing field or rule, or the error code. Never skill text. */
+	detail: string;
+}
+
+export type WriteResult = { ok: true; entry: GeneratedEntry } | StoreFailure;
+export type StatusResult = { ok: true; entry: GeneratedEntry } | StoreFailure;
+export type RemoveResult = { ok: true; name: string } | StoreFailure;
+export type ListResult = { ok: true; entries: GeneratedEntry[] } | StoreFailure;
+
+/** Internal: carries a typed reason through the helpers to the exported functions, which return it as a `StoreFailure`. */
+class StoreError extends Error {
+	constructor(
+		readonly reason: StoreReason,
+		readonly detail: string,
+	) {
+		super(detail);
+	}
+}
+
+const SLUG_RULE = "kebab-case, 1 to 64 characters";
+
+/**
+ * Writes or replaces the generated skill `skill.name` under `storeDir`. A new skill starts at its record's version; an
+ * existing generated skill keeps its status and gets the next version. `nowIso` becomes the entry's `generated_at`.
+ */
+export async function writeGeneratedSkill(
+	storeDir: string,
+	skill: AutoSkill,
+	nowIso: string,
+): Promise<WriteResult> {
+	try {
+		return { ok: true, entry: await writeSkill(storeDir, skill, nowIso) };
+	} catch (error) {
+		return failureOf(error);
+	}
+}
+
+/** Sets the status of a generated skill in both the manifest and the `status:` line of its frontmatter. */
+export async function setGeneratedStatus(
+	storeDir: string,
+	name: string,
+	status: GeneratedStatus,
+): Promise<StatusResult> {
+	try {
+		return { ok: true, entry: await setStatus(storeDir, name, status) };
+	} catch (error) {
+		return failureOf(error);
+	}
+}
+
+/** Removes a generated skill: its `SKILL.md`, its directory and its manifest entry. Nothing else is touched. */
+export async function removeGeneratedSkill(storeDir: string, name: string): Promise<RemoveResult> {
+	try {
+		await removeSkill(storeDir, name);
+		return { ok: true, name };
+	} catch (error) {
+		return failureOf(error);
+	}
+}
+
+/** The manifest's entries in the order they were written. A missing manifest lists as empty. */
+export async function listGenerated(storeDir: string): Promise<ListResult> {
+	try {
+		return { ok: true, entries: await readManifest(storeDir) };
+	} catch (error) {
+		return failureOf(error);
+	}
+}
+
+async function writeSkill(
+	storeDir: string,
+	skill: AutoSkill,
+	nowIso: string,
+): Promise<GeneratedEntry> {
+	if (!isSlug(skill.name)) throw new StoreError("invalid_name", SLUG_RULE);
+	const problem = inputProblem(skill, nowIso);
+	if (problem !== undefined) throw new StoreError("invalid_input", `${problem} is invalid`);
+
+	const entries = await readManifest(storeDir);
+	await assertOwnedOrAbsent(storeDir, skill.name, entries);
+	const prior = entries.find((entry) => entry.name === skill.name);
+	const entry: GeneratedEntry = {
+		name: skill.name,
+		status: prior?.status ?? skill.status,
+		generated_by: "auto",
+		version: prior === undefined ? skill.version : Math.max(prior.version + 1, skill.version),
+		content_hash: contentHashOf(skill),
+		generated_at: nowIso,
+		source_ids: [...skill.source_ids],
+		stale: skill.stale,
+	};
+
+	await writeManifest(storeDir, [...entries.filter((other) => other.name !== entry.name), entry]);
+	const dir = join(storeDir, skill.name);
+	await mkdir(dir, { recursive: true, mode: 0o700 });
+	await writeAtomic(join(dir, SKILL_FILE), renderSkill(skill, entry));
+	return entry;
+}
+
+async function setStatus(
+	storeDir: string,
+	name: string,
+	status: GeneratedStatus,
+): Promise<GeneratedEntry> {
+	if (!isSlug(name)) throw new StoreError("invalid_name", SLUG_RULE);
+	if (!isStatus(status)) throw new StoreError("invalid_input", "status is invalid");
+
+	const entries = await readManifest(storeDir);
+	await assertOwnedOrAbsent(storeDir, name, entries);
+	const prior = entries.find((entry) => entry.name === name);
+	if (prior === undefined) throw new StoreError("not_found", "no generated skill with that name");
+
+	const file = join(storeDir, name, SKILL_FILE);
+	await assertRegularFile(file);
+	const updated = withFrontmatterStatus(await readFile(file, "utf8"), status);
+	if (updated === undefined) {
+		throw new StoreError("skill_corrupt", "SKILL.md has no status line in its frontmatter");
+	}
+
+	const entry: GeneratedEntry = { ...prior, status };
+	await writeManifest(storeDir, [...entries.filter((other) => other.name !== entry.name), entry]);
+	await writeAtomic(file, updated);
+	return entry;
+}
+
+async function removeSkill(storeDir: string, name: string): Promise<void> {
+	if (!isSlug(name)) throw new StoreError("invalid_name", SLUG_RULE);
+
+	const entries = await readManifest(storeDir);
+	await assertOwnedOrAbsent(storeDir, name, entries);
+	if (!entries.some((entry) => entry.name === name)) {
+		throw new StoreError("not_found", "no generated skill with that name");
+	}
+
+	const dir = join(storeDir, name);
+	if ((await lstatIfPresent(dir)) !== undefined) {
+		// Only `SKILL.md` is the store's: anything else in the directory was put there by someone else and stays.
+		const children = await readdir(dir, { withFileTypes: true });
+		if (children.some((child) => child.name !== SKILL_FILE || !child.isFile())) {
+			throw new StoreError("user_authored", "skill directory holds files the store did not write");
+		}
+		await rm(join(dir, SKILL_FILE), { force: true });
+		await rmdir(dir);
+	}
+	await writeManifest(
+		storeDir,
+		entries.filter((entry) => entry.name !== name),
+	);
+}
+
+/** The manifest's entries. Missing manifest: none. Unreadable, unparseable or off-schema: `manifest_corrupt`, never replaced. */
+async function readManifest(storeDir: string): Promise<GeneratedEntry[]> {
+	const path = join(storeDir, MANIFEST);
+	let text: string;
+	try {
+		text = await readFile(path, "utf8");
+	} catch (error) {
+		if (errnoOf(error) === "ENOENT") return [];
+		throw error;
+	}
+	let raw: unknown;
+	try {
+		raw = JSON.parse(text);
+	} catch {
+		throw new StoreError("manifest_corrupt", "manifest.json is not valid JSON");
+	}
+	if (!isRecord(raw) || raw.schema !== MANIFEST_SCHEMA || !Array.isArray(raw.skills)) {
+		throw new StoreError("manifest_corrupt", "manifest.json does not match schema 1");
+	}
+	const entries: GeneratedEntry[] = [];
+	for (const item of raw.skills) {
+		const entry = parseEntry(item);
+		if (entry === undefined)
+			throw new StoreError("manifest_corrupt", "manifest.json has an invalid entry");
+		if (entries.some((seen) => seen.name === entry.name)) {
+			throw new StoreError("manifest_corrupt", "manifest.json lists a skill twice");
+		}
+		entries.push(entry);
+	}
+	return entries;
+}
+
+function parseEntry(raw: unknown): GeneratedEntry | undefined {
+	if (!isRecord(raw)) return undefined;
+	const { name, status, version, content_hash, generated_at, source_ids, stale } = raw;
+	if (!isSlug(name) || !isStatus(status) || raw.generated_by !== "auto") return undefined;
+	if (typeof version !== "number" || !Number.isInteger(version) || version < 1) return undefined;
+	if (typeof content_hash !== "string" || !HEX64_RE.test(content_hash)) return undefined;
+	if (typeof generated_at !== "string" || !ISO_UTC_RE.test(generated_at)) return undefined;
+	if (!isStringList(source_ids) || typeof stale !== "boolean") return undefined;
+	return {
+		name,
+		status,
+		generated_by: "auto",
+		version,
+		content_hash,
+		generated_at,
+		source_ids,
+		stale,
+	};
+}
+
+async function writeManifest(storeDir: string, entries: readonly GeneratedEntry[]): Promise<void> {
+	await mkdir(storeDir, { recursive: true, mode: 0o700 });
+	const sorted = [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	const body = `${JSON.stringify({ schema: MANIFEST_SCHEMA, skills: sorted }, null, "\t")}\n`;
+	await writeAtomic(join(storeDir, MANIFEST), body);
+}
+
+/** Temp file in the same directory, then rename. The temp file is removed when either step fails. */
+async function writeAtomic(path: string, content: string): Promise<void> {
+	const temp = join(
+		dirname(path),
+		`.${basename(path)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`,
+	);
+	let renamed = false;
+	try {
+		await writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: 0o644 });
+		await rename(temp, path);
+		renamed = true;
+	} finally {
+		if (!renamed) await rm(temp, { force: true });
+	}
+}
+
+/** Refuses a skill path that is not a plain directory, or a plain directory the manifest does not list. */
+async function assertOwnedOrAbsent(
+	storeDir: string,
+	name: string,
+	entries: readonly GeneratedEntry[],
+): Promise<void> {
+	const stat = await lstatIfPresent(join(storeDir, name));
+	if (stat === undefined) return;
+	if (!stat.isDirectory())
+		throw new StoreError("unsafe_path", "skill path is not a plain directory");
+	if (!entries.some((entry) => entry.name === name)) {
+		throw new StoreError("user_authored", "directory is not listed in the manifest");
+	}
+}
+
+async function assertRegularFile(path: string): Promise<void> {
+	const stat = await lstatIfPresent(path);
+	if (stat === undefined) throw new StoreError("skill_corrupt", "SKILL.md is missing");
+	if (!stat.isFile()) throw new StoreError("unsafe_path", "SKILL.md is not a regular file");
+}
+
+async function lstatIfPresent(path: string): Promise<Stats | undefined> {
+	try {
+		return await lstat(path);
+	} catch (error) {
+		if (errnoOf(error) === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+/** Returns the status line replaced inside the frontmatter, or undefined when the frontmatter has none. */
+function withFrontmatterStatus(text: string, status: GeneratedStatus): string | undefined {
+	const lines = text.split("\n");
+	if (lines[0] !== "---") return undefined;
+	const close = lines.indexOf("---", 1);
+	if (close === -1) return undefined;
+	const index = lines.findIndex((line, i) => i > 0 && i < close && line.startsWith("status:"));
+	if (index === -1) return undefined;
+	lines[index] = `status: ${status}`;
+	return lines.join("\n");
+}
+
+/** The first field that breaks the store's contract, or undefined. Name is checked by the caller first. */
+function inputProblem(skill: AutoSkill, nowIso: string): string | undefined {
+	if (!ISO_UTC_RE.test(nowIso)) return "nowIso";
+	if (skill.generated_by !== "auto") return "generated_by";
+	if (!isStatus(skill.status)) return "status";
+	if (!isSingleLine(skill.description)) return "description";
+	if (!isSingleLineList(skill.steps)) return "steps";
+	if (!isAppliesWhen(skill.applies_when)) return "applies_when";
+	if (!isSingleLineList(skill.source_ids)) return "source_ids";
+	if (!Number.isInteger(skill.version) || skill.version < 1) return "version";
+	if (typeof skill.stale !== "boolean") return "stale";
+	if (skill.content_hash !== contentHashOf(skill)) return "content_hash";
+	return undefined;
+}
+
+function renderSkill(skill: AutoSkill, entry: GeneratedEntry): string {
+	const description =
+		PLAIN_SCALAR_RE.test(skill.description) && !/\s$/.test(skill.description)
+			? skill.description
+			: JSON.stringify(skill.description);
+	const frontmatter = [
+		"---",
+		`name: ${skill.name}`,
+		`description: ${description}`,
+		`status: ${entry.status}`,
+		`generated_by: ${entry.generated_by}`,
+		`version: ${entry.version}`,
+		"---",
+	];
+	const when = skill.applies_when;
+	const sections: Array<[heading: string, lines: string[]]> = [
+		[
+			"Applies when",
+			[
+				...when.task_types.map((type) => `- task type: ${type}`),
+				...when.scope_globs.map((glob) => `- scope: ${glob}`),
+				...when.error_signatures.map((signature) => `- error: ${signature}`),
+			],
+		],
+		["Steps", skill.steps.map((step, i) => `${i + 1}. ${step}`)],
+		["Sources", skill.source_ids.map((id) => `- ${id}`)],
+	];
+	const body = sections.map(([heading, lines]) => `## ${heading}\n\n${lines.join("\n")}`);
+	return `${[...frontmatter, "", ...body].join("\n")}\n`;
+}
+
+function isSlug(name: unknown): name is string {
+	return typeof name === "string" && NAME_RE.test(name);
+}
+
+function isStatus(value: unknown): value is GeneratedStatus {
+	return value === "draft" || value === "disabled";
+}
+
+function isSingleLine(text: unknown): text is string {
+	return typeof text === "string" && text.trim() !== "" && !LINE_BREAK_RE.test(text);
+}
+
+function isSingleLineList(items: unknown): items is string[] {
+	return Array.isArray(items) && items.every(isSingleLine);
+}
+
+function isStringList(items: unknown): items is string[] {
+	return Array.isArray(items) && items.every((item) => typeof item === "string");
+}
+
+function isAppliesWhen(value: unknown): value is AutoSkill["applies_when"] {
+	if (!isRecord(value)) return false;
+	return (
+		isSingleLineList(value.task_types) &&
+		isSingleLineList(value.scope_globs) &&
+		isSingleLineList(value.error_signatures)
+	);
+}
+
+function errnoOf(error: unknown): string | undefined {
+	if (error instanceof Error && "code" in error && typeof error.code === "string")
+		return error.code;
+	return undefined;
+}
+
+/** Typed failures become results; any other error is a bug and propagates. */
+function failureOf(error: unknown): StoreFailure {
+	if (error instanceof StoreError) return { ok: false, reason: error.reason, detail: error.detail };
+	const code = errnoOf(error);
+	if (code !== undefined) return { ok: false, reason: "io_error", detail: code };
+	throw error;
+}
