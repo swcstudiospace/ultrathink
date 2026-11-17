@@ -8,7 +8,8 @@
  * Resolution order for ToT, first hit wins:
  *   1. the user's override (`models.tot.model`), used as written;
  *   2. the host's own model list and pricing, when the caller injects one: the cheapest allowlisted entry of the selected
- *      model's provider;
+ *      model's provider, by input price (an exact tie goes to the earlier model of the configured candidates). A listed
+ *      provider whose callable models publish no input price refuses with `PRD_NO_PRICE` (a `TotRefusal`);
  *   3. the configured per-provider candidate list for tier "prd" (`models.tot.candidates`, defaults in `route-defaults.ts`);
  *   4. the selected model.
  * Steps 2 and 3 only offer a model that is on the allowlist (every id in the candidate map), reported available by the
@@ -73,6 +74,23 @@ export function createSmokeCache(): SmokeCache {
 const PROCESS_SMOKE_CACHE = createSmokeCache();
 
 const SMOKE_TIMEOUT_MS = 20_000;
+
+/** The codes of a ToT refusal: the stage writes no PRD and reports the code as its `error`. */
+export const PRD_NO_PRICE = "PRD_NO_PRICE";
+export const PRD_NO_SELECTED_MODEL = "PRD_NO_SELECTED_MODEL";
+
+export type TotRefusalCode = typeof PRD_NO_PRICE | typeof PRD_NO_SELECTED_MODEL;
+
+/** A ToT refusal. Its message is the code, so the code reads the same wherever it is logged or returned. */
+export class TotRefusal extends Error {
+	readonly code: TotRefusalCode;
+
+	constructor(code: TotRefusalCode) {
+		super(code);
+		this.name = "TotRefusal";
+		this.code = code;
+	}
+}
 
 export interface ToTRouteContext {
 	readonly config: Pick<UltrathinkConfig, "models">;
@@ -180,12 +198,6 @@ function logDecision(
 	);
 }
 
-function price(entry: HostModelInfo): number | undefined {
-	if (entry.inputPricePerMTok === undefined && entry.outputPricePerMTok === undefined)
-		return undefined;
-	return (entry.inputPricePerMTok ?? 0) + (entry.outputPricePerMTok ?? 0);
-}
-
 async function safely<T>(run: () => T | Promise<T>): Promise<T | undefined> {
 	try {
 		return await run();
@@ -229,7 +241,11 @@ async function smokeCheck(
 	return ok;
 }
 
-/** Resolves the model the ToT PRD stage runs on. Never throws for a host or probe failure: it falls back to the selected model. */
+/**
+ * Resolves the model the ToT PRD stage runs on. Never throws for a host or probe failure: it falls back to the selected
+ * model. The one refusal is a `TotRefusal` with `PRD_NO_PRICE`, thrown when the host lists callable models of the
+ * provider and none publishes an input price.
+ */
 export async function resolveToTModel(ctx: ToTRouteContext): Promise<ModelChoice> {
 	const host = ctx.host ?? detectHost();
 	const tot = ctx.config.models.tot;
@@ -280,8 +296,11 @@ export async function resolveToTModel(ctx: ToTRouteContext): Promise<ModelChoice
 	if (ranked.length === 0) {
 		return selected(`no tot candidates configured for provider ${selectedProvider}`, true);
 	}
-	const allowlist = new Set<string>();
-	for (const ids of Object.values(tot.candidates)) for (const id of ids) allowlist.add(id);
+	// The configured callable list in config order: the allowlist, and the tie order of host-listed candidates.
+	const allowlist = new Map<string, number>();
+	for (const ids of Object.values(tot.candidates)) {
+		for (const id of ids) if (!allowlist.has(id)) allowlist.set(id, allowlist.size);
+	}
 
 	const tried = new Set<string>();
 	const usable = async (modelId: string): Promise<boolean> => {
@@ -295,37 +314,33 @@ export async function resolveToTModel(ctx: ToTRouteContext): Promise<ModelChoice
 
 	const listed = ctx.listModels ? await safely(ctx.listModels) : undefined;
 	if (listed) {
-		const rank = (id: string): number => {
-			const at = ranked.indexOf(id);
-			return at === -1 ? Number.MAX_SAFE_INTEGER : at;
-		};
-		const eligible = listed
-			.filter(
-				(entry) =>
-					allowlist.has(entry.modelId) &&
-					entry.available !== false &&
-					providerFamily(entry.provider, entry.modelId, host) === selectedProvider,
-			)
-			.sort((a, b) => {
-				const pa = price(a);
-				const pb = price(b);
-				if (pa !== undefined && pb !== undefined && pa !== pb) return pa - pb;
-				if ((pa === undefined) !== (pb === undefined)) return pa === undefined ? 1 : -1;
-				return rank(a.modelId) - rank(b.modelId);
-			});
-		for (const entry of eligible) {
+		const eligible = listed.filter(
+			(entry) =>
+				allowlist.has(entry.modelId) &&
+				entry.available !== false &&
+				providerFamily(entry.provider, entry.modelId, host) === selectedProvider,
+		);
+		// Callable models are listed, but none publishes an input price: there is no cheapest one to pick.
+		if (eligible.length > 0 && eligible.every((entry) => entry.inputPricePerMTok === undefined)) {
+			throw new TotRefusal(PRD_NO_PRICE);
+		}
+		// Cheapest input price first. An exact tie goes to the earlier model of the configured callable list, never to
+		// the order the host lists models in.
+		const priced = eligible.flatMap((entry) => {
+			if (entry.inputPricePerMTok === undefined) return [];
+			const order = allowlist.get(entry.modelId) ?? Number.MAX_SAFE_INTEGER;
+			return [{ entry, price: entry.inputPricePerMTok, order }];
+		});
+		priced.sort((a, b) => a.price - b.price || a.order - b.order);
+		for (const { entry, price } of priced) {
 			if (tried.has(entry.modelId)) continue;
 			if (await usable(entry.modelId)) {
-				const cost = price(entry);
 				return finish({
 					choice: {
 						modelId: entry.modelId,
 						provider: selectedProvider,
 						source: "host-list",
-						reason:
-							cost === undefined
-								? "cheapest host-listed candidate (unpriced)"
-								: `cheapest host-listed candidate (${cost}/MTok)`,
+						reason: `cheapest host-listed candidate (${price}/MTok input)`,
 					},
 					warning: false,
 				});

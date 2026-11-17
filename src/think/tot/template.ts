@@ -7,7 +7,7 @@ import { defangMarkup } from "./escape.ts";
 import type { PrdCodeBlock, PrdDocument, PrdLimits, PrdRequest } from "./types.ts";
 
 /** Bump when the rendered shape changes: it is part of every checkpoint's input hash. */
-export const PRD_TEMPLATE_VERSION = 1;
+export const PRD_TEMPLATE_VERSION = 2;
 
 /** A PRD this long is a design essay, not a hand-off for one Sub Issue. */
 export const DEFAULT_PRD_LIMITS: PrdLimits = { maxLines: 150, maxChars: 6000 };
@@ -22,6 +22,7 @@ export const PRD_SECTIONS = [
 	"Test Skeleton",
 	"Assumptions",
 	"Link to the CoT Sub Issue",
+	"Code Blocked PRD",
 ] as const;
 
 type PrdSectionTitle = (typeof PRD_SECTIONS)[number];
@@ -114,6 +115,9 @@ export function renderPrd(
 		`- Sub Issue: \`${span(request.key, 80)}\` — ${inline(request.title, 160)}`,
 		`- Graph: \`${span(request.graphId, 80)}\` · node \`${span(request.nodeId, 64)}\` · step ${request.step}`,
 		...(options.linkUrl ? [`- URL: ${inline(options.linkUrl, 300)}`] : []),
+	]);
+	section("Code Blocked PRD", [
+		"Blocked until a reviewer confirms the acceptance criteria above and approves this Sub Issue for implementation.",
 	]);
 	return `${defangMarkup(out.join("\n")).trimEnd()}\n`;
 }
@@ -236,7 +240,7 @@ function sectionIssues(scanned: Scan, key: string | undefined): string[] {
 		);
 		return issues;
 	}
-	const [objective, criteria, affected, interfaces, , , , link] = scanned.sections;
+	const [objective, criteria, affected, interfaces, , , , link, blocked] = scanned.sections;
 	if (objective?.body.join("").trim() === "") issues.push("Objective is empty");
 	if (bullets(criteria?.body ?? []).length === 0)
 		issues.push("Acceptance Criteria needs at least one bullet");
@@ -253,6 +257,9 @@ function sectionIssues(scanned: Scan, key: string | undefined): string[] {
 	if (inSection(5) === 0) issues.push("Test Skeleton needs a fenced code block");
 	if (key !== undefined && !(link?.body.join("\n") ?? "").includes(key)) {
 		issues.push(`Link to the CoT Sub Issue must name the Sub Issue key ${key}`);
+	}
+	if (!(blocked?.body ?? []).some((line) => line.startsWith("Blocked until"))) {
+		issues.push("Code Blocked PRD needs a 'Blocked until' line");
 	}
 	return issues;
 }
