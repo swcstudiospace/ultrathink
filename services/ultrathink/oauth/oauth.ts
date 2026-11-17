@@ -579,8 +579,9 @@ export function writeFileDurably(
 	io: DurableFs = nodeFs,
 ): void {
 	io.mkdirSync(dir, { recursive: true, mode: 0o700 });
-	const tmp = `${path}.${process.pid}.tmp`;
-	const fd = io.openSync(tmp, "w", 0o600);
+	// An unpredictable name, created exclusively: a symlink planted at a guessable path is never followed.
+	const tmp = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+	const fd = io.openSync(tmp, "wx", 0o600);
 	try {
 		io.fchmodSync(fd, 0o600);
 		io.writeFileSync(fd, content);
@@ -1144,7 +1145,8 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		);
 		try {
 			persist();
-		} catch {
+		} catch (error) {
+			logger.error("exchangeCode: state save failed", { error: failureLabel(error) });
 			restoreStore(snapshot);
 			return oauthError(500, "server_error", "OAuth state could not be saved.");
 		}
@@ -1185,7 +1187,8 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		);
 		try {
 			persist();
-		} catch {
+		} catch (error) {
+			logger.error("refreshGrant: state save failed", { error: failureLabel(error) });
 			restoreStore(snapshot);
 			return oauthError(500, "server_error", "OAuth state could not be saved.");
 		}

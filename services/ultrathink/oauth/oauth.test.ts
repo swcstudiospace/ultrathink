@@ -2100,15 +2100,58 @@ describe("durable state writes", () => {
 		expect(readFileSync(path, "utf8")).toBe("old");
 		expect(readdirSync(dir)).toEqual(["state.json"]);
 	});
+
+	test("a symlink planted at the old predictable temp name is not followed", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-oauth-durable-"));
+		harnessDirs.push(dir);
+		const path = join(dir, "state.json");
+		const victim = join(dir, "victim.txt");
+		writeFileSync(victim, "keep");
+		nodeFs.symlinkSync(victim, `${path}.${process.pid}.tmp`);
+		writeFileDurably(dir, path, '{"a":1}');
+		expect(readFileSync(victim, "utf8")).toBe("keep");
+		expect(readFileSync(path, "utf8")).toBe('{"a":1}');
+		expect(statSync(path).mode & 0o777).toBe(0o600);
+		expect(readdirSync(dir).sort()).toEqual([
+			"state.json",
+			`state.json.${process.pid}.tmp`,
+			"victim.txt",
+		]);
+	});
+
+	test("each write opens a fresh temp name exclusively", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ultrathink-oauth-durable-"));
+		harnessDirs.push(dir);
+		const path = join(dir, "state.json");
+		const opened: { file: string; flags: string }[] = [];
+		const io: DurableFs = {
+			...nodeFs,
+			openSync(file, flags, mode) {
+				opened.push({ file: String(file), flags: String(flags) });
+				return nodeFs.openSync(file, flags, mode);
+			},
+		};
+		writeFileDurably(dir, path, "one", io);
+		writeFileDurably(dir, path, "two", io);
+		const temps = opened.filter((call) => call.file !== dir);
+		expect(temps.map((call) => call.flags)).toEqual(["wx", "wx"]);
+		expect(temps[0]?.file).not.toBe(temps[1]?.file);
+		expect(readFileSync(path, "utf8")).toBe("two");
+		expect(readdirSync(dir)).toEqual(["state.json"]);
+	});
 });
 
 describe("OAuth token rollback when the state save fails", () => {
-	// writeFileDurably opens `<state>.<pid>.tmp` before it writes anything. A directory at that path makes
-	// the open fail, so persist() throws and the store never reaches disk. Removing it restores normal saves.
-	function blockStateSave(h: Harness): string {
-		const blocker = `${h.statePath}.${process.pid}.tmp`;
-		nodeFs.mkdirSync(blocker);
-		return blocker;
+	// writeFileDurably renames its temp file over the state file. A directory at the state path makes that rename
+	// fail, so persist() throws and the store never reaches disk. The returned function puts the state file back.
+	function blockStateSave(h: Harness): () => void {
+		const aside = `${h.statePath}.blocked`;
+		nodeFs.renameSync(h.statePath, aside);
+		nodeFs.mkdirSync(h.statePath);
+		return () => {
+			rmSync(h.statePath, { recursive: true, force: true });
+			nodeFs.renameSync(aside, h.statePath);
+		};
 	}
 
 	test("exchangeCode save-failure rollback restores the unused code and issues no tokens", async () => {
@@ -2124,13 +2167,13 @@ describe("OAuth token rollback when the state save fails", () => {
 			resource: RESOURCE,
 		};
 		const before = readFileSync(h.statePath, "utf8");
-		const blocker = blockStateSave(h);
+		const unblock = blockStateSave(h);
 		try {
 			const failed = await tokenCall(h, fields);
 			expect(failed.status).toBe(500);
 			expect((await bodyOf(failed)).error).toBe("server_error");
 		} finally {
-			rmSync(blocker, { recursive: true, force: true });
+			unblock();
 		}
 		expect(readFileSync(h.statePath, "utf8")).toBe(before);
 		expect(readdirSync(h.dir)).toEqual(["oauth.json"]);
@@ -2152,13 +2195,13 @@ describe("OAuth token rollback when the state save fails", () => {
 			refresh_token: first.refresh,
 			client_id: clientId,
 		};
-		const blocker = blockStateSave(h);
+		const unblock = blockStateSave(h);
 		try {
 			const failed = await tokenCall(h, fields);
 			expect(failed.status).toBe(500);
 			expect((await bodyOf(failed)).error).toBe("server_error");
 		} finally {
-			rmSync(blocker, { recursive: true, force: true });
+			unblock();
 		}
 		expect(readFileSync(h.statePath, "utf8")).toBe(before);
 		expect(readdirSync(h.dir)).toEqual(["oauth.json"]);
@@ -2168,6 +2211,83 @@ describe("OAuth token rollback when the state save fails", () => {
 		const rotated = await bodyOf(retry);
 		expect(typeof rotated.access_token).toBe("string");
 		expect(h.oauth.verifyAccessToken(rotated.access_token as string)).toBe(true);
+	});
+
+	test("a failed exchangeCode save logs one error naming the failure and the error class", async () => {
+		const errors: { event: string; fields?: Record<string, unknown> }[] = [];
+		const logger: Logger = {
+			info() {
+				// reason: info logs are not asserted here
+			},
+			warn() {
+				// reason: warn logs are not asserted here
+			},
+			error(event, fields) {
+				errors.push({ event, fields });
+			},
+		};
+		const h = await makeHarness({ logger });
+		const clientId = await registered(h);
+		const { code, verifier, redirect } = await authorizedCode(h, clientId);
+		const fields = {
+			grant_type: "authorization_code",
+			code,
+			code_verifier: verifier,
+			client_id: clientId,
+			redirect_uri: redirect,
+			resource: RESOURCE,
+		};
+		const before = readFileSync(h.statePath, "utf8");
+		const unblock = blockStateSave(h);
+		try {
+			const failed = await tokenCall(h, fields);
+			expect(failed.status).toBe(500);
+		} finally {
+			unblock();
+		}
+		expect(errors).toEqual([
+			{ event: "exchangeCode: state save failed", fields: { error: "EISDIR" } },
+		]);
+		expect(JSON.stringify(errors)).not.toContain(code);
+		expect(readFileSync(h.statePath, "utf8")).toBe(before);
+		expect(readdirSync(h.dir)).toEqual(["oauth.json"]);
+	});
+
+	test("a failed refreshGrant save logs one error naming the failure and the error class", async () => {
+		const errors: { event: string; fields?: Record<string, unknown> }[] = [];
+		const logger: Logger = {
+			info() {
+				// reason: info logs are not asserted here
+			},
+			warn() {
+				// reason: warn logs are not asserted here
+			},
+			error(event, fields) {
+				errors.push({ event, fields });
+			},
+		};
+		const h = await makeHarness({ logger });
+		const clientId = await registered(h);
+		const first = await grant(h, clientId);
+		const fields = {
+			grant_type: "refresh_token",
+			refresh_token: first.refresh,
+			client_id: clientId,
+		};
+		const before = readFileSync(h.statePath, "utf8");
+		const unblock = blockStateSave(h);
+		try {
+			const failed = await tokenCall(h, fields);
+			expect(failed.status).toBe(500);
+		} finally {
+			unblock();
+		}
+		expect(errors).toEqual([
+			{ event: "refreshGrant: state save failed", fields: { error: "EISDIR" } },
+		]);
+		expect(JSON.stringify(errors)).not.toContain(first.refresh);
+		expect(readFileSync(h.statePath, "utf8")).toBe(before);
+		expect(readdirSync(h.dir)).toEqual(["oauth.json"]);
 	});
 });
 
