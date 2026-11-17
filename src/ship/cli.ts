@@ -6,7 +6,7 @@
  */
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { withFileLock } from "../claude/atomic.ts";
+import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
 import type { ClaudeCompleter } from "../claude/complete.ts";
 import type { SessionRecord } from "../claude/state.ts";
 import { defaultStateDir, HOOK_LOCK, readControl } from "../claude/state.ts";
@@ -175,6 +175,51 @@ function readRecord(statePath: string): ShipRecord | undefined {
 /** A step's result when its ship state write did not land: nothing is recorded, so the step fails. */
 function stateWriteFailed(): Output & { ok: false } {
 	return { ok: false, error: STATE_WRITE_ERROR, next: NEXT_STATE_WRITE };
+}
+
+/**
+ * Writes a review's round and phase under the state lock, onto the rounds the state holds now: the review ran with no
+ * lock held, so a round another run recorded meanwhile is kept. `replaces` (a reused round) is swapped for this round in
+ * place; otherwise this round is appended. The rest of the ship is merged as `writeShip` does. False when the state file
+ * cannot be written.
+ */
+function writeReviewRound(
+	statePath: string,
+	round: { result: ReviewResult; replaces?: ReviewResult },
+	patch: Partial<ShipState>,
+	now: number,
+): boolean {
+	return withFileLock(
+		statePath,
+		() => {
+			const record = readRecord(statePath);
+			if (!record) return false;
+			const prior: Partial<ShipState> = record.ship ?? {};
+			const current = prior.rounds ?? [];
+			const { result, replaces } = round;
+			const index =
+				replaces === undefined
+					? -1
+					: current.findLastIndex(
+							(entry) =>
+								entry.at === replaces.at &&
+								entry.headSha === replaces.headSha &&
+								entry.status === replaces.status,
+						);
+			const rounds =
+				index < 0
+					? [...current, result]
+					: current.map((entry, i) => (i === index ? result : entry));
+			const ship: ShipState = { phase: "not-done", ...prior, ...patch, rounds, updatedAt: now };
+			try {
+				writeFileAtomic(statePath, `${JSON.stringify({ ...record, ship }, null, 2)}\n`);
+				return true;
+			} catch {
+				return false;
+			}
+		},
+		HOOK_LOCK,
+	);
 }
 
 interface Ctx {
@@ -524,7 +569,14 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 		attempts = logged.attempts ?? [...attempts, attempt];
 	}
 	// The round is recorded before the stop comment: a failed write posts no comment for a stop the state lacks.
-	if (!writeShip(statePath, { rounds, phase, blockedReason, pending: undefined }, now))
+	if (
+		!writeReviewRound(
+			statePath,
+			{ result, replaces: reusedRound ? prior : undefined },
+			{ phase, blockedReason, pending: undefined },
+			now,
+		)
+	)
 		return { ...stateWriteFailed(), ready: false };
 	let commented: boolean | undefined;
 	if (blockedReason && status.state === "OPEN" && !reusedRound && ship.phase !== "blocked") {

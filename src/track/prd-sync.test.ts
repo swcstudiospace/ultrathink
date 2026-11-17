@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PrdRecord } from "../think/tot/types.ts";
@@ -506,5 +506,59 @@ describe("secrets", () => {
 		expect(linear.description).not.toContain(SECRET);
 		expect(JSON.stringify(notion.blocks)).not.toContain(SECRET);
 		expect(existsSync(first.ledgerPath)).toBe(true);
+	});
+});
+
+describe("ledger writes", () => {
+	test("overlapping syncs of one graph keep each other's entries", async () => {
+		const linear = linearMock();
+		const notion = notionMock();
+		const d = deps({
+			refs: { linear: refs.linear, notion: { steps: { "n1.2": PAGE_URL } } },
+		});
+		const first = syncPrds([prd("linear side", "a".repeat(64), "n1.1")], {
+			...d,
+			linear: linear.caller,
+		});
+		const second = syncPrds([prd("notion side", "b".repeat(64), "n1.2")], {
+			...d,
+			notion: notion.caller,
+		});
+		const [a, b] = await Promise.all([first, second]);
+		expect(a.keys[0]?.linear.outcome).toBe("created");
+		expect(b.keys[0]?.notion.outcome).toBe("created");
+		const ledger = JSON.parse(readFileSync(a.ledgerPath, "utf8"));
+		const entry = (key: string) => ledger.entries.find((e: { key: string }) => e.key === key);
+		expect(entry("n1.1").linear).toMatchObject({
+			status: "synced",
+			url: "https://linear.app/t/issue/ENG-1",
+		});
+		expect(entry("n1.1").linearIssueId).toBe("ENG-1");
+		expect(entry("n1.2").notion).toMatchObject({ status: "synced", url: PAGE_URL });
+	});
+
+	test("a ledger lock that cannot be taken fails the sync with an explicit error and leaves the ledger unchanged", async () => {
+		const linear = linearMock();
+		const d = deps({ linear: linear.caller });
+		const first = await syncPrds([prd("first", "a".repeat(64))], d);
+		const before = readFileSync(first.ledgerPath, "utf8");
+		const calls = linear.calls.length;
+		// Another writer holds the lock. Its record names this live process with no start identity, so it is never
+		// reclaimed as dead, and its mtime is fresh.
+		writeFileSync(
+			`${first.ledgerPath}.lock`,
+			JSON.stringify({ pid: process.pid, startTime: "", token: "held" }),
+		);
+		// The lock wait reads this clock: each read jumps past its timeout, so the wait ends without sleeping.
+		let tick = 0;
+		const clock = spyOn(Date, "now").mockImplementation(() => (tick += 60_000));
+		const report = await syncPrds([prd("second", "b".repeat(64))], d).finally(() =>
+			clock.mockRestore(),
+		);
+		expect(report.keys[0]?.state).toBe("pending");
+		expect(report.keys[0]?.linear.errorClass).toBe("local-write");
+		expect(report.keys[0]?.linear.error).toContain("still held");
+		expect(linear.calls.length).toBe(calls);
+		expect(readFileSync(first.ledgerPath, "utf8")).toBe(before);
 	});
 });

@@ -764,6 +764,65 @@ describe("runShip", () => {
 		expect(calls).toEqual([]);
 	});
 
+	test("a round another run records during the review is kept when this review's round is written", async () => {
+		writeShip(statePath, { pr: PR, phase: "pr-open" });
+		const other: ReviewResult = {
+			source: "cli",
+			status: "completed",
+			score: 2,
+			comments: [],
+			headSha: "other",
+			at: 2,
+		};
+		const d = deps();
+		const review = d.review;
+		d.review = async (input) => {
+			writeShip(statePath, { rounds: [other] });
+			return review(input);
+		};
+		const out = await ship("review", d);
+		expect(out.output).toMatchObject({ ok: true, ready: true });
+		expect(readShip(statePath)?.rounds).toMatchObject([
+			{ headSha: "other" },
+			{ headSha: "abc", score: 5 },
+		]);
+	});
+
+	test("a reused round is replaced in place, not duplicated, and another run's round stays", async () => {
+		const open = { body: "intended behavior", path: "a.ts", threadId: "T1" };
+		const other: ReviewResult = {
+			source: "cli",
+			status: "completed",
+			score: 2,
+			comments: [],
+			headSha: "other",
+			at: 2,
+		};
+		const round: ReviewResult = {
+			source: "pr",
+			status: "completed",
+			score: 5,
+			comments: [open],
+			headSha: "abc",
+			at: 1,
+		};
+		writeShip(statePath, { pr: PR, rounds: [other, round] });
+		const resolved = {
+			id: "T1",
+			isResolved: true,
+			isOutdated: false,
+			author: "greptile-apps",
+			body: "intended behavior",
+		};
+		const threads: ReviewThreads = { ok: true, threads: [resolved] };
+		const cleared = await ship("review", deps({ threads }));
+		expect(cleared.output).toMatchObject({ reused: true, ready: true, round: 2, comments: [] });
+		expect(readShip(statePath)?.rounds).toMatchObject([
+			{ headSha: "other" },
+			{ headSha: "abc", comments: [] },
+		]);
+	});
+
 	test("a reused PR round re-reads threads: a resolved finding clears; a failed lookup is not ready and persists nothing", async () => {
 		const open = { body: "intended behavior", path: "a.ts", threadId: "T1" };
 		const round: ReviewResult = {

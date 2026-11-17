@@ -15,7 +15,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeFileAtomic } from "../claude/atomic.ts";
+import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
+import { CLI_LOCK } from "../claude/state.ts";
 import { resolveStateDir } from "../host/paths.ts";
 import { notionPageId } from "../mcp/notion-db.ts";
 import { redactSecrets } from "../redact.ts";
@@ -503,25 +504,19 @@ interface Ctx {
 	root: string;
 	ledgerPath: string;
 	entries: Map<string, LedgerEntry>;
+	/**
+	 * What this sync changed, per key: the trackers whose state it wrote (none for a local-copy change alone). Each persist
+	 * lays only these onto the ledger file's current entries, so another sync's changes survive.
+	 */
+	dirty: Map<string, Set<TrackerName>>;
 	now: () => number;
 	log: (message: string) => void;
 	/** Providers that refused the whole account (auth, quota): the rest of the run does not call them. */
 	refused: Partial<Record<TrackerName, Failure>>;
 }
 
-function persist(ctx: Ctx): void {
-	const ledger: PrdLedger = {
-		version: 1,
-		graphId: ctx.deps.graphId,
-		entries: [...ctx.entries.values()],
-	};
-	writeFileAtomic(ctx.ledgerPath, `${JSON.stringify(ledger, null, "\t")}\n`);
-}
-
-function makeCtx(deps: SyncDeps): Ctx {
-	const root = join(deps.stateDir ?? resolveStateDir(), "prd-sync", sanitizeSegment(deps.graphId));
-	const ledgerPath = join(root, "ledger.json");
-	const log = deps.log ?? (() => undefined);
+/** The ledger file's entries by key: a missing file is empty; an unreadable one is logged and read as empty. */
+function readLedger(ledgerPath: string, log: (message: string) => void): Map<string, LedgerEntry> {
 	const entries = new Map<string, LedgerEntry>();
 	try {
 		const parsed = asRecord(JSON.parse(readFileSync(ledgerPath, "utf8")));
@@ -536,13 +531,76 @@ function makeCtx(deps: SyncDeps): Ctx {
 			log(`prd-sync: ledger unreadable, starting empty: ${shortText(error)}`);
 		}
 	}
+	return entries;
+}
+
+/** Records that this sync changed `key`: its local copy, and the `tracker` state when one is given. */
+function markDirty(ctx: Ctx, key: string, tracker?: TrackerName): void {
+	const trackers = ctx.dirty.get(key) ?? new Set<TrackerName>();
+	if (tracker !== undefined) trackers.add(tracker);
+	ctx.dirty.set(key, trackers);
+}
+
+/**
+ * The file's entry for one key with this sync's changes laid over it: the local copy's hash and path, and each tracker
+ * this sync wrote with its ids. A tracker this sync did not write keeps the file's state.
+ */
+function mergeEntry(
+	current: LedgerEntry | undefined,
+	ours: LedgerEntry,
+	trackers: ReadonlySet<TrackerName>,
+): LedgerEntry {
+	if (current === undefined) return ours;
+	const merged: LedgerEntry = { ...current, hash: ours.hash, localPath: ours.localPath };
+	if (trackers.has("linear")) {
+		merged.linear = ours.linear;
+		merged.linearIssueId = ours.linearIssueId;
+	}
+	if (trackers.has("notion")) {
+		merged.notion = ours.notion;
+		merged.notionPageId = ours.notionPageId;
+		merged.notionStagedIds = ours.notionStagedIds;
+	}
+	return merged;
+}
+
+/**
+ * Writes this sync's changes under the ledger's lock. The file is re-read inside the lock and only what this sync
+ * touched is laid over it, so a concurrent sync's entries survive. A lock that cannot be taken throws (after
+ * `CLI_LOCK`'s wait, a `LockTimeoutError`): nothing is written, and the ledger is never written unlocked.
+ */
+function persist(ctx: Ctx): void {
+	withFileLock(
+		ctx.ledgerPath,
+		() => {
+			const entries = readLedger(ctx.ledgerPath, ctx.log);
+			for (const [key, trackers] of ctx.dirty) {
+				const ours = ctx.entries.get(key);
+				if (ours) entries.set(key, mergeEntry(entries.get(key), ours, trackers));
+			}
+			const ledger: PrdLedger = {
+				version: 1,
+				graphId: ctx.deps.graphId,
+				entries: [...entries.values()],
+			};
+			writeFileAtomic(ctx.ledgerPath, `${JSON.stringify(ledger, null, "\t")}\n`);
+		},
+		{ ...CLI_LOCK, createParent: true },
+	);
+}
+
+function makeCtx(deps: SyncDeps): Ctx {
+	const root = join(deps.stateDir ?? resolveStateDir(), "prd-sync", sanitizeSegment(deps.graphId));
+	const ledgerPath = join(root, "ledger.json");
+	const log = deps.log ?? (() => undefined);
 	return {
 		deps,
 		policy: deps.retryPolicy ?? RETRY_POLICY,
 		notionTools: { ...DEFAULT_NOTION_TOOLS, ...deps.notionTools },
 		root,
 		ledgerPath,
-		entries,
+		entries: readLedger(ledgerPath, log),
+		dirty: new Map(),
 		now: deps.now ?? Date.now,
 		log,
 		refused: {},
@@ -627,6 +685,8 @@ async function runTracker(
 		};
 	}
 	if (ctx.deps.signal?.aborted) return pendingResult("aborted", "aborted");
+	// Marked before this tracker's first change, so every persist of this write carries its state.
+	markDirty(ctx, entry.key, name);
 	const refused = ctx.refused[name];
 	if (refused) {
 		tracker.status = "failed";
@@ -641,20 +701,9 @@ async function runTracker(
 		};
 	}
 	const counter: Counter = { n: 0 };
+	let result: WriteResult;
 	try {
-		const result = await write(counter);
-		tracker.status = "synced";
-		tracker.lastHash = entry.hash;
-		delete tracker.errorClass;
-		if (result.url !== undefined) tracker.url = result.url;
-		tracker.attempts += counter.n;
-		tracker.updatedAt = ctx.now();
-		persist(ctx);
-		return {
-			outcome: result.outcome,
-			attempts: counter.n,
-			...(result.url === undefined ? {} : { url: result.url }),
-		};
+		result = await write(counter);
 	} catch (error) {
 		const failure = describeFailure(error);
 		tracker.status = failure.retryable ? "pending" : "failed";
@@ -673,6 +722,19 @@ async function runTracker(
 			error: failure.message,
 		};
 	}
+	// Outside the catch above: a ledger write that fails (lock) is not recorded as a tracker failure.
+	tracker.status = "synced";
+	tracker.lastHash = entry.hash;
+	delete tracker.errorClass;
+	if (result.url !== undefined) tracker.url = result.url;
+	tracker.attempts += counter.n;
+	tracker.updatedAt = ctx.now();
+	persist(ctx);
+	return {
+		outcome: result.outcome,
+		attempts: counter.n,
+		...(result.url === undefined ? {} : { url: result.url }),
+	};
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -965,9 +1027,11 @@ export async function syncPrds(records: readonly PrdRecord[], deps: SyncDeps): P
 			if (entry) {
 				entry.hash = hash;
 				entry.localPath = localPath;
-				for (const tracker of [entry.linear, entry.notion]) {
+				for (const name of ["linear", "notion"] as const) {
+					const tracker = entry[name];
 					if (!deps.resume && tracker.status === "synced" && tracker.lastHash !== hash) {
 						tracker.status = "pending";
+						markDirty(ctx, record.key, name);
 					}
 				}
 			} else {
@@ -981,6 +1045,7 @@ export async function syncPrds(records: readonly PrdRecord[], deps: SyncDeps): P
 				};
 				ctx.entries.set(record.key, entry);
 			}
+			markDirty(ctx, record.key);
 			items.push({ entry, markdown: clean });
 		} catch (error) {
 			localError = shortText(error);
