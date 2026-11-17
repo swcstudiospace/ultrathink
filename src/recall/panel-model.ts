@@ -42,7 +42,7 @@ type PanelExcludedReason =
 	| "trimmed_budget";
 /** Why an expected source has no item. Closed. */
 type PanelMissingReason = "index_empty" | "no_match" | "not_generated" | "source_unavailable";
-type PanelSourceKind = "greptile_doc" | "lesson" | "skill";
+type PanelSourceKind = "greptile_doc" | "lesson" | "skill" | "substrate_brief";
 type PanelScoreKind = "lexical_overlap" | "confidence";
 type PanelScoreDirection = "higher_is_better" | "lower_is_better";
 

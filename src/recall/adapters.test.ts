@@ -2,7 +2,12 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import type { LessonRow, LessonsLookup, SkillRow, SkillsLookup } from "../teach/types.ts";
-import { lessonsLookupToPanel, skillsLookupToPanel } from "./adapters.ts";
+import {
+	lessonsLookupToPanel,
+	skillsLookupToPanel,
+	type SubstrateBriefInput,
+	substrateBriefToPanel,
+} from "./adapters.ts";
 import { type PanelBody, type PanelEnvelope, PREVIEW_MAX_CHARS } from "./panel-model.ts";
 
 const FLOOR = 0.5;
@@ -294,5 +299,117 @@ describe("skillsLookupToPanel", () => {
 				reason: "no_match",
 			},
 		);
+	});
+});
+
+describe("substrateBriefToPanel", () => {
+	const briefItem = {
+		id: "substrate_brief:brief",
+		title: "Substrate brief",
+		preview: "Ship the migration first.",
+		source: { kind: "substrate_brief" as const, ref: "brief" },
+		timestamp: null,
+		matchReason: "Cross-agent brief for this repository",
+		itemStatus: "returned" as const,
+	};
+
+	function brief(over: Partial<SubstrateBriefInput> = {}): SubstrateBriefInput {
+		return { text: "Ship the migration first.", state: "complete", ...over };
+	}
+
+	test("a complete brief with text is a success with the brief as its one item", () => {
+		expect(substrateBriefToPanel(brief())).toEqual({
+			status: "success",
+			items: [briefItem],
+			excluded: [],
+			missing: [],
+			stages: [],
+		});
+	});
+
+	test("the brief preview is escaped and capped to PREVIEW_MAX_CHARS with an ellipsis", () => {
+		const envelope = substrateBriefToPanel(brief({ text: `<b>${"a".repeat(PREVIEW_MAX_CHARS)}` }));
+		expect(envelope.status).toBe("success");
+		const preview = listed(envelope).items[0]?.preview ?? "";
+		expect(preview.length).toBe(PREVIEW_MAX_CHARS);
+		expect(preview.startsWith("&lt;b&gt;a")).toBe(true);
+		expect(preview.endsWith("…")).toBe(true);
+	});
+
+	test("a degraded brief with text is partial with the same item and the live brief missing", () => {
+		expect(substrateBriefToPanel(brief({ state: "degraded" }))).toEqual({
+			status: "partial",
+			remainder: "truncated",
+			items: [briefItem],
+			excluded: [],
+			missing: [{ ref: "brief", reason: "source_unavailable" }],
+			stages: [],
+		});
+	});
+
+	test("a snapshot brief with text is partial with the same item and the live brief missing", () => {
+		expect(substrateBriefToPanel(brief({ state: "snapshot" }))).toEqual({
+			status: "partial",
+			remainder: "truncated",
+			items: [briefItem],
+			excluded: [],
+			missing: [{ ref: "brief", reason: "source_unavailable" }],
+			stages: [],
+		});
+	});
+
+	test("a disabled brief is empty with gate_off", () => {
+		expect(substrateBriefToPanel(brief({ state: "none", text: "", reason: "disabled" }))).toEqual({
+			status: "empty",
+			reason: "gate_off",
+			items: [],
+			excluded: [],
+			missing: [],
+			stages: [],
+		});
+	});
+
+	test("a brief with no URL is empty with source_unavailable", () => {
+		expect(substrateBriefToPanel(brief({ state: "none", text: "", reason: "no-url" }))).toEqual({
+			status: "empty",
+			reason: "source_unavailable",
+			items: [],
+			excluded: [],
+			missing: [],
+			stages: [],
+		});
+	});
+
+	test("a brief lookup with any other reason is an error classed unclassified, with no retry", () => {
+		expect(
+			substrateBriefToPanel(brief({ state: "none", text: "", reason: "hook timed out" })),
+		).toEqual({
+			status: "error",
+			errorClass: "unclassified",
+			message: "hook timed out",
+			retry: { scheduled: false, attempt: 0 },
+			stages: [],
+		});
+	});
+
+	test("a brief lookup error with no reason carries the fallback message", () => {
+		expect(substrateBriefToPanel(brief({ state: "none", text: "" }))).toMatchObject({
+			status: "error",
+			errorClass: "unclassified",
+			message: "Substrate brief lookup failed.",
+		});
+	});
+
+	test("a complete, degraded or snapshot brief with no text is empty with no_match", () => {
+		for (const state of ["complete", "degraded", "snapshot"] as const) {
+			expect(substrateBriefToPanel(brief({ state, text: "" }))).toEqual({
+				status: "empty",
+				reason: "no_match",
+				items: [],
+				excluded: [],
+				missing: [],
+				stages: [],
+			});
+		}
 	});
 });

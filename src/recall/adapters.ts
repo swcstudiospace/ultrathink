@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 /**
- * Panel adapters for the Teachable Moments lookups: the lessons record and the skills record, each mapped onto the same
- * envelope the knowledge lookup uses (panel-model.ts). Pure: no clock, no filesystem. The lesson relevance floor is the
- * caller's parameter. A skill reaches a panel as a pointer (name, description, target), never a body; a draft is shown
- * only as an excluded row, so the panel can say that drafts exist without ever injecting one.
+ * Panel adapters for the Teachable Moments lookups (the lessons and skills records) and the Substrate brief, each mapped
+ * onto the same envelope the knowledge lookup uses (panel-model.ts). Pure: no clock, no filesystem. The lesson relevance
+ * floor is the caller's parameter. A skill reaches a panel as a pointer (name, description, target), never a body; a draft
+ * is shown only as an excluded row, so the panel can say that drafts exist without ever injecting one.
  */
 import type { LessonRow, LessonsLookup, SkillsLookup } from "../teach/types.ts";
 import {
@@ -127,4 +127,62 @@ export function skillsLookupToPanel(lookup: SkillsLookup): PanelEnvelope {
 			return emptyEnvelope(excluded.length > 0 ? "filtered" : "no_match", excluded);
 		}
 	}
+}
+
+/** The Substrate brief as the hook fetched it: already masked, and how it was obtained. */
+export interface SubstrateBriefInput {
+	text: string;
+	state: "complete" | "degraded" | "snapshot" | "none";
+	reason?: string;
+}
+
+const BRIEF_TITLE = "Substrate brief";
+const BRIEF_MATCH_REASON = "Cross-agent brief for this repository";
+
+function briefItem(preview: string): PanelItem {
+	return {
+		id: "substrate_brief:brief",
+		title: BRIEF_TITLE,
+		preview,
+		source: { kind: "substrate_brief", ref: "brief" },
+		timestamp: null,
+		matchReason: BRIEF_MATCH_REASON,
+		itemStatus: "returned",
+	};
+}
+
+/**
+ * Map one Substrate brief fetch onto a panel envelope. The text is already masked by the caller; this adapter escapes
+ * it for display and never redacts.
+ * - `none` is empty: gate_off when the brief is disabled, source_unavailable when there is no URL. Any other reason is
+ *   an error, classed unclassified.
+ * - `complete` with text is success, with the brief as one item.
+ * - `degraded` and `snapshot` with text are partial (remainder truncated): the same item, and the live brief as a missing
+ *   row (source_unavailable).
+ * - Any state with text that is empty once sanitized is empty (no_match).
+ */
+export function substrateBriefToPanel(input: SubstrateBriefInput): PanelEnvelope {
+	if (input.state === "none") {
+		switch (input.reason) {
+			case "disabled":
+				return emptyEnvelope("gate_off");
+			case "no-url":
+				return emptyEnvelope("source_unavailable");
+			default:
+				return errorEnvelope(input.reason, "Substrate brief lookup failed.");
+		}
+	}
+	const preview = sanitizePanelText(input.text, PREVIEW_MAX_CHARS);
+	if (preview === "") return emptyEnvelope("no_match");
+	const items = [briefItem(preview)];
+	if (input.state === "complete")
+		return { status: "success", items, excluded: [], missing: [], stages: [] };
+	return {
+		status: "partial",
+		remainder: "truncated",
+		items,
+		excluded: [],
+		missing: [{ ref: "brief", reason: "source_unavailable" }],
+		stages: [],
+	};
 }
