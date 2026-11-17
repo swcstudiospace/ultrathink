@@ -10,6 +10,7 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -185,6 +186,22 @@ describe("readHooksFile / writeHooksFile", () => {
 			expect(readdirSync(dir)).toEqual(["hooks.json"]);
 			expect(writeHooksFile(file, { hooks: { [EVENT]: [WANTED] } }, original)).toBe(true);
 			expect(readFileSync(file, "utf8")).toContain(HOOK_FILE);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a symlink planted at the old predictable temp name is not followed", () => {
+		const dir = mkdtempSync(join(tmpdir(), "cursor-hooks-link-"));
+		try {
+			const file = join(dir, "hooks.json");
+			const victim = join(dir, "victim");
+			const planted = `hooks.json.tmp-${process.pid}`;
+			symlinkSync(victim, join(dir, planted));
+			expect(writeHooksFile(file, { hooks: {} })).toBe(true);
+			expect(existsSync(victim)).toBe(false);
+			expect(readFileSync(file, "utf8")).toBe('{\n  "hooks": {}\n}\n');
+			expect(readdirSync(dir).sort()).toEqual([planted, "hooks.json"].sort());
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -475,6 +492,19 @@ describe("main", () => {
 		});
 	});
 
+	test("an unreadable lock reports its real error instead of waiting as busy", () => {
+		sandbox((box) => {
+			// A directory at the lock path: reading it fails with EISDIR, which says nothing about another holder.
+			mkdirSync(join(box.cursor, HOOK_LOCK_FILE), { recursive: true });
+			expect(box.run(["install"], { lockWaitMs: 0 })).toBe(1);
+			const output = box.lines.join("\n");
+			expect(output).toContain("could not lock the Cursor hook update");
+			expect(output).toContain("EISDIR");
+			expect(output).not.toContain("another install or remove");
+			expect(existsSync(box.staged)).toBe(false);
+		});
+	});
+
 	test("a lock left by a dead process is reclaimed and does not block install", () => {
 		sandbox((box) => {
 			mkdirSync(box.cursor, { recursive: true });
@@ -536,6 +566,25 @@ describe("main", () => {
 			).toBe(1);
 			expect(readFileSync(box.staged, "utf8")).toBe("previous hook\n");
 			expect(box.list().some(isOwned)).toBe(false);
+		});
+	});
+
+	test("a commit that throws restores the previous staged hook and releases the lock", () => {
+		sandbox((box) => {
+			mkdirSync(box.cursor);
+			writeFileSync(join(box.cursor, "hooks.json"), "{}\n");
+			mkdirSync(dirname(box.staged), { recursive: true });
+			writeFileSync(box.staged, "previous hook\n");
+			expect(() =>
+				box.run(["install"], {
+					beforeCommit: () => {
+						throw new Error("commit exploded");
+					},
+				}),
+			).toThrow("commit exploded");
+			expect(readFileSync(box.staged, "utf8")).toBe("previous hook\n");
+			expect(readFileSync(join(box.cursor, "hooks.json"), "utf8")).toBe("{}\n");
+			expect(box.run(["install"], { lockWaitMs: 0 })).toBe(0);
 		});
 	});
 
