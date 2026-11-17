@@ -3,7 +3,8 @@
 /**
  * Detached supervisor of one `teach observe` launch. A host's Stop hook starts this process and exits at once, so the
  * host never waits for the observe command. This process starts the command, waits for it, and appends a
- * `launch exited` run when the exit code is non-zero, or when the command was killed by a signal or never started.
+ * `launch exited` run when the exit code is non-zero, or when the command was killed by a signal, never started, or
+ * outlived its deadline.
  *
  * Input: one argv argument, the JSON object `{ "stateDir", "sessionId", "command", "args" }`. It is argv rather than
  * the environment so that the observe arguments never reach an environment variable. The spawner starts this process
@@ -11,7 +12,7 @@
  * `--no-env-file`). The observe command gets this process's environment and cwd, with stdio ignored and its own
  * process group, as the direct launch did. Never throws; always exits 0.
  */
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { appendRun } from "./runlog.ts";
 
 interface LaunchTask {
@@ -44,29 +45,67 @@ function parseTask(text: string | undefined): LaunchTask | undefined {
 	}
 }
 
-/** The command's exit code: null when it was killed by a signal or never started. Never rejects. */
-function runToExit(command: string, args: string[]): Promise<number | null> {
-	const { promise, resolve } = Promise.withResolvers<number | null>();
+/** Longest the observe command may run before it is killed. The command bounds its own distiller at 90 seconds, so only a hang reaches this. */
+const LAUNCH_DEADLINE_MS = 3 * 60_000;
+
+/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
+export type TimerPort = {
+	setTimeout(fn: () => void, ms: number): unknown;
+	clearTimeout(handle: unknown): void;
+};
+
+const platformTimers: TimerPort = {
+	setTimeout: (fn, ms) => setTimeout(fn, ms),
+	clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout | undefined),
+};
+
+/** How the command ended: its exit code (null when killed by a signal or never started), or the deadline that killed it. */
+export type LaunchOutcome = { reason: "exited"; exitCode: number | null } | { reason: "timeout" };
+
+/** Starts the command and settles on its exit, or at the deadline after killing it. Never rejects. */
+function runToExit(
+	command: string,
+	args: string[],
+	timers: TimerPort,
+	deadlineMs: number,
+): Promise<LaunchOutcome> {
+	const { promise, resolve } = Promise.withResolvers<LaunchOutcome>();
+	let child: ChildProcess | undefined;
+	let deadline: unknown;
+	const settle = (outcome: LaunchOutcome): void => {
+		timers.clearTimeout(deadline);
+		resolve(outcome);
+	};
 	try {
-		const child = spawn(command, args, {
+		child = spawn(command, args, {
 			cwd: process.cwd(),
 			env: process.env,
 			detached: true,
 			stdio: "ignore",
 		});
 		// A missing command is reported as an 'error' event; without a listener it would crash the supervisor.
-		child.on("error", () => resolve(null));
-		child.on("exit", (code) => resolve(code));
+		child.on("error", () => settle({ reason: "exited", exitCode: null }));
+		child.on("exit", (code) => settle({ reason: "exited", exitCode: code }));
+		// A hung command would keep this process alive forever, so it is killed at the deadline.
+		deadline = timers.setTimeout(() => {
+			child?.kill();
+			settle({ reason: "timeout" });
+		}, deadlineMs);
 	} catch {
 		// reason: a synchronous spawn failure is the same as a command that never started
-		resolve(null);
+		settle({ reason: "exited", exitCode: null });
 	}
 	return promise;
 }
 
-async function supervise(task: LaunchTask): Promise<void> {
-	const code = await runToExit(task.command, task.args);
-	if (code === 0) return;
+/** Runs the task to its exit or deadline. Every launch that did not exit 0 is recorded as a `launch exited` run. */
+export async function supervise(
+	task: LaunchTask,
+	timers: TimerPort = platformTimers,
+	deadlineMs = LAUNCH_DEADLINE_MS,
+): Promise<LaunchOutcome> {
+	const outcome = await runToExit(task.command, task.args, timers, deadlineMs);
+	if (outcome.reason === "exited" && outcome.exitCode === 0) return outcome;
 	try {
 		// One attempt: the run log is diagnostics only, so a failure to record is ignored.
 		appendRun(task.stateDir, {
@@ -75,11 +114,13 @@ async function supervise(task: LaunchTask): Promise<void> {
 			outcome: "skipped",
 			captured: 0,
 			skipped: "launch exited",
-			exitCode: code,
+			// A command killed at its deadline has no exit code, as when a signal kills it.
+			exitCode: outcome.reason === "exited" ? outcome.exitCode : null,
 		});
 	} catch {
 		// reason: fail-open: the run log is diagnostics only
 	}
+	return outcome;
 }
 
 if (import.meta.main) {

@@ -544,4 +544,31 @@ describe("runGraphify options", () => {
 			setGraphifyBinForTests(null);
 		}
 	});
+
+	test("reaching the output cap stops the child at once and returns the capped text without waiting for the killer", async () => {
+		const root = mkdtempSync(join(tmpdir(), "graphify-cap-"));
+		const binDir = join(root, "bin");
+		mkdirSync(binDir);
+		const bin = join(binDir, "graphify");
+		const pidFile = join(root, "pid");
+		writeFileSync(
+			bin,
+			`#!/bin/sh\necho $$ > ${JSON.stringify(pidFile)}\nhead -c 9000 /dev/zero | tr '\\0' x\nexec sleep 60\n`,
+		);
+		chmodSync(bin, 0o755);
+		const cwd = join(root, "proj");
+		mkdirSync(cwd);
+		writeGraph(cwd, "graph", 1_700_000_000);
+		try {
+			setGraphifyBinForTests(bin);
+			const result = await runGraphify(cwd, ["query", "capped"]);
+			expect(result.text).toBe("x".repeat(8000));
+			expect(result.cached).toBe(false);
+			expect(result.ms).toBeLessThan(10_000);
+			const pid = Number(readFileSync(pidFile, "utf8"));
+			expect(() => process.kill(pid, 0)).toThrow();
+		} finally {
+			setGraphifyBinForTests(null);
+		}
+	});
 });
