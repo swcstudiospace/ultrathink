@@ -239,6 +239,19 @@ describe("CLI host planners", () => {
 		expect(plan.commands).toEqual([["claude", "mcp", "remove", "--scope", "user", "linear"]]);
 	});
 
+	test("claude: a foreign user entry whose output merely mentions our command is not ours", () => {
+		const { run } = fakeRun(
+			() =>
+				`notion:\n  Scope: User config (available in all your projects)\n  Type: stdio\n  Command: npx\n  Args: -y notion-mcp\n  Description: wraps ${CMD} serve notion\n`,
+		);
+		const added = planClaude(run, entries.slice(0, 1));
+		expect(added.changes[0]?.action).toBe("kept");
+		expect(added.commands).toEqual([]);
+		const removed = planClaude(run, entries.slice(0, 1), { mode: "remove" });
+		expect(removed.changes[0]?.action).toBe("kept");
+		expect(removed.commands).toEqual([]);
+	});
+
 	test("grok: foreign entry kept, ours from another clone replaced, --replace overwrites both", () => {
 		const listed = JSON.stringify([
 			{ name: "notion", url: "https://mcp.notion.com/mcp", scope: "user" },
@@ -698,6 +711,28 @@ describe("main", () => {
 				expect(existsSync(join(grokHome, `config.toml${STAMP}`))).toBe(true);
 				expect(existsSync(join(home, ".grok"))).toBe(false);
 			}, fake.run);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("an unreadable Hermes config.yaml stops planning for hermes with a configuration error", () => {
+		const dir = mkdtempSync(join(tmpdir(), "mcp-register-hermes-unreadable-"));
+		const configFile = join(dir, "config.yaml");
+		// A directory where the file should be: reading it fails (EISDIR), unlike a missing file.
+		mkdirSync(configFile);
+		const calls: string[][] = [];
+		const run: Run = (cmd) => {
+			calls.push(cmd);
+			return { code: 0, stdout: "", stderr: "" };
+		};
+		try {
+			sandbox(({ env, lines, deps }) => {
+				env.HERMES_HOME = dir;
+				expect(main(["--hosts", "hermes"], deps())).toBe(1);
+				expect(lines.find((l) => l.includes("configuration error"))).toContain(configFile);
+				expect(calls).toEqual([["hermes", "mcp", "list"]]);
+			}, run);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

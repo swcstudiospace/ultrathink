@@ -537,6 +537,37 @@ describe("apply / status / rollback", () => {
 		}
 	});
 
+	test("rollback refuses a corrupt setup state file, removes nothing and leaves the file in place", () => {
+		const { env, repo, cleanup } = tempSetup();
+		try {
+			apply(repo, mcpRun(""), env);
+			writeFileSync(setupStatePath(env), "{not json");
+			const run = ownedRun();
+			expect(() => rollback(env, run)).toThrow(/setup state file .* is unusable/);
+			expect(run.calls).toEqual([]);
+			expect(readFileSync(setupStatePath(env), "utf8")).toBe("{not json");
+			expect(readFileSync(claudeMdPath(env), "utf8")).toContain("<!-- ultrathink:start -->");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("apply refuses a corrupt setup state file before it changes anything", () => {
+		const { env, repo, rulePath, cleanup } = tempSetup();
+		try {
+			mkdirSync(dirname(setupStatePath(env)), { recursive: true });
+			writeFileSync(setupStatePath(env), "[]");
+			const run = mcpRun("");
+			expect(() => apply(repo, run, env)).toThrow(/setup state file .* is unusable/);
+			expect(run.calls).toEqual([]);
+			expect(existsSync(rulePath)).toBe(false);
+			expect(existsSync(claudeMdPath(env))).toBe(false);
+			expect(readFileSync(setupStatePath(env), "utf8")).toBe("[]");
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("rollback deletes the setup state, so a later rollback cannot remove servers the user added since", () => {
 		const { env, repo, cleanup } = tempSetup();
 		try {
