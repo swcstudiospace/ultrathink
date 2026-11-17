@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import tokenOpt, { PREFIX_POLICY } from "./index.ts";
 import { setGraphifyBinForTests } from "./graph.ts";
 
@@ -478,5 +478,143 @@ describe("tokenOpt graph tools", () => {
 		const result = await tools.get("graph_query")?.execute("1", { question: "what" }, undefined, undefined, { cwd: root });
 		expect(result?.isError).toBeUndefined();
 		expect(result?.content[0]?.text).toContain("answer");
+	});
+});
+
+describe("tokenOpt failure paths and bounded memory", () => {
+	function useEnv(name: string, value: string): void {
+		const previous = process.env[name];
+		process.env[name] = value;
+		cleanups.push(() => {
+			if (previous === undefined) delete process.env[name];
+			else process.env[name] = previous;
+		});
+	}
+
+	function captureWarnings() {
+		const spy = spyOn(process, "emitWarning").mockImplementation(() => {});
+		cleanups.push(() => spy.mockRestore());
+		return spy;
+	}
+
+	function loggedWith(spy: { mock: { calls: unknown[][] } }, code: string): unknown[][] {
+		return spy.mock.calls.filter((call) => (call[1] as { code?: string } | undefined)?.code === code);
+	}
+
+	// Fake rtk: the first `gain` call fails; later calls report 100, then 110, tokens saved.
+	const RTK_GAIN_SCRIPT = String.raw`#!/bin/sh
+if [ "$1" = gain ]; then
+  n=$(cat "$GAIN_COUNT" 2>/dev/null || echo 0)
+  n=$((n + 1))
+  echo "$n" > "$GAIN_COUNT"
+  if [ "$n" -eq 1 ]; then exit 1; fi
+  echo "{\"summary\":{\"total_saved\":$((100 + 10 * (n - 2)))}}"
+fi
+`;
+
+	test("a failed rtk gain read at session start is retried on the next status call", async () => {
+		const home = tempDir("token-opt-home-");
+		const bin = tempDir("token-opt-bin-");
+		writeFileSync(join(bin, "rtk"), RTK_GAIN_SCRIPT, { mode: 0o755 });
+		const indexPath = new URL("./index.ts", import.meta.url).pathname;
+		// Bun.which reads PATH once at process start, so the child gets its own PATH with the fake rtk first.
+		const script = [
+			`import tokenOpt from ${JSON.stringify(indexPath)};`,
+			"(async () => {",
+			"  const handlers = new Map();",
+			"  const commands = new Map();",
+			"  tokenOpt({",
+			"    setLabel() {}, zod: { object: () => ({}), string: () => ({}) }, registerTool() {},",
+			"    registerCommand(name, options) { commands.set(name, options.handler); },",
+			"    on(event, handler) { handlers.set(event, handler); }, events: { emit() {} },",
+			"  });",
+			'  handlers.get("session_start")({ sessionId: "sess-rtk" }, {});',
+			'  let status = "";',
+			'  await commands.get("token-status")("", { ui: { notify(message) { status = message; } } });',
+			"  console.log(JSON.stringify(status));",
+			"})();",
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "-e", script], {
+			env: { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin`, GAIN_COUNT: join(bin, "gain-count") },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [out, err, code] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		if (code !== 0) throw new Error(`child exited ${code}: ${err}`);
+		expect(JSON.parse(out.trim())).toContain("rtk saved 10");
+	});
+
+	test("a throwing ui.notify on the compact path is logged once and does not escape", async () => {
+		useHome();
+		const warnings = captureWarnings();
+		const { commands } = mount();
+		await commands.get("token-opt")?.("compact", {
+			ui: {
+				notify() {
+					throw new TypeError("ui closed");
+				},
+			},
+			compact: async (options: { onComplete?: (result: unknown) => void }) => {
+				options.onComplete?.({});
+			},
+		});
+		expect(loggedWith(warnings, "TOKEN_OPT_NOTIFY")).toEqual([
+			["token-opt notify failed (TypeError)", { code: "TOKEN_OPT_NOTIFY" }],
+		]);
+	});
+
+	test("a failed token-status print is logged with its error class instead of dropped", async () => {
+		useHome();
+		const warnings = captureWarnings();
+		const { commands } = mount();
+		await commands.get("token-status")?.("", {
+			ui: {
+				notify() {
+					throw new RangeError("no ui");
+				},
+			},
+		});
+		expect(loggedWith(warnings, "TOKEN_OPT_STATUS")).toEqual([
+			["token-opt status failed (RangeError)", { code: "TOKEN_OPT_STATUS" }],
+		]);
+	});
+
+	test("the message dedupe memory is bounded: the newest response still dedupes and the oldest is forgotten", async () => {
+		const home = useHome();
+		// Async writes skip a snapshot file write per message; shutdown flushes the last one before the read.
+		useEnv("TOKEN_OPT_FF_ASYNC_LEDGER", "1");
+		const { handlers } = mount();
+		handlers.get("session_start")?.({ sessionId: "sess-seen" }, {});
+		const end = handlers.get("message_end");
+		const message = (responseId: string) => ({
+			message: { role: "assistant", responseId, usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 } },
+		});
+		// The bound is 4,096 entries, so 4,097 distinct responses evict the first one.
+		for (let i = 0; i < 4_097; i++) end?.(message(`resp-${i}`));
+		end?.(message("resp-4096"));
+		end?.(message("resp-0"));
+		await handlers.get("session_shutdown")?.();
+		// 4,097 billed, the newest resend ignored, the evicted oldest billed again.
+		expect(liveOf(home).providerInput).toBe(4_098);
+	});
+
+	test("the repeated-result memory is bounded: the oldest result is forgotten and the newest still dedupes", () => {
+		useHome();
+		const { handlers } = mount();
+		handlers.get("session_start")?.({ sessionId: "sess-results" }, {});
+		const toolResult = handlers.get("tool_result");
+		// Each text is over the dedupe minimum and under the shrink threshold, so only the dedupe decides its output.
+		const sized = (i: number) => `r${i}-`.padEnd(250, "x");
+		const send = (text: string) => toolResult?.({ toolName: "grep", content: [{ type: "text", text }] });
+		expect(send(sized(0))).toBeUndefined();
+		// 4,096 more distinct results push the first one out of the 4,096-entry bound.
+		for (let i = 1; i <= 4_096; i++) expect(send(sized(i))).toBeUndefined();
+		expect(send(sized(0))).toBeUndefined();
+		const repeated = send(sized(4_096)) as TextOut;
+		expect(repeated?.content?.[0]?.text).toBe("token-opt: repeated grep result omitted (250 chars)");
 	});
 });
