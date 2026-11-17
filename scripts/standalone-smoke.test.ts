@@ -8,9 +8,9 @@
  * The hosted-service cases at the bottom start the real services/ultrathink/server.ts on loopback. They run only
  * with ULTRATHINK_SMOKE_SERVICE=1: `ULTRATHINK_SMOKE_SERVICE=1 bun test scripts/standalone-smoke.test.ts`.
  */
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import pkg from "../package.json";
@@ -280,6 +280,78 @@ describe("stdio connector, clean room", () => {
 		},
 		TEST_TIMEOUT_MS,
 	);
+
+	test("a spawn that throws leaves no temp root behind", async () => {
+		const cwds: string[] = [];
+		const spy = spyOn(Bun, "spawn").mockImplementation(((
+			_cmd: unknown,
+			options: { cwd?: string },
+		) => {
+			cwds.push(options.cwd ?? "");
+			throw new Error("spawn refused");
+		}) as unknown as typeof Bun.spawn);
+		try {
+			await expect(runStdioSignalSmoke()).rejects.toThrow("spawn refused");
+		} finally {
+			spy.mockRestore();
+		}
+		expect(cwds).toHaveLength(1);
+		expect(existsSync(cwds[0] ?? "")).toBe(false);
+	});
+
+	test("a failure after the connector starts kills it and removes its temp root", async () => {
+		const cwds: string[] = [];
+		const signals: string[] = [];
+		const child = {
+			stdin: {
+				write: () => {
+					throw new Error("stdin closed");
+				},
+				flush: async () => undefined,
+			},
+			stdout: new ReadableStream<Uint8Array>({ start: (controller) => controller.close() }),
+			stderr: new ReadableStream<Uint8Array>({ start: (controller) => controller.close() }),
+			exitCode: null,
+			signalCode: null,
+			exited: new Promise<number>(() => undefined),
+			kill: (signal?: string) => {
+				signals.push(signal ?? "SIGTERM");
+			},
+		};
+		const spy = spyOn(Bun, "spawn").mockImplementation(((
+			_cmd: unknown,
+			options: { cwd?: string },
+		) => {
+			cwds.push(options.cwd ?? "");
+			return child;
+		}) as unknown as typeof Bun.spawn);
+		try {
+			await expect(runStdioSignalSmoke()).rejects.toThrow("stdin closed");
+		} finally {
+			spy.mockRestore();
+		}
+		expect(signals).toEqual(["SIGKILL"]);
+		expect(cwds).toHaveLength(1);
+		expect(existsSync(cwds[0] ?? "")).toBe(false);
+	});
+
+	test("a failing spawn in the clean-room run leaves no temp root behind", async () => {
+		const cwds: string[] = [];
+		const spy = spyOn(Bun, "spawn").mockImplementation(((
+			_cmd: unknown,
+			options: { cwd?: string },
+		) => {
+			cwds.push(options.cwd ?? "");
+			throw new Error("spawn refused");
+		}) as unknown as typeof Bun.spawn);
+		try {
+			await expect(runStdioSmoke()).rejects.toThrow("spawn refused");
+		} finally {
+			spy.mockRestore();
+		}
+		expect(cwds).toHaveLength(1);
+		expect(existsSync(cwds[0] ?? "")).toBe(false);
+	});
 
 	test(
 		"a secret in the test process reaches neither the child nor the report",

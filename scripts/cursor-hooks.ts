@@ -9,6 +9,7 @@ import {
 	constants,
 	copyFileSync,
 	existsSync,
+	fchmodSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
@@ -180,10 +181,18 @@ export function writeHooksFile(file: string, value: unknown, expectedRaw?: strin
 		return false;
 	}
 	if (seen !== expectedRaw) return false;
-	const tmp = `${file}.tmp-${process.pid}`;
+	// A unique name opened with "wx" never writes through a symlink planted at an existing path.
+	const tmp = `${file}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
+	let created = false;
 	try {
-		writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-		chmodSync(tmp, 0o600);
+		const fd = openSync(tmp, "wx", 0o600);
+		created = true;
+		try {
+			writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`);
+			fchmodSync(fd, 0o600);
+		} finally {
+			closeSync(fd);
+		}
 		// Check again immediately before the rename. The window is small, and a mismatch retries or refuses.
 		if (current() !== expectedRaw) {
 			rmSync(tmp, { force: true });
@@ -192,7 +201,7 @@ export function writeHooksFile(file: string, value: unknown, expectedRaw?: strin
 		renameSync(tmp, file);
 		return true;
 	} catch (error) {
-		rmSync(tmp, { force: true });
+		if (created) rmSync(tmp, { force: true });
 		throw error;
 	}
 }
@@ -273,7 +282,9 @@ function lockIsFree(file: string): boolean {
 		raw = readFileSync(file, "utf8");
 		mtimeMs = statSync(file).mtimeMs;
 	} catch (error) {
-		return errorCode(error) === "ENOENT";
+		// Any other failure (EACCES, EISDIR, ...) is the lock's real reason, not a busy holder.
+		if (errorCode(error) === "ENOENT") return true;
+		throw error;
 	}
 	const pid = lockPid(raw);
 	const dead =
@@ -284,7 +295,8 @@ function lockIsFree(file: string): boolean {
 		rmSync(file, { force: true });
 		return true;
 	} catch (error) {
-		return errorCode(error) === "ENOENT";
+		if (errorCode(error) === "ENOENT") return true;
+		throw error;
 	}
 }
 
@@ -457,20 +469,21 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 			const previous = existsSync(staged) ? readFileSync(staged) : undefined;
 			ensureDir(cursorDir, 0o700);
 			ensureDir(dirname(staged), 0o755);
+			let committed: { code: number; action?: HookAction };
 			try {
 				copyFileSync(source, staged);
 				chmodSync(staged, 0o644);
+				log(`staged ${staged}`);
+				committed = commitHooks(
+					file,
+					(current) => upsertHook(current, wanted),
+					log,
+					deps.beforeCommit,
+				);
 			} catch (error) {
 				restoreStaged(staged, previous);
 				throw error;
 			}
-			log(`staged ${staged}`);
-			const committed = commitHooks(
-				file,
-				(current) => upsertHook(current, wanted),
-				log,
-				deps.beforeCommit,
-			);
 			if (committed.code !== 0) {
 				restoreStaged(staged, previous);
 				return committed.code;

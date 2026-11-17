@@ -199,37 +199,53 @@ function spawnConnector(env: Record<string, string>, cwd: string) {
 export async function runStdioSmoke(opts: StdioSmokeOptions = {}): Promise<StdioSmokeResult> {
 	const omitStateDir = opts.omitStateDir === true;
 	const room = makeRoom(omitStateDir);
-	const env = buildCleanEnv(room.homeDir, omitStateDir ? undefined : room.stateDir);
-	const proc = spawnConnector(env, room.root);
-	let timedOut = false;
-	const timer = setTimeout(() => {
-		timedOut = true;
-		proc.kill("SIGKILL");
-	}, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-	const stdout = new Response(proc.stdout).text();
-	const stderr = new Response(proc.stderr).text();
+	let completed = false;
+	let stopChild: (() => void) | undefined;
 	try {
-		proc.stdin.write(`${REQUEST_LINES.join("\n")}\n`);
-		await proc.stdin.end();
-	} catch {
-		// reason: the child already exited; its exit code and reply count report the failure.
-		proc.kill("SIGKILL");
+		const env = buildCleanEnv(room.homeDir, omitStateDir ? undefined : room.stateDir);
+		const proc = spawnConnector(env, room.root);
+		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			proc.kill("SIGKILL");
+		}, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+		stopChild = () => {
+			clearTimeout(timer);
+			proc.kill("SIGKILL");
+		};
+		const stdout = new Response(proc.stdout).text();
+		const stderr = new Response(proc.stderr).text();
+		try {
+			proc.stdin.write(`${REQUEST_LINES.join("\n")}\n`);
+			await proc.stdin.end();
+		} catch {
+			// reason: the child already exited; its exit code and reply count report the failure.
+			proc.kill("SIGKILL");
+		}
+		const exitCode = await proc.exited;
+		clearTimeout(timer);
+		const stdoutText = await stdout;
+		const stderrText = await stderr;
+		completed = true;
+		return {
+			replies: stdoutText.split("\n").filter((line) => line !== ""),
+			stdout: stdoutText,
+			stderr: stderrText,
+			exitCode,
+			timedOut,
+			omitStateDir,
+			homeDir: room.homeDir,
+			stateDir: room.stateDir,
+			childEnvKeys: Object.keys(env).sort(),
+			cleanup: room.cleanup,
+		};
+	} finally {
+		// A throw before the result is returned must not leak the temp root, the timer or the connector.
+		if (!completed) {
+			stopChild?.();
+			room.cleanup();
+		}
 	}
-	const exitCode = await proc.exited;
-	clearTimeout(timer);
-	const stdoutText = await stdout;
-	return {
-		replies: stdoutText.split("\n").filter((line) => line !== ""),
-		stdout: stdoutText,
-		stderr: await stderr,
-		exitCode,
-		timedOut,
-		omitStateDir,
-		homeDir: room.homeDir,
-		stateDir: room.stateDir,
-		childEnvKeys: Object.keys(env).sort(),
-		cleanup: room.cleanup,
-	};
 }
 
 /** Reads `stream` until its first newline; undefined when none arrives in time. */
@@ -261,29 +277,42 @@ export async function runStdioSignalSmoke(
 ): Promise<StdioSignalResult> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const room = makeRoom(false);
-	const proc = spawnConnector(buildCleanEnv(room.homeDir, room.stateDir), room.root);
-	const stderr = new Response(proc.stderr).text();
-	proc.stdin.write(`${JSON.stringify(INITIALIZE)}\n`);
-	await proc.stdin.flush();
-	const firstReply = (await firstLine(proc.stdout, timeoutMs)) ?? "";
-	const signalledAt = Date.now();
-	proc.kill("SIGTERM");
-	let timedOut = false;
-	const timer = setTimeout(() => {
-		timedOut = true;
-		proc.kill("SIGKILL");
-	}, timeoutMs);
-	const exitCode = await proc.exited;
-	clearTimeout(timer);
-	const exitMs = Date.now() - signalledAt;
-	return {
-		firstReply,
-		stderr: await stderr,
-		exitCode: timedOut ? -1 : exitCode,
-		timedOut,
-		exitMs,
-		cleanup: room.cleanup,
-	};
+	let completed = false;
+	let stopChild: (() => void) | undefined;
+	try {
+		const proc = spawnConnector(buildCleanEnv(room.homeDir, room.stateDir), room.root);
+		stopChild = () => proc.kill("SIGKILL");
+		const stderr = new Response(proc.stderr).text();
+		proc.stdin.write(`${JSON.stringify(INITIALIZE)}\n`);
+		await proc.stdin.flush();
+		const firstReply = (await firstLine(proc.stdout, timeoutMs)) ?? "";
+		const signalledAt = Date.now();
+		proc.kill("SIGTERM");
+		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			proc.kill("SIGKILL");
+		}, timeoutMs);
+		const exitCode = await proc.exited;
+		clearTimeout(timer);
+		const exitMs = Date.now() - signalledAt;
+		const stderrText = await stderr;
+		completed = true;
+		return {
+			firstReply,
+			stderr: stderrText,
+			exitCode: timedOut ? -1 : exitCode,
+			timedOut,
+			exitMs,
+			cleanup: room.cleanup,
+		};
+	} finally {
+		// A throw before the result is returned must not leak the temp root or the connector.
+		if (!completed) {
+			stopChild?.();
+			room.cleanup();
+		}
+	}
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
