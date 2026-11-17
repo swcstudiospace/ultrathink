@@ -279,6 +279,30 @@ describe("runShip", () => {
 		expect(rules.output.gaps).toContain("no judge available");
 	});
 
+	test("a state file whose write fails makes assess fail with a state-write error", async () => {
+		// Permission bits do not stop root, so the name decides: the temporary file of a 250-character name
+		// (`.<name>.<pid>.<hex>.tmp`) exceeds NAME_MAX, while the state file itself still reads.
+		const unwritable = join(dir, `${"s".repeat(245)}.json`);
+		writeFileSync(unwritable, readFileSync(statePath));
+		const out = await runShip(["assess", "--state", unwritable, "--cwd", dir], deps());
+		expect(out.code).toBe(0);
+		expect(out.output).toMatchObject({ ok: false, done: false });
+		expect(String(out.output.error)).toContain("state write failed");
+		expect(readShip(unwritable)).toBeUndefined();
+	});
+
+	test("merge with an unwritable state file reports the PR merged and the state write failed", async () => {
+		writeShip(statePath, { pr: PR, phase: "pr-open", rounds: [PASSED] }, 5);
+		const unwritable = join(dir, `${"s".repeat(245)}.json`);
+		writeFileSync(unwritable, readFileSync(statePath));
+		const out = await runShip(["merge", "--state", unwritable, "--cwd", dir], deps());
+		expect(calls).toContain("merge:squash:abc");
+		expect(out.output).toMatchObject({ ok: false, merged: true });
+		expect(String(out.output.error)).toContain("state write failed");
+		expect(String(out.output.error)).toContain("merged on GitHub");
+		expect(readShip(unwritable)?.phase).toBe("pr-open");
+	});
+
 	test("assess --ignore-gsd leaves the GSD roadmap out of the assessment and records it", async () => {
 		const gsd = { phaseCount: 3, completedPhases: 0, trusted: true };
 		const d = {
