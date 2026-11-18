@@ -2243,6 +2243,31 @@ describe("merge phase gate", () => {
 		expect(phaseRecord()?.closedBy).toBeUndefined();
 	});
 
+	test("a verification that turns human_needed after a confirmed head opens its HTIL entry on the same-head retry and refuses the merge", async () => {
+		phaseFixture("01-core");
+		const verification = join(dir, ".planning", "phases", "01-core", "VERIFICATION.md");
+		writeFileSync(verification, "---\nstatus: passed\n---\nAll checks pass.\n");
+		await reviewStage();
+		// The first confirmation succeeds, and GitHub fails the merge transiently: the head is confirmed but not merged.
+		const first = await transientMerge();
+		expect(first.output).toMatchObject({ ok: false, merged: false, waiting: true });
+		expect(mergeCalls()).toEqual(["merge:squash:abc"]);
+		// A verify run writes human_needed after the confirmation: no entry is recorded yet.
+		writeFileSync(verification, "---\nstatus: human_needed\n---\nCheck the live rollout.\n");
+		expect(phaseRecord()?.humanItems ?? []).toEqual([]);
+		const retry = await ship("merge", deps());
+		expect(retry.output).toMatchObject({
+			ok: false,
+			merged: false,
+			reason: "open HTIL entry verification:01-core",
+		});
+		expect(mergeCalls()).toEqual(["merge:squash:abc"]);
+		expect(phaseRecord()?.humanItems).toEqual([
+			{ id: "verification:01-core", owner: "human", state: "open" },
+		]);
+		expect(phaseRecord()?.closedBy).toBeDefined();
+	});
+
 	test("ship resolve refuses without evidence, and refuses a phase with no open entry; nothing is written", async () => {
 		phaseFixture("01-core");
 		const noEvidence = await withFlags("resolve", deps(), "01-core", "--owner", "alice");

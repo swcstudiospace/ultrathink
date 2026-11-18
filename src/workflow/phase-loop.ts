@@ -330,17 +330,25 @@ export function confirmShip(
 	);
 }
 
+/** Options for `open`. `afterShip` is set only by the merge gate's reconcile, which records a verification entry on a Ship-closed loop (LIFE-05). */
+export interface OpenHtilOptions {
+	afterShip?: boolean;
+}
+
 /**
  * Record an open HTIL entry (LIFE-05). The entry starts in state open and blocks close until it
- * is resolved. A missing id or owner, or a duplicate id, is refused, and so is any entry once Ship is recorded.
+ * is resolved. A missing id or owner, or a duplicate id, is refused. Once Ship is recorded an entry is refused
+ * unless `options.afterShip` is set.
  */
 export function open(
 	runtimeId: string,
 	entry: Pick<HtilEntry, "id" | "owner">,
 	store?: PhaseLoopStore,
+	options: OpenHtilOptions = {},
 ): GateOutcome {
 	return transition(runtimeId, store, (row) => {
-		if (isClosed(row)) return [`loop is closed by Ship; HTIL entry ${entry.id} is not recorded`];
+		if (isClosed(row) && options.afterShip !== true)
+			return [`loop is closed by Ship; HTIL entry ${entry.id} is not recorded`];
 		const refusals: string[] = [];
 		if (isBlank(entry.id)) refusals.push("HTIL entry needs an id");
 		if (isBlank(entry.owner)) refusals.push(`HTIL entry ${entry.id} needs an owner`);

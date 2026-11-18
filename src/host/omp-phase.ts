@@ -20,6 +20,7 @@ import {
 	attemptPhase,
 	checkpointPhaseLoop,
 	open as openHtilEntry,
+	type OpenHtilOptions,
 	PhaseLoopCorruptError,
 	type PhaseAttemptInput,
 	type PhaseName,
@@ -182,11 +183,22 @@ export function verificationEntryId(directoryName: string): string {
 /**
  * Opens an HTIL entry for every `human_needed` phase directory on disk under `cwd` (LIFE-05). The disk is read at each
  * call, so a verification written after the phase's settle-time record is opened before a merge checks the entries. An
- * entry that already exists, open or resolved, is refused by `open` without a write.
+ * entry that already exists, open or resolved, is refused by `open` without a write. `options.afterShip` is passed only by the
+ * merge gate's reconcile, so a Ship-closed loop accepts the entry there and nowhere else.
  */
-export function openHtilEntries(cwd: string, sessionId: string, store: PhaseLoopStore): void {
+export function openHtilEntries(
+	cwd: string,
+	sessionId: string,
+	store: PhaseLoopStore,
+	options: OpenHtilOptions = {},
+): void {
 	for (const directory of htilPhases(cwd))
-		openHtilEntry(sessionId, { id: verificationEntryId(directory), owner: "human" }, store);
+		openHtilEntry(
+			sessionId,
+			{ id: verificationEntryId(directory), owner: "human" },
+			store,
+			options,
+		);
 }
 
 /**

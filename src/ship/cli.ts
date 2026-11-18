@@ -810,17 +810,29 @@ function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
 			const stored = store.load(sessionId);
 			if (stored.status === "quarantined")
 				return blocked(`phase record is corrupt; set aside at ${stored.quarantinedAs}`);
-			const record = stored.status === "found" ? stored.record : undefined;
+			// LIFE-05: a human_needed phase whose verification was written after its settle-time record is opened here,
+			// before the same-head check below, so a re-merge of a confirmed head sees the entries too. This reconcile is the
+			// only caller that records on a Ship-closed loop.
+			openHtilEntries(cwd, sessionId, store, { afterShip: true });
+			const reconciled = store.load(sessionId);
+			const record = reconciled.status === "found" ? reconciled.record : undefined;
 			const closedBy = record?.closedBy;
 			if (closedBy !== undefined) {
-				if (closedBy.recordId === recordId || closedBy.recordId === decisionId) return undefined;
+				if (closedBy.recordId === recordId || closedBy.recordId === decisionId) {
+					const open = (record?.humanItems ?? []).filter((item) => item.state === "open");
+					if (open.length === 0) return undefined;
+					const reason = open.map((item) => `open HTIL entry ${item.id}`).join("; ");
+					return {
+						kind: "needs-agent",
+						reason,
+						next: `${reason}; resolve it in the phase record, then run merge again`,
+						headSha,
+					};
+				}
 				return blocked(
 					`phase was confirmed for ${closedBy.recordId}; the head moved, so a human must confirm ${recordId}`,
 				);
 			}
-			// LIFE-05: a human_needed phase whose verification was written after its settle-time record is opened here,
-			// so the entries checked below include it.
-			openHtilEntries(cwd, sessionId, store);
 			// The runtime connection is not evaluated here: the CLI checks only the store.
 			const afterVerify = record?.phaseOrder.at(-1) === "Verify";
 			let closing: ShipConfirmationInput;
