@@ -28,6 +28,15 @@ type Env = Record<string, string | undefined>;
 /** The most bytes read from one decisions response; a larger body is refused as invalid-response. */
 export const MAX_RESPONSE_BYTES = 256 * 1024;
 
+/**
+ * The fetch the Decisions client calls: the platform `fetch`, or a wrapper of it (the host's journal, a test double).
+ * Only the call signature is needed, so no `preconnect` member is required.
+ */
+export type DecisionsFetch = (
+	input: string | URL | Request,
+	init?: RequestInit,
+) => Promise<Response>;
+
 export interface DecideOptions {
 	apiKey: string;
 	/** Total budget for the decision, retries included (D6). */
@@ -35,7 +44,7 @@ export interface DecideOptions {
 	/** Default: DEFAULT_DECISIONS_URL. The OpenRouter callers pass resolveDecisionsUrl(env).url. */
 	url?: string;
 	/** Default: globalThis.fetch looked up at call time (tests may replace globalThis.fetch). */
-	fetch?: typeof fetch;
+	fetch?: DecisionsFetch;
 	/** Caller abort: rejects decide() with an AbortError. */
 	signal?: AbortSignal;
 	/** Default Date.now. Used for the budget, the ≥500 ms retry rule, latency and Retry-After dates. */
@@ -414,7 +423,7 @@ interface PostDecisionOptions {
 	/** Total budget for the decision, retries included (D6). */
 	timeoutMs: number;
 	/** Default: globalThis.fetch looked up at call time (tests may replace globalThis.fetch). */
-	fetch?: typeof fetch;
+	fetch?: DecisionsFetch;
 	/** Caller abort: rejects with an AbortError. */
 	signal?: AbortSignal;
 	/** Default Date.now. Used for the budget, the ≥500 ms retry rule, latency and Retry-After dates. */

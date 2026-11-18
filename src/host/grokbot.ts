@@ -26,6 +26,7 @@ import { getSecurityLogger } from "../../services/ultrathink/security/events.ts"
 import { type LockOptions, withFileLock, writeFileAtomic } from "../claude/atomic.ts";
 import { CLI_LOCK, readControl, sessionRecordPath, type SessionRecord } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
+import type { DecisionsFetch } from "../decisions/client.ts";
 import { processIdentity } from "../swarm/lane.ts";
 import { DISTILL_SYSTEM } from "../teach/observe.ts";
 import {
@@ -335,12 +336,9 @@ function decisionsUrl(input: unknown): string | undefined {
  */
 export function decisionsJournalFetch(
 	dir: string,
-	base: typeof fetch = globalThis.fetch,
-): typeof fetch {
-	const wrapped = async (
-		input: Parameters<typeof fetch>[0],
-		init?: Parameters<typeof fetch>[1],
-	): Promise<Response> => {
+	base: DecisionsFetch = globalThis.fetch,
+): DecisionsFetch {
+	const wrapped: DecisionsFetch = async (input, init) => {
 		const url = decisionsUrl(input);
 		const body = typeof init?.body === "string" ? init.body : undefined;
 		if (!url || body === undefined || (init?.method ?? "GET").toUpperCase() !== "POST")
@@ -371,7 +369,7 @@ export function decisionsJournalFetch(
 			headers: { "content-type": response.headers.get("content-type") ?? "application/json" },
 		});
 	};
-	return Object.assign(wrapped, { preconnect: base.preconnect });
+	return wrapped;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

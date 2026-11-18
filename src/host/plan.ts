@@ -28,6 +28,7 @@ import { recordLastSkip } from "../uplift/skip.ts";
 import { decideUplift, isTrivial, overMaxCharsNotice } from "../uplift/detect.ts";
 import { planningTarget, type SkillInvocation } from "../uplift/skill.ts";
 import { fetchBrief } from "../substrate/brief.ts";
+import type { DecisionsFetch } from "../decisions/client.ts";
 import { clearPlanCarrier, writePlanCarrier } from "./carrier.ts";
 import { createGatewayTracker, trackCommand, type Tracker } from "../track/gateway.ts";
 import { createGatewayTot, type PrdOutcome, type TotSeams } from "../think/tot/stage.ts";
@@ -113,7 +114,7 @@ export interface PlanOptions {
 	/** Test seam for the Graph of Thought (see HookDeps); defaults to `runThink`. */
 	think?: HookDeps["think"];
 	/** Test seam and host seam for the Decisions client's fetch (see DecisionsDeps); defaults to `globalThis.fetch` at call time. */
-	fetch?: typeof fetch;
+	fetch?: DecisionsFetch;
 }
 
 /** One diagnostic line on stderr when `ULTRATHINK_DEBUG=1`, like the hook entries' own log. */

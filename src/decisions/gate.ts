@@ -11,6 +11,7 @@ import { readStore, storePath as defaultStorePath } from "../mcp/store.ts";
 import {
 	type DecideOutcome,
 	type DecisionAttempt,
+	type DecisionsFetch,
 	decide,
 	redact,
 	resolveDecisionsUrl,
@@ -67,7 +68,7 @@ export function resolveOpenRouterKey(storePath: string, env: Env): JevKey | unde
 export interface DecisionsDeps {
 	env?: Env; // default process.env
 	storePath?: string; // default storePath(env)
-	fetch?: typeof fetch; // default: globalThis.fetch at call time
+	fetch?: DecisionsFetch; // default: globalThis.fetch at call time
 	now?: () => number; // default Date.now
 	sleep?: (ms: number) => Promise<void>; // default Bun.sleep
 	random?: () => number; // default Math.random
