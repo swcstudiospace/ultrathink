@@ -25,7 +25,7 @@ export interface MuseConfig {
 	model: string;
 	/** Meta reasoning effort for child calls. */
 	reasoningEffort: MuseEffort;
-	/** Per-call timeout for one headless completion. 0 = no timer. */
+	/** Per-call timeout for one headless completion. Default 300000 ms, matching the Claude route; 0 = no timer (explicit opt-out). */
 	callTimeoutMs: number;
 }
 
@@ -33,5 +33,5 @@ export const DEFAULT_MUSE_CONFIG: MuseConfig = {
 	bin: "muse",
 	model: MUSE_MODEL_DEFAULT,
 	reasoningEffort: "high",
-	callTimeoutMs: 0,
+	callTimeoutMs: 300_000,
 };

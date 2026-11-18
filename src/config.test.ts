@@ -132,12 +132,12 @@ describe("mergeConfig", () => {
 		);
 	});
 
-	test("muse defaults are the Muse route default @ high with no timer", () => {
+	test("muse defaults are the Muse route default @ high with a 300 s child timeout", () => {
 		const muse = defaultConfig().muse;
 		expect(muse.bin).toBe("muse");
 		expect(muse.model).toBe(ROUTE_DEFAULT_MODELS.muse);
 		expect(muse.reasoningEffort).toBe("high");
-		expect(muse.callTimeoutMs).toBe(0);
+		expect(muse.callTimeoutMs).toBe(300_000);
 	});
 
 	test("muse model accepts empty (inherit the CLI default); bin and effort fall back on bad input", () => {
@@ -151,7 +151,9 @@ describe("mergeConfig", () => {
 		expect(mergeConfig({ muse: { reasoningEffort: "extreme" } }, base).muse.reasoningEffort).toBe(
 			"high",
 		);
-		expect(mergeConfig({ muse: { callTimeoutMs: -5 } }, base).muse.callTimeoutMs).toBe(0);
+		expect(mergeConfig({ muse: { callTimeoutMs: -5 } }, base).muse.callTimeoutMs).toBe(
+			base.muse.callTimeoutMs,
+		);
 	});
 
 	test("grok defaults are the Grok route default @ xhigh over the http transport", () => {
