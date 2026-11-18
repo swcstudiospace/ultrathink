@@ -565,11 +565,14 @@ describe("checkConfig", () => {
 					providerDefaults: { "my-gateway": " model-b " },
 				},
 			});
-			expect(aboveInfo(checkConfig(deps))).toEqual([]);
+			// D-05 (R5-A-2): the project layer's provider and providerDefaults are ignored; the doctor names the ignored key.
+			expect(aboveInfo(checkConfig(deps)).map((f) => f.id)).toEqual([
+				"config.project.ignored.models.providerDefaults.my-gateway",
+			]);
 			const effective = loadConfig(claudeConfigPaths(deps.cwd, deps.env));
-			expect(effective.models.hosts.omp).toEqual({ provider: "", model: "" });
+			expect(effective.models.hosts.omp).toEqual({ provider: "openrouter", model: "" });
 			expect(Object.hasOwn(effective.models.providerDefaults, "openrouter")).toBe(false);
-			expect(effective.models.providerDefaults["my-gateway"]).toBe("model-b");
+			expect(effective.models.providerDefaults["my-gateway"]).toBe("model-a");
 		});
 
 		test("providerDefaults keys are free, values must be strings, reserved names are ignored", () => {

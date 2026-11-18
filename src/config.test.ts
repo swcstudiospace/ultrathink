@@ -1953,6 +1953,45 @@ describe("models config (D-05 merge truth table)", () => {
 		expect(Object.getPrototypeOf(base.models.providerDefaults)).toBeNull();
 	});
 
+	test("a project layer may set a host's model only: its provider, providerDefaults and tot are ignored (D-05, R5-A-2)", () => {
+		const user = mergeConfig(
+			{
+				models: {
+					hosts: { omp: { provider: "openai-codex", model: "smol" } },
+					providerDefaults: { xai: "grok-fast" },
+				},
+			},
+			base,
+		);
+		const project = mergeConfig(
+			{
+				models: {
+					hosts: { omp: { provider: "xai", model: "grok-x" }, hermes: { provider: "xai" } },
+					providerDefaults: { xai: "grok-other", openai: "gpt-x" },
+					tot: { model: "other-model" },
+				},
+			},
+			user,
+			{ project: true },
+		);
+		expect(project.models.hosts.omp).toEqual({ provider: "openai-codex", model: "grok-x" });
+		expect(project.models.hosts.hermes).toBeUndefined();
+		expect({ ...project.models.providerDefaults }).toEqual({ xai: "grok-fast" });
+		expect(project.models.tot).toEqual(user.models.tot);
+
+		const later = mergeConfig(
+			{
+				models: {
+					hosts: { omp: { provider: "xai" } },
+					providerDefaults: { openai: "gpt-x" },
+				},
+			},
+			user,
+		);
+		expect(later.models.hosts.omp).toEqual({ provider: "xai", model: "smol" });
+		expect({ ...later.models.providerDefaults }).toEqual({ xai: "grok-fast", openai: "gpt-x" });
+	});
+
 	test("nonblank strings trim surrounding whitespace only, keep case, slashes and punctuation, and the later layer wins", () => {
 		const user = mergeConfig(
 			{
@@ -2149,7 +2188,7 @@ describe("models config (D-05 merge truth table)", () => {
 		).toBe("");
 	});
 
-	test("every layer, the project file included, may set model selectors", () => {
+	test("the project file may set a host's model, and its providerDefaults are ignored (D-05, R5-A-2)", () => {
 		const roots: string[] = [];
 		try {
 			const config = loadLayerFiles(
@@ -2165,7 +2204,7 @@ describe("models config (D-05 merge truth table)", () => {
 			);
 			expect(config.models.hosts.omp).toEqual({ provider: "xai", model: "project-model" });
 			expect({ ...config.models.providerDefaults }).toEqual({
-				xai: "project-fast",
+				xai: "user-fast",
 				openai: "claude-home",
 			});
 		} finally {

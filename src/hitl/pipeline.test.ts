@@ -411,7 +411,7 @@ describe("runClarify", () => {
 		expect(progress.at(-1)).toBe("Clarifications → 2");
 	});
 
-	test("knowledge adds the <knowledge_base> block and prompt rules, and settles only questions it read", async () => {
+	test("knowledge adds the <knowledge_base> block and prompt rules; a claim no check verifies is asked, never settled", async () => {
 		const calls: { system: string; user: string }[] = [];
 		const progress: string[] = [];
 		const reply = JSON.stringify({
@@ -453,13 +453,14 @@ describe("runClarify", () => {
 				docs: ["index.md", "docs/storage.md"],
 			},
 		});
-		expect(withKb.map((item) => item.id)).toEqual(["q1", "k1"]);
-		expect(withKb[1]).toMatchObject({
-			answer: "In SQLite.",
-			source: "knowledge",
-			evidence: "docs/storage.md",
-		});
-		expect(progress.at(-1)).toBe("Clarifications → 1 (+1 settled)");
+		expect(withKb.map((item) => item.id)).toEqual(["q1", "q2"]);
+		expect(withKb[1]?.question).toBe("Where are records stored?");
+		expect(withKb[1]?.source).toBeUndefined();
+		expect(withKb[1]?.options).toEqual([
+			{ label: "As stated", description: "In SQLite." },
+			{ label: "Something else" },
+		]);
+		expect(progress.at(-1)).toBe("Clarifications → 2");
 		expect(calls[0]?.system).toBe(clarifySystemPrompt(4, { knowledge: true }));
 		expect(calls[0]?.user).toContain(
 			"</graph_conclusions>\n\n<knowledge_base>\n### docs/storage.md\nRecords live in SQLite.\n</knowledge_base>",
@@ -685,6 +686,18 @@ async function clarify(reply: unknown, opts: Partial<RunClarifyOptions> = {}): P
 	return { list, records, progress };
 }
 
+/**
+ * The settled list a claim reaches when Jev supports it. A claim no check verifies is asked, not settled, so a
+ * comparison against a settled baseline runs a supporting check instead.
+ */
+async function settledBaseline(reply: unknown, points: DecisionPoint[]): Promise<ClarifyRun> {
+	const supporting = recordingFetch([JEV(0.95, "supported")]);
+	return clarify(reply, {
+		knowledge: kb(),
+		decisions: jev(supporting.fetch, points).decisions,
+	});
+}
+
 interface SentBody {
 	state: Record<string, string>;
 	questions: Record<string, unknown>;
@@ -838,7 +851,7 @@ describe("runClarify with Jev decisions", () => {
 		for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 	});
 
-	test("a fresh install sends nothing without a key, and consults Jev with one (AC-1.4, JEV-01)", async () => {
+	test("a fresh install sends nothing without a key, asks a knowledge claim as an open question, and consults Jev with one (AC-1.4, JEV-01)", async () => {
 		const home = tempDir();
 		const env = { XDG_CONFIG_HOME: join(home, "xdg"), CLAUDE_CONFIG_DIR: join(home, "claude") };
 		mkdirSync(join(env.XDG_CONFIG_HOME, "ultrathink"), { recursive: true });
@@ -852,7 +865,7 @@ describe("runClarify with Jev decisions", () => {
 		const today = await clarify(reply, { knowledge: kb() });
 		expect(today.list.map((item) => [item.id, item.source, item.blocking])).toEqual([
 			["q1", undefined, false],
-			["k1", "knowledge", false],
+			["q2", undefined, false],
 		]);
 
 		// No key anywhere: nothing sent, today's result.
@@ -903,9 +916,7 @@ describe("runClarify with Jev decisions", () => {
 			const r = recordingFetch([JEV(0.05, "supported")]);
 			const off = jevOff(r.fetch, ["knowledge"]).decisions;
 			const baseline = await clarify([kbClaim(SESSIONS_Q)], { knowledge: kb(), decisions: off });
-			expect(baseline.list).toMatchObject([
-				{ id: "k1", source: "knowledge", answer: SESSIONS_A, evidence: "docs/auth.md" },
-			]);
+			expect(baseline.list.map((item) => [item.id, item.source])).toEqual([["q1", undefined]]);
 
 			const { decisions, lines } = jev(r.fetch, ["knowledge"]);
 			const run = await clarify([kbClaim(SESSIONS_Q)], { knowledge: kb(), decisions });
@@ -966,40 +977,45 @@ describe("runClarify with Jev decisions", () => {
 			]);
 		});
 
-		test("a supported claim stays settled exactly as with Jev off (AC-7.2)", async () => {
+		test("a supported claim stays settled, and with Jev off the same claim is asked (AC-7.2)", async () => {
 			const r = recordingFetch([JEV(0.95, "supported")]);
 			const reply = [kbClaim(SESSIONS_Q), openItem()];
-			const baseline = await clarify(reply, {
+			const off = await clarify(reply, {
 				knowledge: kb(),
 				decisions: jevOff(r.fetch, ["knowledge"]).decisions,
 			});
+			expect(off.list.map((item) => [item.id, item.source])).toEqual([
+				["q1", undefined],
+				["q2", undefined],
+			]);
 			const run = await clarify(reply, {
 				knowledge: kb(),
 				decisions: jev(r.fetch, ["knowledge"]).decisions,
 			});
 			expect(r.calls).toHaveLength(1);
-			expect(run.list).toEqual(baseline.list);
-			expect(run.progress).toEqual(baseline.progress);
+			expect(run.list.map((item) => [item.id, item.source])).toEqual([
+				["q1", undefined],
+				["k1", "knowledge"],
+			]);
+			expect(run.progress.at(-1)).toBe("Clarifications → 1 (+1 settled)");
 			expect(run.records).toMatchObject([
 				{ point: "knowledge", outcome: "ok", p: 0.95, threshold: 0.8, action: "keep" },
 			]);
 		});
 
-		test("a network failure keeps the claim settled exactly as with Jev off and records the network kind (AC-7.3)", async () => {
+		test("a network failure keeps a checked claim settled, retries once, and records the network kind (AC-7.3)", async () => {
 			const r = recordingFetch([
 				() => {
 					throw new TypeError(`connect ECONNREFUSED while sending ${K}`);
 				},
 			]);
-			const baseline = await clarify([kbClaim(SESSIONS_Q)], {
-				knowledge: kb(),
-				decisions: jevOff(r.fetch, ["knowledge"]).decisions,
-			});
 			const { decisions, lines } = jev(r.fetch, ["knowledge"]);
 			const run = await clarify([kbClaim(SESSIONS_Q)], { knowledge: kb(), decisions });
 			// A network error is transient: retried once within the budget.
 			expect(r.calls).toHaveLength(2);
-			expect(run.list).toEqual(baseline.list);
+			expect(run.list).toMatchObject([
+				{ id: "k1", source: "knowledge", answer: SESSIONS_A, evidence: "docs/auth.md" },
+			]);
 			expect(run.records).toMatchObject([
 				{ point: "knowledge", outcome: "error", error: "network", action: "fail-open" },
 			]);
@@ -1101,13 +1117,10 @@ describe("runClarify with Jev decisions", () => {
 		});
 
 		for (const failure of failures("supported")) {
-			test(`${failure.name} keeps both claims settled exactly as with Jev off and records ${failure.kind} (AC-4.13)`, async () => {
+			test(`${failure.name} keeps both claims settled, as when Jev supports them, and records ${failure.kind} (AC-4.13)`, async () => {
 				const reply = [kbClaim(SESSIONS_Q), RECORDS_CLAIM];
 				const r = recordingFetch([failure.respond]);
-				const baseline = await clarify(reply, {
-					knowledge: kb(),
-					decisions: jevOff(r.fetch, ["knowledge"]).decisions,
-				});
+				const baseline = await settledBaseline(reply, ["knowledge"]);
 				const { decisions, lines } = jev(
 					r.fetch,
 					["knowledge"],
@@ -1333,8 +1346,7 @@ describe("runClarify with Jev decisions", () => {
 		test("without a rejected claim there is no second round, and a kept claim is never sent to the blocking point", async () => {
 			const reply = [kbClaim(SESSIONS_Q), openItem()];
 			const r = recordingFetch([JEV(0.95, "supported"), JEV(0.07, "risky")]);
-			const off = jevOff(r.fetch, ["knowledge", "blocking"]).decisions;
-			const baseline = await clarify(reply, { knowledge: kb(), decisions: off });
+			const baseline = await settledBaseline(reply, ["knowledge"]);
 			const run = await clarify(reply, {
 				knowledge: kb(),
 				decisions: jev(r.fetch, ["knowledge", "blocking"]).decisions,
@@ -1364,7 +1376,6 @@ describe("runClarify with Jev decisions", () => {
 			expect(baseline.list.map((item) => [item.id, item.question, item.blocking])).toEqual([
 				["q1", COLUMN_Q, false],
 				["q2", "Drop the legacy users column?", true],
-				["k1", SESSIONS_Q, false],
 			]);
 
 			const run = await clarify(reply, {
@@ -1378,7 +1389,7 @@ describe("runClarify with Jev decisions", () => {
 				["supported", SESSIONS_Q],
 				["risky", COLUMN_Q],
 			]);
-			expect(run.list).toEqual(baseline.list.slice(0, 2));
+			expect(run.list).toEqual(baseline.list);
 			expect(run.records.map((record) => [record.point, record.action])).toEqual([
 				["knowledge", "reject-claim"],
 				["blocking", "keep"],
@@ -1482,7 +1493,7 @@ describe("runClarify with Jev decisions", () => {
 			expect(run.records).toMatchObject([{ point: "blocking", action: "promote" }]);
 		});
 
-		test("with Jev off the recovered items are returned exactly as before", async () => {
+		test("with Jev off a recovered claim is asked as an open question, after the recovered open questions", async () => {
 			const r = recordingFetch([JEV(0.68, "risky")]);
 			const run = await clarifyText(truncated([kbClaim(SESSIONS_Q), openItem()]), {
 				knowledge: kb(),
@@ -1491,7 +1502,7 @@ describe("runClarify with Jev decisions", () => {
 			expect(r.calls).toHaveLength(0);
 			expect(run.items.map((item) => [item.id, item.source, item.blocking])).toEqual([
 				["q1", undefined, false],
-				["k1", "knowledge", false],
+				["q2", undefined, false],
 			]);
 		});
 	});

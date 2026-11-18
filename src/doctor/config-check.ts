@@ -284,7 +284,9 @@ function checkModels(out: Collector, value: unknown, effective: Json): void {
 						"ignored",
 						keyPath,
 						`${keyPath} ignored by the merge`,
-						`A reserved provider name is never merged. File: ${out.layer.path}`,
+						out.layer.project
+							? `A project file may not set providerDefaults; only user layers do. File: ${out.layer.path}`
+							: `A reserved provider name is never merged. File: ${out.layer.path}`,
 					);
 				}
 			}
