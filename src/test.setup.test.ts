@@ -105,6 +105,24 @@ describe("the preload's state directory cleanup", () => {
 		expect(existsSync(foreign)).toBe(true);
 	});
 
+	test("the stale sweep keeps an old directory whose owning process is alive and removes one whose owner is dead", () => {
+		const root = tempRoot();
+		const now = Date.UTC(2026, 9, 29, 12);
+		const agedMs = (hours: number): number => (now - hours * 3_600_000) / 1000;
+		const make = (name: string): string => {
+			const path = join(root, name);
+			mkdirSync(path);
+			utimesSync(path, agedMs(25), agedMs(25));
+			return path;
+		};
+		// This process is alive for the whole run; PID 2147483646 is above every platform's PID limit, so none has it.
+		const live = make(`${TEST_STATE_DIR_PREFIX}${process.pid}-live`);
+		const dead = make(`${TEST_STATE_DIR_PREFIX}2147483646-dead`);
+		removeStaleTestStateDirs(root, now);
+		expect(existsSync(live)).toBe(true);
+		expect(existsSync(dead)).toBe(false);
+	});
+
 	test("the sweep and the reset never throw on a root that does not exist", () => {
 		const missing = join(tempRoot(), "nope", "nested");
 		expect(() => removeStaleTestStateDirs(missing)).not.toThrow();

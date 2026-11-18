@@ -423,7 +423,9 @@ describe("error mapping", () => {
 		const controller = new AbortController();
 		controller.abort();
 		const { fetch } = fakeFetch(() => Response.json({ code: 0, data: [] }));
-		await expect(clientWith(fetch, { signal: controller.signal }).health()).rejects.toBeDefined();
+		await expect(clientWith(fetch, { signal: controller.signal }).health()).rejects.toBe(
+			controller.signal.reason,
+		);
 	});
 });
 

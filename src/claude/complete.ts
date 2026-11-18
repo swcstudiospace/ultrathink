@@ -90,10 +90,19 @@ export function isChildInvocation(env: Record<string, string | undefined> = proc
 	return env[CHILD_ENV] === "1";
 }
 
+/** Largest single argv element Linux accepts (MAX_ARG_STRLEN); a longer system prompt fails at spawn with E2BIG. */
+const MAX_SYSTEM_PROMPT_BYTES = 128 * 1024;
+
 export function buildClaudeArgs(
 	system: string,
 	opts: Pick<ClaudeCompleteOptions, "model" | "settingSources"> = {},
 ): string[] {
+	const bytes = Buffer.byteLength(system);
+	if (bytes > MAX_SYSTEM_PROMPT_BYTES) {
+		throw new Error(
+			`system prompt is ${bytes} bytes; the claude CLI passes it as one argument, limit ${MAX_SYSTEM_PROMPT_BYTES}`,
+		);
+	}
 	const args = [
 		"-p",
 		"--tools",

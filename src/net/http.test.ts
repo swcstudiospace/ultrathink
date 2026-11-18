@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { MAX_RESPONSE_CHARS, requestJson } from "./http.ts";
+import { MAX_RESPONSE_BYTES, requestJson } from "./http.ts";
 
 function respond(body: string, status = 200): typeof fetch {
 	return (async () => new Response(body, { status })) as unknown as typeof fetch;
@@ -141,10 +141,38 @@ describe("requestJson", () => {
 		await expect(pending).rejects.toBeDefined();
 	});
 
+	test("abortable does not leave the work promise unhandled when the signal is already aborted", async () => {
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const controller = new AbortController();
+			const reason = new Error("caller gone");
+			controller.abort(reason);
+			const failing = (async (_url: string, init?: RequestInit) => {
+				throw init?.signal?.reason;
+			}) as unknown as typeof fetch;
+			const out = await requestJson("https://svc.test/x", {
+				timeoutMs: 5000,
+				fetch: failing,
+				signal: controller.signal,
+			}).catch((error: unknown) => error);
+			const flushed = Promise.withResolvers<void>();
+			setImmediate(flushed.resolve);
+			await flushed.promise;
+			expect(out).toBe(reason);
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+
 	test("refuses an oversized response", async () => {
 		const out = await requestJson("https://svc.test/big", {
 			timeoutMs: 1000,
-			fetch: respond("x".repeat(MAX_RESPONSE_CHARS + 1)),
+			fetch: respond("x".repeat(MAX_RESPONSE_BYTES + 1)),
 		});
 		expect(out).toMatchObject({ kind: "network", message: "response too large" });
 	});
@@ -172,6 +200,6 @@ describe("requestJson", () => {
 		expect(out).toMatchObject({ kind: "network", message: "response too large" });
 		expect(Date.now() - started).toBeLessThan(5000);
 		expect(cancelled).toBe(true);
-		expect(pulled).toBeLessThan(MAX_RESPONSE_CHARS / (1024 * 1024) + 3);
+		expect(pulled).toBeLessThan(MAX_RESPONSE_BYTES / (1024 * 1024) + 3);
 	});
 });

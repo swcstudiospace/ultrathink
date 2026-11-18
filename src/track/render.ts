@@ -116,7 +116,11 @@ function todoLine(
 	// Model-controlled text on one line, capped: a newline in it would open a heading or a fake checklist item.
 	const line = clip(title.replace(/\s+/g, " ").trim(), max).text;
 	const notion = notionUrl ? ` · notion: ${notionUrl}` : "";
-	return `${indent}- [ ] ${id} · ${ref ? `[${ref.identifier}](${ref.url})` : "(pending)"} · ${line}${notion}`;
+	// Tracker values are untrusted text: escape the link text, and percent-encode the destination so they cannot close the link early.
+	const link = ref
+		? `[${ref.identifier.replace(/[\\[\]]/g, "\\$&")}](${ref.url.replace(/[\s()\\<>]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`)})`
+		: "(pending)";
+	return `${indent}- [ ] ${id} · ${link} · ${line}${notion}`;
 }
 
 /** Markdown checklist, one line per node then its indented steps, each carrying its tracker links. */

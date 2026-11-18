@@ -289,23 +289,23 @@ function startFlight(
 export async function ensureFreshGrokAuth(
 	opts: EnsureFreshOptions = {},
 ): Promise<GrokAuth | undefined> {
-	const auth = readGrokAuth(opts.home);
+	const source = opts.env ?? process.env;
+	const home = grokHome(opts.home, source);
+	const auth = readGrokAuth(home);
 	if (!auth) return undefined;
 	if (!opts.force && !isGrokAuthExpired(auth, opts.now, opts.skewMs)) return auth;
 	if (!auth.refreshToken) return auth;
 	if (opts.signal?.aborted) return auth;
 
-	const key = grokHome(opts.home);
 	const now = opts.now ?? Date.now();
-	let flight = inflight.get(key);
+	let flight = inflight.get(home);
 	if (!flight) {
-		const last = refreshedAt.get(key);
+		const last = refreshedAt.get(home);
 		if (!opts.force && last !== undefined && now >= last && now - last < REFRESH_WINDOW_MS)
 			return auth;
-		const env: Record<string, string | undefined> = grokChildEnv(opts.env ?? process.env);
-		const home = opts.home?.trim();
-		if (home) env.GROK_HOME = home;
-		flight = startFlight(key, [opts.bin?.trim() || "grok", "models"], env, opts, now);
+		const env: Record<string, string | undefined> = grokChildEnv(source);
+		env.GROK_HOME = home;
+		flight = startFlight(home, [opts.bin?.trim() || "grok", "models"], env, opts, now);
 	}
 
 	const shared = flight;
@@ -320,7 +320,7 @@ export async function ensureFreshGrokAuth(
 	if (onAbort) signal?.removeEventListener("abort", onAbort);
 	shared.waiters--;
 	if (!shared.settled && shared.waiters === 0) shared.controller.abort();
-	const fresh = readGrokAuth(opts.home);
+	const fresh = readGrokAuth(home);
 	if (outcome === true && fresh && isGrokAuthExpired(fresh, opts.now, opts.skewMs))
 		return { ...fresh, refreshTimedOut: true };
 	return fresh;
@@ -330,7 +330,7 @@ export async function ensureFreshGrokAuth(
 export async function grokAuthStatusFresh(opts: EnsureFreshOptions = {}): Promise<GrokAuthStatus> {
 	return statusFromAuth(
 		await ensureFreshGrokAuth(opts),
-		grokHome(opts.home),
+		grokHome(opts.home, opts.env ?? process.env),
 		opts.now ?? Date.now(),
 	);
 }

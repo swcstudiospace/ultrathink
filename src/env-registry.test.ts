@@ -37,6 +37,24 @@ describe("validateEnv: one case per kind", () => {
 		expect(problems({ DESK_GATEWAY_URL: "https://gateway.example.com/base" })).toEqual([]);
 	});
 
+	test("url: SUBSTRATE_URL gets the service-URL rule only when a Substrate token is set", () => {
+		expect(problems({ SUBSTRATE_URL: "http://example.com" })).toEqual([]);
+		expect(problems({ SUBSTRATE_URL: "http://example.com", SUBSTRATE_TOKEN: "t" })).toEqual([
+			"SUBSTRATE_URL:bad-kind",
+		]);
+		expect(problems({ SUBSTRATE_URL: "http://100.100.1.2:8080", SUBSTRATE_TOKEN: "t" })).toEqual(
+			[],
+		);
+		expect(
+			problems({ SUBSTRATE_URL: "https://user:pw@substrate.example", SUBSTRATE_TOKEN: "t" }),
+		).toEqual(["SUBSTRATE_URL:bad-kind"]);
+	});
+
+	test("url: every url row declares the policy its reader applies", () => {
+		const missing = ENV_REGISTRY.filter((def) => def.kind === "url" && !def.urlPolicy);
+		expect(missing.map((def) => def.name)).toEqual([]);
+	});
+
 	test("url: a Decisions endpoint the client would ignore is reported, the default host is clean", () => {
 		expect(problems({ ULTRATHINK_DECISIONS_URL: "https://other.example.com/decisions" })).toEqual([
 			"ULTRATHINK_DECISIONS_URL:bad-kind",

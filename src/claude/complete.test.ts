@@ -46,6 +46,12 @@ describe("buildClaudeArgs", () => {
 		expect(args[args.indexOf("--model") + 1]).toBe("sonnet");
 		expect(args[args.indexOf("--setting-sources") + 1]).toBe("user");
 	});
+
+	test("refuses a system prompt over 128 KiB before spawn and passes one at the limit", () => {
+		const limit = 128 * 1024;
+		expect(buildClaudeArgs("x".repeat(limit)).at(-1)).toHaveLength(limit);
+		expect(() => buildClaudeArgs("x".repeat(limit + 1))).toThrow("system prompt is 131073 bytes");
+	});
 });
 
 describe("parseClaudeJson", () => {

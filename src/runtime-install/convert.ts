@@ -73,15 +73,19 @@ function tomlString(value: string): string {
 	return JSON.stringify(value).replace(/\u007f/g, "\\u007f");
 }
 
-/** A multi-line literal string when the text allows it (nothing to escape), else a basic one. */
+/**
+ * A multi-line literal string when the text allows it (nothing to escape), else a basic one. The body follows the
+ * opening delimiter directly: TOML 1.0 trims a newline there but older parsers keep it, and toToml has already dropped
+ * leading blank lines, so no parser can see a difference. Empty text stays empty rather than gaining a newline.
+ */
 function tomlMultiline(text: string): string {
-	const body = text.endsWith("\n") ? text : `${text}\n`;
-	if (!body.includes("'''") && !TOML_CONTROL.test(body)) return `'''\n${body}'''`;
+	const body = text === "" || text.endsWith("\n") ? text : `${text}\n`;
+	if (!body.includes("'''") && !TOML_CONTROL.test(body)) return `'''${body}'''`;
 	const escaped = body
 		.replace(/[\\"]/g, "\\$&")
 		.replace(
 			/[\u0000-\u0008\u000b-\u001f\u007f]/g,
 			(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
 		);
-	return `"""\n${escaped}"""`;
+	return `"""${escaped}"""`;
 }

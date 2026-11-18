@@ -12,13 +12,17 @@ const KEY = `sk-or-v1-${"Abc123_-".repeat(4)}`;
 
 function fakeFetch(responses: Array<Response | Error>): {
 	fetch: typeof fetch;
-	calls: Array<{ url: string; auth: string | null }>;
+	calls: Array<{ url: string; auth: string | null; redirect: RequestInit["redirect"] }>;
 } {
-	const calls: Array<{ url: string; auth: string | null }> = [];
+	const calls: Array<{ url: string; auth: string | null; redirect: RequestInit["redirect"] }> = [];
 	let i = 0;
 	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
 		const headers = new Headers(init?.headers);
-		calls.push({ url: String(input), auth: headers.get("authorization") });
+		calls.push({
+			url: String(input),
+			auth: headers.get("authorization"),
+			redirect: init?.redirect,
+		});
 		const next = responses[Math.min(i++, responses.length - 1)];
 		if (next instanceof Error) throw next;
 		return next as Response;
@@ -44,7 +48,7 @@ describe("verifyOpenRouterKey", () => {
 	test("a key OpenRouter accepts is ok, sent as a bearer to the key endpoint", async () => {
 		const { fetch, calls } = fakeFetch([new Response("{}", { status: 200 })]);
 		expect(await verifyOpenRouterKey(KEY, { fetch, sleep: noSleep })).toEqual({ ok: true });
-		expect(calls).toEqual([{ url: OPENROUTER_KEY_URL, auth: `Bearer ${KEY}` }]);
+		expect(calls).toEqual([{ url: OPENROUTER_KEY_URL, auth: `Bearer ${KEY}`, redirect: "error" }]);
 	});
 
 	test("a 401 is a final rejection and is not retried", async () => {
@@ -61,6 +65,22 @@ describe("verifyOpenRouterKey", () => {
 		]);
 		expect(await verifyOpenRouterKey(KEY, { fetch, sleep: noSleep })).toEqual({ ok: true });
 		expect(calls).toHaveLength(2);
+	});
+
+	test("a retried 5xx body is cancelled, and every verification request refuses redirects", async () => {
+		let cancelled = 0;
+		const failing = new Response(
+			new ReadableStream({
+				cancel() {
+					cancelled++;
+				},
+			}),
+			{ status: 503 },
+		);
+		const { fetch, calls } = fakeFetch([failing, new Response("{}", { status: 200 })]);
+		expect(await verifyOpenRouterKey(KEY, { fetch, sleep: noSleep })).toEqual({ ok: true });
+		expect(cancelled).toBe(1);
+		expect(calls.map((call) => call.redirect)).toEqual(["error", "error"]);
 	});
 
 	test("three network failures are reported as unreachable after three attempts", async () => {

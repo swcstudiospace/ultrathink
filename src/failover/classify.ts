@@ -92,7 +92,7 @@ const RESOURCE_RES: readonly RegExp[] = [
 	/out of memory/i,
 ];
 
-const TIMEOUT_RES: readonly RegExp[] = [/timed out/i, /\btimeout\b/i];
+const TIMEOUT_RES: readonly RegExp[] = [/timed out after \d+\s*m?s\b/i, /^\s*request timeout\s*$/i];
 
 const UNAVAILABLE_RES: readonly RegExp[] = [/\benoent\b/i, /command not found/i];
 
@@ -144,6 +144,14 @@ function isRefusedConnection(error: unknown, message: string): boolean {
 	return anyMatch(REFUSED_RES, message);
 }
 
+/** A socket or connect timeout by its code: a network failure, as its ETIMEDOUT text already is. */
+const NETWORK_CODES: Record<string, true> = { ETIMEDOUT: true };
+
+function hasNetworkCode(error: unknown): boolean {
+	const code = readString(error, "code");
+	return code !== undefined && Object.hasOwn(NETWORK_CODES, code);
+}
+
 /** Maps a thrown value from any inference route onto one failover class. */
 export function classifyFailure(error: unknown): FailureClass {
 	const name = readString(error, "name");
@@ -155,6 +163,8 @@ export function classifyFailure(error: unknown): FailureClass {
 		}
 	}
 	if (isAbortError(error)) return "aborted";
+	// The runtime's own timeout (AbortSignal.timeout, fetch) names itself, whatever its message says.
+	if (name === "TimeoutError") return "timeout";
 	const message = messageOf(error);
 	if (anyMatch(MODEL_UNAVAILABLE_RES, message)) return "model-unavailable";
 	if (anyMatch(PLAN_LIMIT_RES, message)) return "plan-limit";
@@ -167,6 +177,7 @@ export function classifyFailure(error: unknown): FailureClass {
 	if (
 		isResourceFailure(error, message) ||
 		isRefusedConnection(error, message) ||
+		hasNetworkCode(error) ||
 		anyMatch(NETWORK_RES, message)
 	) {
 		return "network";
@@ -192,12 +203,36 @@ const COOLDOWN_MS: Record<FailureClass, number> = {
 	other: 0,
 };
 
+/** Which classes a failover can help with. Its own table, so retuning a cooldown never changes this. */
+const FAILOVER_WORTHY: Record<FailureClass, boolean> = {
+	auth: true,
+	billing: true,
+	"plan-limit": true,
+	"rate-limit": true,
+	overloaded: true,
+	"model-unavailable": true,
+	unavailable: true,
+	network: true,
+	timeout: true,
+	aborted: false,
+	other: false,
+};
+
 /**
  * Whether trying another candidate can help: the caller's own cancel or an unreadable reply cannot. A timeout can: a
  * hung route is skipped for a short cooldown instead of being retried forever.
  */
 export function isFailoverWorthy(failure: FailureClass): boolean {
-	return COOLDOWN_MS[failure] > 0;
+	return FAILOVER_WORTHY[failure];
+}
+
+/**
+ * Whether a value read from the shared state file is a class the writer can persist, that is a failover-worthy one. A
+ * plain key check would also accept `aborted` and `other`, which the writer never stores.
+ */
+export function isPersistedFailure(value: unknown): value is FailureClass {
+	if (typeof value !== "string" || !Object.hasOwn(FAILOVER_WORTHY, value)) return false;
+	return FAILOVER_WORTHY[value as FailureClass];
 }
 
 /** How long a candidate that failed this way is skipped before it is retried. */

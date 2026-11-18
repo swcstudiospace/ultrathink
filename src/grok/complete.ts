@@ -290,14 +290,41 @@ function callGuard(opts: GrokCompleteOptions): CallGuard {
 	};
 }
 
+/** Bytes of an error body read before redaction: a secret that starts inside the window is whole before the 500-character cut. */
+const ERROR_BODY_WINDOW_BYTES = 4096;
+
+/** Reads the first `maxBytes` of a reply body as UTF-8 and stops there; `complete` is false when the body was longer. */
+async function readPrefix(
+	res: Response,
+	maxBytes: number,
+): Promise<{ text: string; complete: boolean }> {
+	const reader = res.body?.getReader();
+	if (!reader) return { text: "", complete: true };
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (;;) {
+		const next = await reader.read();
+		if (next.done) break;
+		chunks.push(next.value);
+		total += next.value.byteLength;
+		if (total > maxBytes) {
+			await reader.cancel();
+			const head = Buffer.concat(chunks).subarray(0, maxBytes);
+			return { text: new TextDecoder().decode(head), complete: false };
+		}
+	}
+	return { text: new TextDecoder().decode(Buffer.concat(chunks)), complete: true };
+}
+
 /**
  * Reads an error body for the message. A timeout or caller abort while reading is the call's own
  * failure and must not be mistaken for a bad login or an HTTP error; any other read failure leaves
- * the body empty.
+ * the body empty. Only the first `ERROR_BODY_WINDOW_BYTES` of the body are read.
  */
 async function errorBody(res: Response, guard: CallGuard): Promise<string> {
 	try {
-		return redactSecrets(await res.text()).slice(0, 500);
+		const { text } = await readPrefix(res, ERROR_BODY_WINDOW_BYTES);
+		return redactSecrets(text).slice(0, 500);
 	} catch (error) {
 		const mapped = guard.wrap(error);
 		if (mapped !== error) throw mapped;
@@ -390,7 +417,11 @@ async function httpAttempt(
 			throw new GrokAuthError(`Grok login rejected (HTTP ${res.status}): ${LOGIN_HINT}`);
 		}
 		if (!res.ok) throw httpError("grok HTTP", res, await errorBody(res, guard));
-		const reply: unknown = await res.json();
+		const { text, complete } = await readPrefix(res, CLI_MAX_BYTES).catch((error: unknown) => {
+			throw guard.wrap(error);
+		});
+		if (!complete) throw new Error("grok output exceeded the 4 MB cap");
+		const reply: unknown = JSON.parse(text);
 		if (isIncompleteReply(reply))
 			throw truncatedReply("grok reply was cut short (status incomplete)");
 		reportUsage(opts, reply, model);
@@ -447,6 +478,8 @@ function completeCli(
 	model: string,
 	effort: GrokEffort | undefined,
 ): Promise<string> {
+	if (model.startsWith("-"))
+		return Promise.reject(new Error(`grok model must not start with "-": ${model}`));
 	return withGrokRetry(() => cliAttempt(system, user, opts, model, effort), opts);
 }
 

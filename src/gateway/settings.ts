@@ -46,26 +46,26 @@ export function serviceBackend(
 	return configured === "gateway" ? "gateway" : "direct";
 }
 
-/** Credential selection is independent of URL/seat readiness and uses the same store-first rule on every path. */
+/**
+ * Credential selection is independent of URL/seat readiness and uses the same store-first rule on every path.
+ * `readStore` is non-strict, so a missing or corrupt store reads as empty. A non-string credential value is
+ * ignored, so the environment fallback applies.
+ */
 export function resolveGatewayToken(
 	storePath: string | undefined,
 	env: Record<string, string | undefined>,
 ): { token: string; source: GatewayTokenSource } | undefined {
-	try {
-		const providers = readStore(storePath ?? defaultStorePath(env)).providers as Partial<
-			Record<string, Credential>
-		>;
-		const credential = providers[GATEWAY_STORE_PROVIDER];
-		if (credential?.kind === "api_key") {
-			const token = credential.apiKey.trim();
-			if (token) return { token, source: "store" };
-		}
-		if (credential?.kind === "oauth" && credential.tokens?.accessToken) {
-			const token = credential.tokens.accessToken.trim();
-			if (token) return { token, source: "store" };
-		}
-	} catch {
-		// reason: unreadable store falls back to the environment; the failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
+	const providers = readStore(storePath ?? defaultStorePath(env)).providers as Partial<
+		Record<string, Credential>
+	>;
+	const credential = providers[GATEWAY_STORE_PROVIDER];
+	if (credential?.kind === "api_key" && typeof credential.apiKey === "string") {
+		const token = credential.apiKey.trim();
+		if (token) return { token, source: "store" };
+	}
+	if (credential?.kind === "oauth" && typeof credential.tokens?.accessToken === "string") {
+		const token = credential.tokens.accessToken.trim();
+		if (token) return { token, source: "store" };
 	}
 	const fromEnv = env[GATEWAY_TOKEN_ENV]?.trim();
 	return fromEnv ? { token: fromEnv, source: GATEWAY_TOKEN_ENV } : undefined;

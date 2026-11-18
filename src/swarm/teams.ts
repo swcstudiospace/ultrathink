@@ -28,6 +28,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { buildBlock, type PstackInput } from "../cursor/pstack.ts";
+import { clip } from "../resilience/limits.ts";
 import { dropJevKeys } from "../route-defaults.ts";
 import { isRecord } from "../shared.ts";
 import { type ClassifyVerdict, preflightClassify } from "./classify.ts";
@@ -988,11 +989,12 @@ export async function stopLanes(
 
 /** Untrusted lane-written text rendered as data: control characters and runs of whitespace become one space. */
 function oneLine(text: string, max: number): string {
-	return text
+	const flat = text
 		.replace(/\p{Cc}+/gu, " ")
 		.replace(/\s+/g, " ")
-		.trim()
-		.slice(0, max);
+		.trim();
+	// reason: an empty marker keeps the output as it was, and clip never leaves a lone high surrogate at the cut
+	return clip(flat, max, "").text;
 }
 
 /** What a lane's own `autonomous.log` says (written once, at the end of the run). */

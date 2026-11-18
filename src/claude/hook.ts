@@ -105,9 +105,10 @@ import {
 	isTurnSessionId,
 	newTurnSessionId,
 	readSession,
-	readSkipOnce,
+	readSkipOnceStamp,
 	type SessionRecord,
 	sessionPath,
+	type SkipOnceStamp,
 	trackingCheckpoint,
 	updateSession,
 	writeSession,
@@ -150,9 +151,11 @@ export interface HookDeps {
 	stateLock?: LockOptions;
 	/**
 	 * The session's armed /ultrathink-skip as the caller read it, before any engine wait (the Claude/Grok/Muse hook and
-	 * planPrompt both do). Absent, the hook reads it at its own start. Either way, a prompt skipped by it clears the flag.
+	 * planPrompt both do): a stamp of the flag it saw, which a consume checks, or a boolean (true: armed with no stamp to
+	 * check; false: not armed). Absent, the hook reads the flag at its own start. Either way, a prompt skipped by it clears
+	 * the flag.
 	 */
-	armedSkip?: boolean;
+	armedSkip?: boolean | SkipOnceStamp;
 	clarify?: (opts: RunClarifyOptions) => Promise<{ items: Clarification[]; failed?: string }>;
 	/** Test seam for the Graph of Thought; defaults to `runThink`. */
 	think?: (opts: RunThinkOptions) => Promise<ThinkResult>;
@@ -170,7 +173,7 @@ export interface HookDeps {
 	/**
 	 * Test seam for the Agent Substrate brief; defaults to the real fail-open `fetchBrief` against `config.substrate.url`,
 	 * with the env the host injected (`decisionsDeps.env`) or else `process.env`. Resolves to a {@link BriefResult}: a
-	 * missing brief is `state: "none"` with a `reason`, never a rejection (a rejection still reads as no brief).
+	 * missing brief is `state: "none"` with a `reason`, never a rejection (a rejection reads as `unreachable`).
 	 */
 	brief?: (input: {
 		repo?: string;
@@ -1023,9 +1026,11 @@ export async function runPromptSubmit(
 	const sessionId = hostSessionId(input.session_id) ?? newTurnSessionId();
 
 	// The armed skip belongs to this session alone; the global control file never carries one. A caller that read it before
-	// an engine wait passes that value, so a skip armed during the wait waits for this session's next prompt. The prompt
-	// that consumes the flag clears it here.
-	const skipArmed = deps.armedSkip ?? readSkipOnce(deps.stateDir, sessionId);
+	// an engine wait passes that read (a stamp of the flag it saw), so a skip armed during the wait waits for this session's
+	// next prompt. The prompt that consumes the flag clears that flag, and only that flag.
+	const armedRead = deps.armedSkip ?? readSkipOnceStamp(deps.stateDir, sessionId);
+	const armedStamp = typeof armedRead === "object" ? armedRead : undefined;
+	const skipArmed = armedRead !== undefined && armedRead !== false;
 	const state: UpliftState = {
 		enabled: deps.control.enabled ?? deps.config.uplift.enabled,
 		skipOnce: skipArmed,
@@ -1037,7 +1042,7 @@ export async function runPromptSubmit(
 	// skip leaves it armed for the real next prompt.
 	if (skipArmed && decision.action === "skip" && decision.reason === "skip-once") {
 		try {
-			clearSkipOnce(deps.stateDir, sessionId);
+			clearSkipOnce(deps.stateDir, sessionId, armedStamp);
 		} catch {
 			// reason: fail-open: a skip-once marker that cannot be removed only skips one later planning pass; the prompt must not block on it
 		}
@@ -1156,7 +1161,7 @@ export async function runPromptSubmit(
 			branch: git.branch,
 			surface: deps.surface ?? "claude-code",
 			signal: lifetime,
-		}).catch((): BriefResult => ({ text: "", state: "none" }));
+		}).catch((): BriefResult => ({ text: "", state: "none", reason: "unreachable" }));
 
 		// The Realm probe runs beside the brief and the uplift, once per plan, capped at 1 s; it never rejects.
 		// The async wrapper turns a seam that throws before returning its promise into a rejection too.

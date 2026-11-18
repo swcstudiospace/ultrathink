@@ -77,6 +77,30 @@ describe("json edits", () => {
 		expect(revertEdit(text.replace('"s"', '"t"'), record)).toBeUndefined();
 	});
 
+	test("refuse to rewrite numbers JSON cannot round-trip, and keep safe integers exactly", () => {
+		for (const text of [
+			'{"big": 12345678901234567890}',
+			'{"huge": 1e400}',
+			'{"a": [9007199254740993]}',
+		]) {
+			expect(() => applyEdit(text, json(["x"], 1))).toThrow("settings.json: refusing to rewrite");
+		}
+		expect(() => applyEdit("{}", json(["x"], Number.POSITIVE_INFINITY))).toThrow("settings.json");
+
+		const good = applyEdit('{"a": 1}', json(["b"], 2));
+		const bigged = good.text.replace('"a": 1', '"a": 12345678901234567890');
+		expect(revertEdit(bigged, good.record)).toBeUndefined();
+
+		const safe = '{"lo": -9007199254740991, "hi": 9007199254740991}';
+		const out = applyEdit(safe, json(["k"], 9007199254740991)).text;
+		expect(JSON.parse(out)).toEqual({
+			lo: -9007199254740991,
+			hi: 9007199254740991,
+			k: 9007199254740991,
+		});
+		expect(out).toContain('"lo": -9007199254740991');
+	});
+
 	test("reject files and keys they cannot edit safely", () => {
 		expect(() => applyEdit("// c\n{}\n", json(["a"], 1))).toThrow(
 			"settings.json is not plain JSON",

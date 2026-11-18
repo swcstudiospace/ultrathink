@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOSTS } from "../host/types.ts";
@@ -120,6 +128,20 @@ describe("resolveSubstrateToken default file read", () => {
 		expect(resolveSubstrateToken(env, "isdir")).toBeNull();
 		// An oversize file is not a token file: its content must not leak through the result.
 		expect(resolveSubstrateToken(env, "big")).toBeNull();
+	});
+
+	// A sysfs file reports a 4 KiB size but holds a few bytes, so a read returns fewer bytes than statSync promised.
+	// Such a read must not be padded with NUL bytes and used as a token.
+	const SHORT_READ = "/sys/devices/system/cpu/online";
+	test.skipIf(
+		!existsSync(SHORT_READ) || readFileSync(SHORT_READ).length >= statSync(SHORT_READ).size,
+	)("a token file whose read comes back short is refused, not used", () => {
+		expect(
+			resolveSubstrateToken(
+				{ SUBSTRATE_TOKEN_FILE: SHORT_READ, SUBSTRATE_TOKENS_DIR: root },
+				"omp",
+			),
+		).toBeNull();
 	});
 
 	test("SUBSTRATE_TOKEN_FILE is read from the named path and wins over the per-surface file", () => {

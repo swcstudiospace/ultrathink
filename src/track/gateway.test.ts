@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, type UltrathinkConfig } from "../config.ts";
@@ -14,6 +14,8 @@ let dir: string;
 let path: string;
 // Fixed wall clock: fixtures and expiry checks read the same instant on every run.
 const FIXED = 1_700_000_000_000;
+// A Notion data source id as Notion returns it: the query only ever sees a UUID here.
+const DATA_SOURCE = "collection://3f2a9c1e-7b4d-4e8f-9a6b-1c2d3e4f5a6b";
 beforeEach(() => {
 	setSystemTime(FIXED);
 	dir = mkdtempSync(join(tmpdir(), "ut-gateway-"));
@@ -30,7 +32,7 @@ const plan = { graphId: "g1" } as TrackPlan;
 function configured(
 	over: { team?: string; dataSourceUrl?: string } = {
 		team: "Team",
-		dataSourceUrl: "collection://ds",
+		dataSourceUrl: DATA_SOURCE,
 	},
 ): UltrathinkConfig {
 	const config = defaultConfig();
@@ -104,7 +106,7 @@ describe("createGatewayTracker", () => {
 			providers: { linear: expiredOauth("https://mcp.linear.app", FIXED) },
 		});
 		const urls: string[] = [];
-		const tracker = createGatewayTracker(configured({ dataSourceUrl: "collection://ds" }), {
+		const tracker = createGatewayTracker(configured({ dataSourceUrl: DATA_SOURCE }), {
 			storePath: path,
 			fetch: recordingFetch(urls),
 		})!;
@@ -128,6 +130,56 @@ describe("createGatewayTracker", () => {
 		expect(urls).toEqual([]);
 	});
 
+	test("a budget stop ends the wait on the store lock: no token refresh once the tracker has given up", async () => {
+		writeStore(path, {
+			version: 1,
+			providers: { notion: expiredOauth("https://mcp.notion.com", FIXED) },
+		});
+		// Another holder keeps the store lock, so the credential lookup can only poll for it.
+		mkdirSync(`${path}.lock`);
+		const urls: string[] = [];
+		const config = configured();
+		config.track.budgetMs = 50;
+		// The budget timer is armed on a test-held port and fired by hand, as in the slow-auth case.
+		const armed = Promise.withResolvers<() => void>();
+		const timers = {
+			setTimeout: (fn: () => void) => {
+				armed.resolve(fn);
+				return {} as NodeJS.Timeout;
+			},
+			clearTimeout: () => undefined,
+		};
+		const tracker = createGatewayTracker(config, {
+			storePath: path,
+			fetch: recordingFetch(urls),
+			timers,
+		})!;
+		const tracking = tracker({ plan });
+		const fireBudget = await armed.promise;
+		fireBudget();
+		expect(await tracking).toBeUndefined();
+		// Free the lock: a lookup still polling would take it now and refresh the expired token.
+		rmSync(`${path}.lock`, { recursive: true, force: true });
+		// The store lock polls on the platform clock inside withStoreLock, and the gateway has no seam to reach it,
+		// so a real wait of a few poll intervals (100 ms each) is the only way to let a stray poll run.
+		await Bun.sleep(250);
+		expect(urls).toEqual([]);
+	});
+
+	test("a Notion data source id that is not a UUID is refused before any Notion call, and the refusal is logged", () => {
+		const urls: string[] = [];
+		const lines: string[] = [];
+		const tracker = createGatewayTracker(
+			configured({ team: "", dataSourceUrl: `collection://x" OR 1=1 --` }),
+			{ storePath: path, fetch: recordingFetch(urls), log: (line) => lines.push(line) },
+		);
+		expect(tracker).toBeUndefined();
+		expect(lines).toEqual([
+			"tracker: notion.dataSourceUrl is not a Notion data source id; Notion tracking is off",
+		]);
+		expect(urls).toEqual([]);
+	});
+
 	test("auth resolution slower than the budget returns undefined", async () => {
 		const now = FIXED;
 		writeStore(path, {
@@ -136,8 +188,10 @@ describe("createGatewayTracker", () => {
 		});
 		const hang = Promise.withResolvers<Response>();
 		const urls: string[] = [];
-		const fakeFetch = (async (input: string | URL | Request) => {
+		const signals: Array<AbortSignal | null | undefined> = [];
+		const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
 			urls.push(String(input));
+			signals.push(init?.signal);
 			return hang.promise;
 		}) as typeof fetch;
 		const config = configured();
@@ -158,6 +212,9 @@ describe("createGatewayTracker", () => {
 		const result = await tracking;
 		expect(result).toBeUndefined();
 		expect(urls).toEqual(["https://mcp.notion.com/token"]);
+		// The token request in flight when the budget ended the wait was cut with it.
+		expect(signals).toHaveLength(1);
+		expect(signals[0]?.aborted).toBe(true);
 		// Let the pending refresh settle before the temp dir is removed: a second resolve
 		// waits on the store lock the first refresh still holds.
 		hang.resolve(new Response("{}", { status: 500 }));
@@ -183,7 +240,7 @@ describe("createGatewayTracker", () => {
 				status: 200,
 			});
 		}) as typeof fetch;
-		const config = configured({ dataSourceUrl: "collection://ds" });
+		const config = configured({ dataSourceUrl: DATA_SOURCE });
 		config.track.budgetMs = 0;
 		const tracker = createGatewayTracker(config, { storePath: path, fetch: fakeFetch })!;
 		const emptyPlan: TrackPlan = {

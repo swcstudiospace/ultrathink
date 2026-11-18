@@ -18,8 +18,14 @@ import {
 	type Stats,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { removeDeadLockCandidate, withFileLock, withLockMutation } from "../claude/atomic.ts";
+import {
+	LockTimeoutError,
+	removeDeadLockCandidate,
+	withFileLock,
+	withLockMutation,
+} from "../claude/atomic.ts";
 import { lastLockHeld, legacySessionPath, sessionPath } from "../claude/state.ts";
+// processIdentity lives with the swarm lane module; prune uses it to tell a live lock holder from a reused pid.
 import { processIdentity } from "../swarm/lane.ts";
 
 const DAY_MS = 86_400_000;
@@ -231,6 +237,37 @@ function removeFile(sweep: Sweep, path: string, name: string): boolean {
 	}
 }
 
+/**
+ * Runs `decide` under the session record lock, the one session writes take, without waiting on it. A live holder is
+ * contention: the candidate is kept. A lock bookkeeping failure makes `withFileLock` run its callback unlocked; that is
+ * recorded on the sweep as an error and the candidate is kept, so a decision never runs without the lock.
+ */
+function decideUnderSessionLock(sweep: Sweep, lockTarget: string, decide: () => void): void {
+	let bookkeepingError: string | undefined;
+	try {
+		withFileLock(
+			lockTarget,
+			() => {
+				if (bookkeepingError === undefined) decide();
+				else {
+					fail(sweep, basename(lockTarget), bookkeepingError);
+					sweep.result.kept++;
+				}
+			},
+			{
+				timeoutMs: 0,
+				onTimeout: "throw",
+				log: (message) => {
+					bookkeepingError = message;
+				},
+			},
+		);
+	} catch (error) {
+		if (!(error instanceof LockTimeoutError)) throw error;
+		sweep.result.kept++;
+	}
+}
+
 /** The holder record `withFileLock` writes into a lock file (`{"pid", "startTime", "token"}`), or undefined otherwise. */
 function readLockHolder(lockPath: string): { pid: number; startTime: string } | undefined {
 	let parsed: { pid?: unknown; startTime?: unknown } | null;
@@ -357,20 +394,7 @@ function sweepSkipFlags(
 			attempt();
 			continue;
 		}
-		let locked = true;
-		withFileLock(
-			join(dir, `${stem}.json`),
-			() => {
-				if (locked) attempt();
-				else sweep.result.kept++;
-			},
-			{
-				timeoutMs: 0,
-				log: () => {
-					locked = false;
-				},
-			},
-		);
+		decideUnderSessionLock(sweep, join(dir, `${stem}.json`), attempt);
 	}
 }
 
@@ -500,20 +524,7 @@ function deleteSession(
 		attempt();
 		return;
 	}
-	let locked = true;
-	withFileLock(
-		join(dir, `${stem}.json`),
-		() => {
-			if (locked) attempt();
-			else sweep.result.kept++;
-		},
-		{
-			timeoutMs: 0,
-			log: () => {
-				locked = false;
-			},
-		},
-	);
+	decideUnderSessionLock(sweep, join(dir, `${stem}.json`), attempt);
 }
 
 function sweepSessions(

@@ -19,7 +19,7 @@ import { resolveOpenRouterKey } from "../decisions/gate.ts";
 import { appendAttempts, writeShip } from "../ship/state.ts";
 import type { Tracker } from "../track/gateway.ts";
 import type { TrackingRefs } from "../track/types.ts";
-import { feedLoginInput, main, prepareRedirect } from "./cli.ts";
+import { checkOne, feedLoginInput, main, prepareRedirect } from "./cli.ts";
 import type { McpProviderId } from "./providers.ts";
 import type { Run } from "./redirect.ts";
 import { readStore, writeStore } from "./store.ts";
@@ -777,6 +777,36 @@ describe.each([
 		},
 		60_000,
 	);
+});
+
+describe("check through the real client", () => {
+	test("counts the tools of every tools/list page, following nextCursor until none is left", async () => {
+		const storePath = join(root, "credentials.json");
+		writeStore(storePath, {
+			version: 1,
+			providers: { linear: { kind: "api_key", apiKey: "lin_api_UTTESTKEY", updatedAt: 1 } },
+		});
+		const cursors: Array<string | undefined> = [];
+		const stubFetch = (async (_url: unknown, init?: RequestInit) => {
+			const rpc = JSON.parse(String(init?.body)) as {
+				id?: number;
+				method: string;
+				params?: { cursor?: string };
+			};
+			if (rpc.id === undefined) return new Response(null, { status: 202 });
+			let result: Record<string, unknown> = { protocolVersion: "2025-06-18", capabilities: {} };
+			if (rpc.method === "tools/list") {
+				cursors.push(rpc.params?.cursor);
+				result =
+					rpc.params?.cursor === undefined
+						? { tools: [{ name: "a" }, { name: "b" }], nextCursor: "page-2" }
+						: { tools: [{ name: "c" }] };
+			}
+			return Response.json({ jsonrpc: "2.0", id: rpc.id, result });
+		}) as unknown as typeof fetch;
+		expect(await checkOne("linear", { storePath, fetch: stubFetch })).toBe(3);
+		expect(cursors).toEqual([undefined, "page-2"]);
+	});
 });
 
 describe("auth login stdin wait", () => {

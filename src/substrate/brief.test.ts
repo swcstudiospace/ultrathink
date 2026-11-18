@@ -998,3 +998,129 @@ describe("boundedLine", () => {
 		expect(/[\u0000-\u001f\u007f-\u009f]/.test(result.detail ?? "")).toBe(false);
 	});
 });
+
+describe("emitEvent reply bodies", () => {
+	/** A reply whose body never ends and records when it is cancelled; only a cancel ends the stream. */
+	function endlessReply(status: number): { response: Response; cancelled: () => boolean } {
+		let cancelled = false;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				controller.enqueue(new TextEncoder().encode("{}"));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		return { response: new Response(body, { status }), cancelled: () => cancelled };
+	}
+
+	test("a 2xx lands and a non-2xx does not, and the unread body is cancelled either way", async () => {
+		for (const [status, landed] of [
+			[202, true],
+			[500, false],
+		] as const) {
+			const reply = endlessReply(status);
+			globalThis.fetch = (() => Promise.resolve(reply.response)) as unknown as typeof fetch;
+			expect(await emitEvent({ kind: "note", summary: "s" }, env(), URL_)).toBe(landed);
+			expect(reply.cancelled()).toBe(true);
+		}
+	});
+});
+
+describe("fetchBrief bounded body", () => {
+	test("a 200 body past the byte cap is cut and labelled, and the rest of the stream is cancelled", async () => {
+		const chunk = new TextEncoder().encode("a".repeat(64 * 1024));
+		let pulls = 0;
+		let cancelled = false;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (pulls++ < 16) controller.enqueue(chunk);
+				else controller.close();
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		stubFetch(() => new Response(body));
+		const brief = await fetchBrief({ repo: "a/b" }, env(), URL_);
+		expect(cancelled).toBe(true);
+		expect(pulls).toBeLessThan(16);
+		expect(brief.state).toBe("degraded");
+		expect(brief.text.split("\n")[0]).toBe(
+			"(Substrate brief is degraded; it was cut at 262144 bytes)",
+		);
+		expect(brief.text.length).toBeLessThan(300 * 1024);
+	});
+});
+
+describe("injected fetch on the direct path", () => {
+	test("a binding's fetch carries both the brief and the event, and the global fetch is never used", async () => {
+		const globalCalls = recordFetch();
+		const seen: string[] = [];
+		const injected = ((url: string) => {
+			seen.push(String(url));
+			return Promise.resolve(new Response("## Injected"));
+		}) as unknown as typeof fetch;
+		const binding = {
+			backend: "direct" as const,
+			gateway: { url: "https://gateway.example/desk", seat: "lead", timeoutMs: 8_000 },
+			fetch: injected,
+		};
+		expect(await fetchBrief({ repo: "a/b" }, env(), URL_, binding)).toEqual({
+			text: "## Injected",
+			state: "complete",
+		});
+		expect(await emitEvent({ kind: "note", summary: "s" }, env(), URL_, undefined, binding)).toBe(
+			true,
+		);
+		expect(seen).toEqual([`${URL_}/brief`, `${URL_}/events`]);
+		expect(globalCalls).toEqual([]);
+	});
+});
+
+describe("gateway binding gate", () => {
+	const gateway = { url: "https://gateway.example/desk", seat: "lead", timeoutMs: 8_000 };
+
+	test("SUBSTRATE_DISABLED with a gateway binding sends nothing and reads as disabled", async () => {
+		const seen: string[] = [];
+		const injected = ((url: string) => {
+			seen.push(String(url));
+			return Promise.resolve(new Response("ok"));
+		}) as unknown as typeof fetch;
+		const binding = { backend: "gateway" as const, gateway, fetch: injected };
+		const off = env({ SUBSTRATE_DISABLED: "1", DESK_GATEWAY_TOKEN: CANARY });
+		expect(await fetchBrief({ repo: "a/b" }, off, URL_, binding)).toEqual({
+			text: "",
+			state: "none",
+			reason: "disabled",
+		});
+		expect(await emitEvent({ kind: "note", summary: "s" }, off, URL_, undefined, binding)).toBe(
+			false,
+		);
+		expect(seen).toEqual([]);
+	});
+
+	test("a gateway that cannot be resolved reads as unreachable for the brief and false for the event", async () => {
+		const seen: string[] = [];
+		const injected = ((url: string) => {
+			seen.push(String(url));
+			return Promise.resolve(new Response("ok"));
+		}) as unknown as typeof fetch;
+		// No DESK_GATEWAY_TOKEN and an absent store: there is no token, so the gateway cannot be resolved.
+		const binding = {
+			backend: "gateway" as const,
+			gateway,
+			storePath: join(tokensDir, "no-store.json"),
+			fetch: injected,
+		};
+		expect(await fetchBrief({ repo: "a/b" }, env(), URL_, binding)).toEqual({
+			text: "",
+			state: "none",
+			reason: "unreachable",
+		});
+		expect(await emitEvent({ kind: "note", summary: "s" }, env(), URL_, undefined, binding)).toBe(
+			false,
+		);
+		expect(seen).toEqual([]);
+	});
+});

@@ -50,11 +50,17 @@ export async function verifyOpenRouterKey(key: string, deps: VerifyDeps = {}): P
 			response = await fetchImpl(OPENROUTER_KEY_URL, {
 				headers: { Authorization: `Bearer ${key}` },
 				signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
+				// A redirect would resend the bearer key to wherever it points, so it is an error.
+				redirect: "error",
 			});
 		} catch {
 			// reason: a network error is retried; after the last attempt the loop falls through to the unreachable result
 			continue;
 		}
+		// Only the status is read, so the body is released before any branch below returns.
+		await response.body?.cancel().catch(() => {
+			// reason: the body is discarded; a failed cancel leaves nothing the caller can use
+		});
 		if (response.status === 401 || response.status === 403) {
 			return {
 				ok: false,

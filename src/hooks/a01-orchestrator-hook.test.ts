@@ -7,8 +7,10 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
+	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -194,4 +196,55 @@ if (!result.ok) process.exitCode = 3;`;
 		expect(exitCode).toBe(0);
 		expect(performance.now() - started).toBeLessThan(10_000);
 	}, 30_000);
+});
+
+describe("a01 orchestrator hook: failure log rotation", () => {
+	test("an oversized log moves to .1 (overwriting it) so the active log stays under the cap", async () => {
+		const stateDir = join(tempDir(), "state");
+		mkdirSync(stateDir, { recursive: true });
+		const active = join(stateDir, "a01-failures.log");
+		const old = `${"o".repeat(256 * 1024 + 1)}\n`;
+		writeFileSync(active, old);
+		writeFileSync(`${active}.1`, "stale generation\n");
+
+		await withA01OrchestratorTimeout(__injectFaultForTest("error"), {
+			timeoutMs: 5_000,
+			stateDir,
+		});
+
+		expect(readFileSync(`${active}.1`, "utf8")).toBe(old);
+		expect(logOf(stateDir).trim().split("\n")).toHaveLength(1);
+		expect(logOf(stateDir)).toContain("FAILED: sim-error-in-a01");
+		expect(statSync(active).size).toBeLessThan(256 * 1024);
+		expect(statSync(active).mode & 0o777).toBe(0o600);
+	});
+});
+
+describe("a01 orchestrator hook: home-path redaction boundary", () => {
+	test("paths are kept only when they are inside the working tree by segment, not by string prefix", async () => {
+		const originalHome = process.env.HOME;
+		const home = realpathSync(tempDir());
+		const repo = join(home, "app");
+		mkdirSync(repo);
+		process.env.HOME = home;
+		process.chdir(repo);
+		try {
+			const stateDir = join(tempDir(), "state");
+			await withA01OrchestratorTimeout(
+				() =>
+					Promise.reject(
+						new Error(`ok ${repo}/x look-alike ${home}/app-old/x escape ${repo}/../../x`),
+					),
+				{ timeoutMs: 5_000, stateDir },
+			);
+			const log = logOf(stateDir);
+			expect(log).toContain(`${repo}/x`);
+			expect(log).not.toContain(`${home}/app-old/x`);
+			expect(log).not.toContain("../../x");
+			expect(log).toContain("[REDACTED_PATH_OUTSIDE_REPO]");
+		} finally {
+			if (originalHome === undefined) delete process.env.HOME;
+			else process.env.HOME = originalHome;
+		}
+	});
 });

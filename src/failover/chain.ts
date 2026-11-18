@@ -17,6 +17,7 @@ import {
 	type FailureClass,
 	failureCooldownMs,
 	isFailoverWorthy,
+	isPersistedFailure,
 } from "./classify.ts";
 
 export type Completer = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
@@ -57,18 +58,6 @@ function safeMessage(error: unknown, max: number): string {
 	return redactSecrets(redactLine(text, max)).slice(0, max);
 }
 
-const FAILURE_CLASSES: ReadonlySet<string> = new Set([
-	"auth",
-	"billing",
-	"plan-limit",
-	"rate-limit",
-	"overloaded",
-	"model-unavailable",
-	"unavailable",
-	"network",
-	"timeout",
-]);
-
 interface CooldownFile {
 	until: Record<string, number>;
 	failure: Record<string, FailureClass>;
@@ -90,9 +79,9 @@ function parseCooldowns(raw: unknown, at: number): CooldownFile {
 		if (typeof value !== "number" || !Number.isFinite(value) || value <= at) continue;
 		const cls: unknown =
 			typeof failure === "object" && failure !== null ? Reflect.get(failure, id) : undefined;
-		if (typeof cls !== "string" || !FAILURE_CLASSES.has(cls)) continue;
+		if (!isPersistedFailure(cls)) continue;
 		out.until[id] = value;
-		out.failure[id] = cls as FailureClass;
+		out.failure[id] = cls;
 	}
 	return out;
 }
@@ -113,6 +102,113 @@ function failoverError(
 	);
 	attachReport(error, report);
 	return error;
+}
+
+/**
+ * The cooldown state of one chain's candidates. With a persist path it also lives in the shared state file, so the
+ * next hook process starts with the same candidates cooling. Entries the ledger does not own survive every write.
+ */
+export interface CooldownLedger {
+	/** When the candidate's cooldown ends; `0` when it has none. */
+	until(id: string): number;
+	/** The class of the candidate's last failure, once it has failed. */
+	lastFailure(id: string): FailureClass | undefined;
+	/** Whether the candidate's last outcome was a failover-worthy failure and it has not answered since. */
+	isFailing(id: string): boolean;
+	/** The candidate in `list` whose cooldown ends first. */
+	earliestExpiry(list: readonly FailoverCandidate[]): FailoverCandidate | undefined;
+	/** Records a failure that does not cool the candidate. */
+	noteFailure(id: string, failure: FailureClass): void;
+	/** Cools the candidate for `cooldownMs` after a failover-worthy failure, and persists it. */
+	cool(id: string, failure: FailureClass, cooldownMs: number): void;
+	/** The candidate answered: it is no longer failing. */
+	recovered(id: string): void;
+	/** Whether a probe of the candidate is in flight. */
+	isProbing(id: string): boolean;
+	beginProbe(id: string): void;
+	endProbe(id: string): void;
+}
+
+export function createCooldownLedger(
+	candidates: readonly FailoverCandidate[],
+	now: () => number,
+	persistPath: string | undefined,
+): CooldownLedger {
+	const cooldownUntil = new Map<string, number>();
+	const lastFailure = new Map<string, FailureClass>();
+	/** Candidates whose last outcome was a failover-worthy failure. */
+	const failing = new Set<string>();
+	/** Candidates with a probe in flight, so a concurrent call does not probe the same one twice. */
+	const probing = new Set<string>();
+	if (persistPath !== undefined) {
+		const saved = parseCooldowns(readJson(persistPath), now());
+		for (const candidate of candidates) {
+			const key = cooldownKey(candidate);
+			const until = saved.until[key];
+			if (until === undefined) continue;
+			cooldownUntil.set(candidate.id, until);
+			failing.add(candidate.id);
+			const failure = saved.failure[key];
+			if (failure !== undefined) lastFailure.set(candidate.id, failure);
+		}
+	}
+
+	function persist(): void {
+		if (persistPath === undefined) return;
+		try {
+			// Under the file lock: other hook processes share the file, so this merges into what is there now and never
+			// drops an entry it does not own (a cooldown another chain learned after this one was built stays).
+			updateJsonAtomic(persistPath, (current) => {
+				const at = now();
+				const merged = parseCooldowns(current, at);
+				for (const candidate of candidates) {
+					const until = cooldownUntil.get(candidate.id);
+					const failure = lastFailure.get(candidate.id);
+					if (until === undefined || until <= at || failure === undefined) continue;
+					const key = cooldownKey(candidate);
+					if ((merged.until[key] ?? 0) >= until) continue;
+					merged.until[key] = until;
+					merged.failure[key] = failure;
+				}
+				return merged;
+			});
+		} catch {
+			// reason: cooldown persistence is an optimization; a failed write must never change the completion outcome
+		}
+	}
+
+	return {
+		until: (id) => cooldownUntil.get(id) ?? 0,
+		lastFailure: (id) => lastFailure.get(id),
+		isFailing: (id) => failing.has(id),
+		earliestExpiry: (list) => {
+			let best: FailoverCandidate | undefined;
+			for (const candidate of list) {
+				const until = cooldownUntil.get(candidate.id) ?? 0;
+				if (best === undefined || until < (cooldownUntil.get(best.id) ?? 0)) best = candidate;
+			}
+			return best;
+		},
+		noteFailure: (id, failure) => {
+			lastFailure.set(id, failure);
+		},
+		cool: (id, failure, cooldownMs) => {
+			lastFailure.set(id, failure);
+			cooldownUntil.set(id, now() + cooldownMs);
+			failing.add(id);
+			persist();
+		},
+		recovered: (id) => {
+			failing.delete(id);
+		},
+		isProbing: (id) => probing.has(id),
+		beginProbe: (id) => {
+			probing.add(id);
+		},
+		endProbe: (id) => {
+			probing.delete(id);
+		},
+	};
 }
 
 /**
@@ -142,62 +238,11 @@ export function createFailoverCompleter(
 		return { complete: first.complete, attempts: () => [], failover: () => undefined };
 	}
 	const now = opts.now ?? Date.now;
-	const cooldownUntil = new Map<string, number>();
-	const lastFailure = new Map<string, FailureClass>();
+	const ledger = createCooldownLedger(candidates, now, opts.persist?.path);
 	const attempts: FailoverAttempt[] = [];
 	let failoverText: string | undefined;
 	/** The error of the most recent fully failed walk; cleared by any answer. */
 	let remembered: Error | undefined;
-	/** Candidates with a probe in flight, so a concurrent call does not probe the same one twice. */
-	const probing = new Set<string>();
-	/** Candidates whose last outcome was a failover-worthy failure. */
-	const failing = new Set<string>();
-	const persistPath = opts.persist?.path;
-	if (persistPath !== undefined) {
-		const saved = parseCooldowns(readJson(persistPath), now());
-		for (const candidate of candidates) {
-			const key = cooldownKey(candidate);
-			const until = saved.until[key];
-			if (until === undefined) continue;
-			cooldownUntil.set(candidate.id, until);
-			failing.add(candidate.id);
-			const failure = saved.failure[key];
-			if (failure !== undefined) lastFailure.set(candidate.id, failure);
-		}
-	}
-
-	function earliestExpiry(list: readonly FailoverCandidate[]): FailoverCandidate | undefined {
-		let best: FailoverCandidate | undefined;
-		for (const candidate of list) {
-			const until = cooldownUntil.get(candidate.id) ?? 0;
-			if (best === undefined || until < (cooldownUntil.get(best.id) ?? 0)) best = candidate;
-		}
-		return best;
-	}
-
-	function persist(): void {
-		if (persistPath === undefined) return;
-		try {
-			// Under the file lock: other hook processes share the file, so this merges into what is there now and never
-			// drops an entry it does not own (a cooldown another chain learned after this one was built stays).
-			updateJsonAtomic(persistPath, (current) => {
-				const at = now();
-				const merged = parseCooldowns(current, at);
-				for (const candidate of candidates) {
-					const until = cooldownUntil.get(candidate.id);
-					const failure = lastFailure.get(candidate.id);
-					if (until === undefined || until <= at || failure === undefined) continue;
-					const key = cooldownKey(candidate);
-					if ((merged.until[key] ?? 0) >= until) continue;
-					merged.until[key] = until;
-					merged.failure[key] = failure;
-				}
-				return merged;
-			});
-		} catch {
-			// reason: cooldown persistence is an optimization; a failed write must never change the completion outcome
-		}
-	}
 
 	/** The error for a call that finds every candidate cooling and has nothing to probe. */
 	function coolingError(): Error {
@@ -205,7 +250,7 @@ export function createFailoverCompleter(
 		const parts: string[] = [];
 		let firstFailure: FailureClass | undefined;
 		for (const candidate of candidates) {
-			const failure = lastFailure.get(candidate.id) ?? "other";
+			const failure = ledger.lastFailure(candidate.id) ?? "other";
 			firstFailure ??= failure;
 			parts.push(`${candidate.label}: cooling after ${failure}`);
 		}
@@ -219,15 +264,17 @@ export function createFailoverCompleter(
 		let firstFailureHere: FailureClass | undefined;
 		if (signal?.aborted) throw abortError();
 		const at = now();
-		const ready = candidates.filter((c) => (cooldownUntil.get(c.id) ?? 0) <= at);
+		const ready = candidates.filter((c) => ledger.until(c.id) <= at);
 		if (ready.length === 0) throw coolingError();
 		let walk = ready;
 		// Every candidate has failed and none has answered since: probe the earliest to recover, never re-walk them all.
-		const probe = candidates.every((c) => failing.has(c.id)) ? earliestExpiry(ready) : undefined;
+		const probe = candidates.every((c) => ledger.isFailing(c.id))
+			? ledger.earliestExpiry(ready)
+			: undefined;
 		if (probe !== undefined) {
-			if (probing.has(probe.id)) throw coolingError();
+			if (ledger.isProbing(probe.id)) throw coolingError();
 			walk = [probe];
-			probing.add(probe.id);
+			ledger.beginProbe(probe.id);
 		}
 		const failed: { label: string; message: string }[] = [];
 		let firstError: unknown;
@@ -239,10 +286,10 @@ export function createFailoverCompleter(
 				if (signal?.aborted) throw abortError();
 				try {
 					const text = await candidate.complete(system, user, signal);
-					failing.delete(candidate.id);
+					ledger.recovered(candidate.id);
 					remembered = undefined;
 					if (candidate !== first) {
-						const summary = `${first.label} → ${candidate.label} (${firstFailureHere ?? lastFailure.get(first.id) ?? "other"})`;
+						const summary = `${first.label} → ${candidate.label} (${firstFailureHere ?? ledger.lastFailure(first.id) ?? "other"})`;
 						failoverText = summary;
 						try {
 							opts.onFailover?.(summary);
@@ -257,12 +304,12 @@ export function createFailoverCompleter(
 					const message = safeMessage(error, MAX_ATTEMPT_MESSAGE_CHARS);
 					attempts.push({ candidate: candidate.id, failure, message });
 					if (attempts.length > MAX_KEPT_ATTEMPTS) attempts.shift();
-					lastFailure.set(candidate.id, failure);
 					if (candidate === first) firstFailureHere = failure;
-					if (!isFailoverWorthy(failure)) throw error;
-					cooldownUntil.set(candidate.id, now() + failureCooldownMs(failure));
-					failing.add(candidate.id);
-					persist();
+					if (!isFailoverWorthy(failure)) {
+						ledger.noteFailure(candidate.id, failure);
+						throw error;
+					}
+					ledger.cool(candidate.id, failure, failureCooldownMs(failure));
 					if (failed.length === 0) {
 						firstError = error;
 						firstFailure = failure;
@@ -272,7 +319,7 @@ export function createFailoverCompleter(
 				}
 			}
 		} finally {
-			if (probe !== undefined) probing.delete(probe.id);
+			if (probe !== undefined) ledger.endProbe(probe.id);
 		}
 		const summary = failed.map((f) => `${f.label}: ${f.message}`).join("; ");
 		remembered = failoverError(

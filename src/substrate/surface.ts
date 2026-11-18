@@ -133,7 +133,8 @@ function firstLine(path: string): string | null {
 		const buffer = Buffer.alloc(info.size);
 		const fd = openSync(path, "r");
 		try {
-			readSync(fd, buffer, 0, info.size, 0);
+			// A short read (the file shrank since stat) would leave zero bytes in the buffer: fail closed.
+			if (readSync(fd, buffer, 0, info.size, 0) !== info.size) return null;
 		} finally {
 			closeSync(fd);
 		}

@@ -241,6 +241,41 @@ describe("planRecall", () => {
 		expect(second.audit.map((entry) => entry.outcome)).toEqual(["fired", "fired"]);
 	});
 
+	test("a scope change whose panel is entirely deduped does not arm the cooldown", () => {
+		const first = planned(planRecall(planInput({ trigger: SCOPE, nowMs: NOW })));
+		// The same items after one window: all deduped, so nothing new is surfaced and no cooldown is armed.
+		const deduped = planned(
+			planRecall(planInput({ trigger: SCOPE, nowMs: NOW + SCOPE_WINDOW, state: first.next })),
+		);
+		expect(deduped.audit).toEqual([
+			{ source: "knowledge", trigger: "scopeChange", outcome: "fired", injected: 0, deduped: 1 },
+			{ source: "lessons", trigger: "scopeChange", outcome: "fired", injected: 0, deduped: 1 },
+		]);
+		// One millisecond past the window from the first fire: a cooldown armed by the deduped call would still block it.
+		const lessons = lessonsUsed([
+			lessonRow("m1", 0.9),
+			{ ...lessonRow("m2", 0.9), preview: "Pin the toolchain." },
+		]);
+		const fresh = planned(
+			planRecall(
+				planInput({
+					trigger: SCOPE,
+					nowMs: NOW + SCOPE_WINDOW + 1,
+					state: deduped.next,
+					lookups: { ...allLookups(), lessons },
+				}),
+			),
+		);
+		expect(fresh.audit.map((entry) => entry.outcome)).toEqual(["fired", "fired"]);
+		expect(fresh.audit[1]).toEqual({
+			source: "lessons",
+			trigger: "scopeChange",
+			outcome: "fired",
+			injected: 1,
+			deduped: 1,
+		});
+	});
+
 	test("an explicit request has no cooldown", () => {
 		const first = planned(planRecall(planInput({ trigger: EXPLICIT, nowMs: NOW })));
 		const second = planned(

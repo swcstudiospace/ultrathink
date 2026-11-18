@@ -15,10 +15,22 @@
  * link or non-text file at a managed path is refused. `--runtime all` installs only into runtimes whose config
  * root already exists.
  */
-import { createHash } from "node:crypto";
-import type { Dirent } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
-import { dirname, join, posix } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { constants, type Dirent } from "node:fs";
+import {
+	chmod,
+	type FileHandle,
+	lstat,
+	mkdir,
+	open,
+	readdir,
+	readFile,
+	rename,
+	rm,
+	rmdir,
+	writeFile,
+} from "node:fs/promises";
+import { basename, dirname, join, posix } from "node:path";
 import { installPlugin, type Registration } from "../../adapters/install.ts";
 import { isDirectory } from "../shared.ts";
 import { convertArtifact, isManaged } from "./convert.ts";
@@ -278,7 +290,7 @@ async function applyInstall(plan: InstallPlan, options: InstallOptions): Promise
 		targetDir: plan.manifestDir,
 		files: new Map([[MANIFEST_FILE, serializeManifest({ ...base, generation: generation + 1 })]]),
 		requiredFiles: [MANIFEST_FILE],
-		registrations: prepared.steps.map(stepRegistration),
+		registrations: prepared.steps.map((step) => stepRegistration(plan.configRoot, step)),
 	});
 	await discardBackups(plan.configRoot, result.ok ? prepared.spent : []);
 	const touched = prepared.steps.map((step) => step.path);
@@ -567,7 +579,7 @@ async function applyUninstall(plan: InstallPlan, options: EngineOptions): Promis
 		targetDir: plan.manifestDir,
 		files: new Map([[MANIFEST_FILE, serializeManifest(emptied)]]),
 		requiredFiles: [MANIFEST_FILE],
-		registrations: steps.map(stepRegistration),
+		registrations: steps.map((step) => stepRegistration(plan.configRoot, step)),
 	});
 	if (!result.ok) {
 		await discardBackups(plan.configRoot, []);
@@ -679,18 +691,43 @@ function missingAs<T>(value: T): (error: unknown) => T {
 	};
 }
 
-/** What is at `path`: nothing, a regular UTF-8 text file, or something the installer must not touch. */
+/** The largest file the installer reads; a bigger file at a managed path is left alone rather than loaded whole. */
+const MAX_INSPECT_BYTES = 16 * 1024 * 1024;
+/** Opens without following a link at the last component, and without blocking on a FIFO. */
+const READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
+/**
+ * What is at `path`: nothing, a regular UTF-8 text file, or something the installer must not touch. The path is checked
+ * with lstat and again on the descriptor it is read through, so a path swapped for a link in between is refused.
+ */
 async function inspect(path: string): Promise<Inspected> {
 	const info = await lstat(path).catch(missingAs(undefined));
 	if (info === undefined) return { state: "absent" };
 	if (info.isSymbolicLink()) return { state: "other", reason: "is a symbolic link" };
 	if (!info.isFile()) return { state: "other", reason: "is not a regular file" };
-	const bytes = await readFile(path);
+	let handle: FileHandle;
 	try {
-		const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-		return { state: "file", text: decoder.decode(bytes) };
-	} catch {
-		return { state: "other", reason: "is not valid UTF-8 text" };
+		handle = await open(path, READ_FLAGS);
+	} catch (error) {
+		if (isMissing(error)) return { state: "absent" };
+		if (error instanceof Error && "code" in error && error.code === "ELOOP") {
+			return { state: "other", reason: "is a symbolic link" };
+		}
+		throw error;
+	}
+	try {
+		const opened = await handle.stat();
+		if (!opened.isFile()) return { state: "other", reason: "is not a regular file" };
+		if (opened.size > MAX_INSPECT_BYTES) return { state: "other", reason: "is larger than 16 MiB" };
+		const bytes = await handle.readFile();
+		try {
+			const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+			return { state: "file", text: decoder.decode(bytes) };
+		} catch {
+			return { state: "other", reason: "is not valid UTF-8 text" };
+		}
+	} finally {
+		await handle.close();
 	}
 }
 
@@ -717,13 +754,14 @@ async function refuseManagedLinks(configRoot: string, path: string): Promise<voi
 }
 
 /** One registration for `installPlugin`: applies the step, or puts the file back as it was. */
-function stepRegistration(step: Step): Registration {
+function stepRegistration(configRoot: string, step: Step): Registration {
 	let wroteBackup = false;
 	return {
 		name: `${step.action} ${step.path}`,
 		async apply() {
+			await refuseManagedLinks(configRoot, step.path);
 			await expectText(step, step.before, "changed while the installer ran");
-			if (step.backup !== undefined) wroteBackup = await writeBackup(step.backup);
+			if (step.backup !== undefined) wroteBackup = await writeBackup(configRoot, step.backup);
 			try {
 				await place(step.target, step.after);
 			} catch (error) {
@@ -732,6 +770,7 @@ function stepRegistration(step: Step): Registration {
 			}
 		},
 		async revert() {
+			await refuseManagedLinks(configRoot, step.path);
 			await expectText(step, step.after, "changed after the installer wrote it; not restored");
 			await place(step.target, step.before);
 			if (wroteBackup && step.backup !== undefined) await rm(step.backup.target, { force: true });
@@ -749,23 +788,37 @@ async function expectText(
 	}
 }
 
-/** Writes `text` to `target`, creating its directories; undefined removes the file. */
+/**
+ * Writes `text` to `target`, creating its directories; undefined removes the file. The text goes to a temporary file
+ * beside the target that is renamed over it, so a crash or a full disk leaves the previous file whole. An existing
+ * file keeps its mode, since the rename would otherwise give it the default one.
+ */
 async function place(target: string, text: string | undefined): Promise<void> {
 	if (text === undefined) {
 		await rm(target, { force: true });
 		return;
 	}
 	await mkdir(dirname(target), { recursive: true });
-	await writeFile(target, text);
+	const mode = (await lstat(target).catch(missingAs(undefined)))?.mode;
+	const temp = join(dirname(target), `.${basename(target)}.${randomBytes(6).toString("hex")}.tmp`);
+	try {
+		await writeFile(temp, text, { flag: "wx" });
+		if (mode !== undefined) await chmod(temp, mode & 0o7777);
+		await rename(temp, target);
+	} catch (error) {
+		await rm(temp, { force: true }).catch(() => undefined);
+		throw error;
+	}
 }
 
 /** Writes the backup copy unless an identical one is already there; true when it was written. */
-async function writeBackup(backup: Backup): Promise<boolean> {
+async function writeBackup(configRoot: string, backup: Backup): Promise<boolean> {
+	await refuseManagedLinks(configRoot, backup.path);
 	const state = await inspect(backup.target);
 	if (state.state === "file" && state.text === backup.text) return false;
 	if (state.state !== "absent") throw new Error(`${backup.path} already exists with other content`);
-	await mkdir(dirname(backup.target), { recursive: true });
-	await writeFile(backup.target, backup.text);
+	await mkdir(dirname(backup.target), { recursive: true, mode: 0o700 });
+	await writeFile(backup.target, backup.text, { flag: "wx", mode: 0o600 });
 	return true;
 }
 

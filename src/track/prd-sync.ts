@@ -107,6 +107,15 @@ class MissingTargetError extends Error {
 	}
 }
 
+class UnclosedRegionError extends Error {
+	constructor(key: string) {
+		super(
+			`linear description: PRD region for ${markerSafe(key)} has no end marker; fix it by hand`,
+		);
+		this.name = "UnclosedRegionError";
+	}
+}
+
 interface Failure {
 	errorClass: string;
 	/** True when a later run can fix it: the ledger says `pending`; otherwise `failed`. */
@@ -138,6 +147,9 @@ function describeFailure(raw: unknown): Failure {
 	if (isAbortError(error)) return { errorClass: "aborted", retryable: true, message: "aborted" };
 	if (error instanceof MissingTargetError) {
 		return { errorClass: "missing-sub-issue", retryable: true, message: shortText(error) };
+	}
+	if (error instanceof UnclosedRegionError) {
+		return { errorClass: "unclosed-region", retryable: false, message: shortText(error) };
 	}
 	const verdict = classifyFailure(error);
 	const text = error instanceof Error ? error.message : String(error);
@@ -446,10 +458,11 @@ function findLinearRegion(description: string, key: string): LinearRegion | unde
 	const close = description.indexOf(" -->", hashStart);
 	if (close < 0) return undefined;
 	const endMarker = description.indexOf(END_MARKER, close);
+	// Without an end marker the region's extent is unknown: replacing it would delete whatever follows the start.
+	if (endMarker < 0) throw new UnclosedRegionError(key);
 	return {
 		start,
-		// An unclosed region (someone deleted the end marker) is replaced through the end of the description.
-		end: endMarker < 0 ? description.length : endMarker + END_MARKER.length,
+		end: endMarker + END_MARKER.length,
 		hash: description.slice(hashStart, close),
 	};
 }
@@ -1022,22 +1035,33 @@ function localName(key: string): string {
 }
 
 /**
+ * A PRD to sync. A generator's record carries its `status`; the resume path passes none, because the ledger already
+ * owes the send and there is no generation to report.
+ */
+export type SyncRecord = Pick<PrdRecord, "key" | "hash" | "markdown"> & {
+	readonly status?: PrdRecord["status"];
+};
+
+/**
  * Syncs each PRD to its Linear and Notion Sub Issue. Never throws for a tracker failure: the report says what happened
  * per key and tracker. Only `generated` records are synced; a `failed` PRD reports `failed` and a `skipped` one reports
  * `synced` (nothing is owed). `summary.synced` counts keys with nothing left to send to any configured tracker.
  */
-export async function syncPrds(records: readonly PrdRecord[], deps: SyncDeps): Promise<SyncReport> {
+export async function syncPrds(
+	records: readonly SyncRecord[],
+	deps: SyncDeps,
+): Promise<SyncReport> {
 	const ctx = makeCtx(deps);
 	const reports = new Map<string, KeyReport>();
 	const items: WorkItem[] = [];
 	const redactedKeys = new Set<string>();
-	const unique = new Map<string, PrdRecord>();
+	const unique = new Map<string, SyncRecord>();
 	for (const record of records) unique.set(record.key, record);
 
 	// Phase 1, local first: the PRD copy and its hash are on disk before any tracker is contacted.
 	let localError: string | undefined;
 	for (const record of unique.values()) {
-		if (record.status !== "generated") {
+		if (record.status !== undefined && record.status !== "generated") {
 			const skipped: TrackerResult = {
 				outcome: "skipped",
 				attempts: 0,
@@ -1158,7 +1182,7 @@ export async function syncPrds(records: readonly PrdRecord[], deps: SyncDeps): P
 
 function finish(
 	ctx: Ctx,
-	unique: ReadonlyMap<string, PrdRecord>,
+	unique: ReadonlyMap<string, SyncRecord>,
 	reports: ReadonlyMap<string, KeyReport>,
 ): SyncReport {
 	// Input order, one entry per key.
@@ -1183,7 +1207,7 @@ export async function resumePrds(deps: SyncDeps): Promise<SyncReport> {
 	const ctx = makeCtx(deps);
 	const owes = (tracker: LedgerTracker, caller: ToolCaller | undefined) =>
 		caller !== undefined && tracker.status !== "synced";
-	const records: PrdRecord[] = [];
+	const records: SyncRecord[] = [];
 	const missing: KeyReport[] = [];
 	for (const entry of ctx.entries.values()) {
 		if (!owes(entry.linear, deps.linear) && !owes(entry.notion, deps.notion)) continue;
@@ -1195,20 +1219,20 @@ export async function resumePrds(deps: SyncDeps): Promise<SyncReport> {
 				? "local PRD copy is missing"
 				: "local PRD copy is missing: the ledger path is not this key's copy under the PRD root";
 		let markdown: string | undefined;
+		let readError: string | undefined;
 		if (entry.localPath === localPath) {
 			try {
 				markdown = readFileSync(localPath, "utf8");
-			} catch {
-				markdown = undefined;
+			} catch (error) {
+				// Only a missing copy is `local-missing`; any other read failure is reported as the failure it is.
+				if (asRecord(error)?.code !== "ENOENT") readError = shortText(error);
 			}
 		}
 		if (markdown === undefined) {
-			const lost: TrackerResult = {
-				outcome: "failed",
-				attempts: 0,
-				errorClass: "local-missing",
-				error: reason,
-			};
+			const lost: TrackerResult =
+				readError === undefined
+					? { outcome: "failed", attempts: 0, errorClass: "local-missing", error: reason }
+					: { outcome: "failed", attempts: 0, errorClass: "local-read", error: readError };
 			missing.push({
 				key: entry.key,
 				state: "failed",
@@ -1218,15 +1242,8 @@ export async function resumePrds(deps: SyncDeps): Promise<SyncReport> {
 			});
 			continue;
 		}
-		records.push({
-			key: entry.key,
-			hash: entry.hash,
-			markdown,
-			status: "generated",
-			model: "local",
-			fallback: false,
-			attempts: 0,
-		});
+		// No generator status: the ledger already owes this send, so nothing about the PRD's generation is invented.
+		records.push({ key: entry.key, hash: entry.hash, markdown });
 	}
 	const report = await syncPrds(records, { ...deps, resume: true });
 	const keys = [...report.keys, ...missing];

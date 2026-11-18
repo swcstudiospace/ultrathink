@@ -19,7 +19,7 @@
  */
 
 import { gatewayBrief, gatewayEmit } from "../gateway/substrate.ts";
-import { resolveGateway, serviceBackend } from "../gateway/settings.ts";
+import { type ResolvedGateway, resolveGateway, serviceBackend } from "../gateway/settings.ts";
 import { SUBSTRATE_BACKEND_ENV, type GatewayConfig } from "../gateway/types.ts";
 import { readBodyPrefix } from "../net/body.ts";
 import { checkServiceUrl, type UrlCheck } from "../net/safe-url.ts";
@@ -144,6 +144,9 @@ const SURFACE_MISMATCH = /this token is (.+) and cannot act as (.+)/;
 /** A 403 refusal body past this many bytes is unparseable; the refusal is classified without reading the rest. */
 const MAX_REFUSAL_BYTES = 16 * 1024;
 
+/** The most of a brief body that is read; a longer one is cut here, labelled, and the rest of the stream is cancelled. */
+const MAX_BRIEF_BYTES = 256 * 1024;
+
 function none(reason: BriefFailure, detail?: string): BriefResult {
 	return detail === undefined
 		? { text: "", state: "none", reason }
@@ -151,7 +154,14 @@ function none(reason: BriefFailure, detail?: string): BriefResult {
 }
 
 type Attempt =
-	| { kind: "reply"; status: number; briefHeader: string | null; text: string }
+	| {
+			kind: "reply";
+			status: number;
+			briefHeader: string | null;
+			text: string;
+			/** The body was longer than the cap that applies; `text` is its first bytes. */
+			truncated: boolean;
+	  }
 	| { kind: "failed"; reason: "timeout" | "unreachable" | "redirect refused" };
 
 /** A fetch told `redirect: "error"` fails with one of these (Bun: code `UnexpectedRedirect`; others word it in the message). */
@@ -162,12 +172,6 @@ function isRedirectRefusal(error: unknown): boolean {
 		code === "UnexpectedRedirect" ||
 		/unexpected redirect|redirect is not allowed|redirect mode is set to error/i.test(error.message)
 	);
-}
-
-/** A 403 body read through the byte cap. Past the cap it is "", which no JSON parse accepts, so the 403 is classified as any other refusal. */
-async function refusalText(response: Response, signal: AbortSignal): Promise<string> {
-	const prefix = await readBodyPrefix(response, MAX_REFUSAL_BYTES, signal);
-	return prefix.complete ? prefix.text : "";
 }
 
 /** One POST. Aborts (the caller's or the budget's) read as `timeout`, a refused redirect as `redirect refused`; every other throw as `unreachable`. */
@@ -190,11 +194,19 @@ async function postBrief(
 			// A redirect would resend the bearer wherever it points, so it is a failure, never followed.
 			redirect: "error",
 		});
+		const status = response.status;
+		const prefix = await readBodyPrefix(
+			response,
+			status === 403 ? MAX_REFUSAL_BYTES : MAX_BRIEF_BYTES,
+			signal,
+		);
 		return {
 			kind: "reply",
-			status: response.status,
+			status,
 			briefHeader: response.headers.get("x-substrate-brief"),
-			text: response.status === 403 ? await refusalText(response, signal) : await response.text(),
+			// A 403 past its cap is unparseable, so it reads as "" and matches no surface-mismatch.
+			text: status === 403 && !prefix.complete ? "" : prefix.text,
+			truncated: !prefix.complete,
 		};
 	} catch (error) {
 		if (signal.aborted) return { kind: "failed", reason: "timeout" };
@@ -227,17 +239,41 @@ function classify(reply: Extract<Attempt, { kind: "reply" }>, recovered?: string
 	if (reply.status < 200 || reply.status >= 300) return none(`http-${reply.status}`);
 	const body = reply.text.trim();
 	if (!body) return { text: "", state: "none" };
-	const state: BriefState =
-		reply.briefHeader === "degraded" || reply.briefHeader === "snapshot"
+	const state: Exclude<BriefState, "none"> = reply.truncated
+		? "degraded"
+		: reply.briefHeader === "degraded" || reply.briefHeader === "snapshot"
 			? reply.briefHeader
 			: "complete";
-	const text =
-		state === "complete"
-			? body
-			: `(Substrate brief is ${state}; some sources failed or the copy is a snapshot)\n\n${body}`;
+	const text = labelled(state, body, reply.truncated);
 	return recovered === undefined
 		? { text, state }
 		: { text, state, reason: "surface-mismatch", detail: recovered };
+}
+
+/** The brief's Markdown with the label a degraded, snapshot or cut brief starts with; a complete brief is unchanged. */
+function labelled(state: Exclude<BriefState, "none">, body: string, cut = false): string {
+	if (cut)
+		return `(Substrate brief is degraded; it was cut at ${MAX_BRIEF_BYTES} bytes)\n\n${body}`;
+	return state === "complete"
+		? body
+		: `(Substrate brief is ${state}; some sources failed or the copy is a snapshot)\n\n${body}`;
+}
+
+/**
+ * The gateway a call goes through: undefined when the backend is direct, otherwise either the resolved gateway or the
+ * reason it cannot be used. The brief and the event both gate through here, so they cannot disagree.
+ */
+function gatewayFor(
+	binding: SubstrateGatewayBinding | undefined,
+	env: Record<string, string | undefined>,
+): { ok: true; gateway: ResolvedGateway } | { ok: false; reason: BriefFailure } | undefined {
+	if (!binding || serviceBackend(binding.backend, env, SUBSTRATE_BACKEND_ENV) !== "gateway")
+		return undefined;
+	if (env.SUBSTRATE_DISABLED === "1") return { ok: false, reason: "disabled" };
+	const resolved = resolveGateway(binding.gateway, env, { storePath: binding.storePath });
+	return resolved.ok
+		? { ok: true, gateway: resolved.gateway }
+		: { ok: false, reason: "unreachable" };
 }
 
 /**
@@ -259,11 +295,10 @@ export async function fetchBrief(
 	binding?: SubstrateGatewayBinding,
 ): Promise<BriefResult> {
 	try {
-		if (binding && serviceBackend(binding.backend, env, SUBSTRATE_BACKEND_ENV) === "gateway") {
-			if (env.SUBSTRATE_DISABLED === "1") return none("disabled");
-			const resolved = resolveGateway(binding.gateway, env, { storePath: binding.storePath });
-			if (!resolved.ok) return none("unreachable");
-			const text = await gatewayBrief(resolved.gateway, input, binding.fetch);
+		const route = gatewayFor(binding, env);
+		if (route) {
+			if (!route.ok) return none(route.reason);
+			const text = await gatewayBrief(route.gateway, input, binding?.fetch);
 			return text ? { text, state: "complete" } : none("unreachable");
 		}
 		if (env.SUBSTRATE_DISABLED === "1") return none("disabled");
@@ -284,7 +319,7 @@ export async function fetchBrief(
 			branch: input.branch,
 			graph_id: input.graphId,
 		};
-		const doFetch = input.fetch ?? fetch;
+		const doFetch = input.fetch ?? binding?.fetch ?? fetch;
 		const first = await postBrief(
 			endpoint,
 			headers,
@@ -334,12 +369,8 @@ export async function emitEvent(
 	signal?: AbortSignal,
 	binding?: SubstrateGatewayBinding,
 ): Promise<boolean> {
-	if (binding && serviceBackend(binding.backend, env, SUBSTRATE_BACKEND_ENV) === "gateway") {
-		if (env.SUBSTRATE_DISABLED === "1") return false;
-		const resolved = resolveGateway(binding.gateway, env, { storePath: binding.storePath });
-		if (!resolved.ok) return false;
-		return gatewayEmit(resolved.gateway, input, binding.fetch, signal);
-	}
+	const route = gatewayFor(binding, env);
+	if (route) return route.ok ? gatewayEmit(route.gateway, input, binding?.fetch, signal) : false;
 	const target = resolveSubstrate(env, url);
 	if (!target || signal?.aborted) return false;
 	try {
@@ -348,7 +379,8 @@ export async function emitEvent(
 		if (!base.ok) return false; // no request carries a bearer to an URL the policy refuses
 		const timeout = AbortSignal.timeout(timeoutMs(env));
 		// One boundary for the bearer and the surface, shared with the brief (D-01, D-06).
-		const response = await fetch(`${base.url}/events`, {
+		const doFetch = binding?.fetch ?? fetch;
+		const response = await doFetch(`${base.url}/events`, {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
@@ -371,7 +403,10 @@ export async function emitEvent(
 			signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
 			redirect: "error",
 		});
-		return response.ok;
+		const ok = response.ok;
+		// The reply body is never read: cancelling it releases the connection instead of pinning it until GC.
+		await response.body?.cancel().catch(() => undefined);
+		return ok;
 	} catch {
 		return false;
 	}

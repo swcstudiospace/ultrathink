@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import type { Clarification } from "../hitl/types.ts";
-import { MAX_STEPS, type ThoughtGraph } from "../think/types.ts";
+import { MAX_STEPS, type ThoughtGraph, type ThoughtNode } from "../think/types.ts";
 import type { UpliftResult } from "../types.ts";
 import {
 	buildTrackPlan,
@@ -198,6 +198,42 @@ describe("buildTrackPlan", () => {
 		expect(plan.task.upliftedPrompt).toContain("truncated");
 		expect(plan.task.upliftedPrompt.startsWith(longXml.slice(0, 100))).toBe(true);
 	});
+
+	test("no cut in a title, uplifted XML or step title leaves a lone high surrogate", () => {
+		const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+		// The title keeps 117 units before its "..."; the emoji's high half lands on unit 116.
+		const titled = buildTrackPlan({
+			uplift: { ...uplift, original: `${"a".repeat(116)}😀${"b".repeat(20)}` },
+			clarifications: [],
+			graphId: "ut-fixed",
+		});
+		expect(lone.test(titled.task.item)).toBe(false);
+		expect(titled.task.item.length).toBeLessThanOrEqual(120);
+		expect(titled.task.item.endsWith("...")).toBe(true);
+		// The uplifted XML keeps MAX minus the marker's length in units; the emoji straddles that cut.
+		const marker = "\n<!-- truncated — full spec in the session's .xml file -->";
+		const headroom = MAX_UPLIFTED_PROMPT_CHARS - marker.length;
+		const longXml = `${"x".repeat(headroom - 1)}😀${"y".repeat(5000)}`;
+		const xmlPlan = buildTrackPlan({
+			uplift: { ...uplift, xml: longXml },
+			clarifications: [],
+			graphId: "ut-fixed",
+		});
+		expect(lone.test(xmlPlan.task.upliftedPrompt)).toBe(false);
+		expect(xmlPlan.task.upliftedPrompt.length).toBeLessThanOrEqual(MAX_UPLIFTED_PROMPT_CHARS);
+		// A step title keeps 71 units before its ellipsis; the emoji straddles that head.
+		const stepNode: ThoughtNode = {
+			id: "n1",
+			title: "Step",
+			kind: "understand",
+			question: "q",
+			dependsOn: [],
+			thinking: `1. ${"a".repeat(70)}😀${"b".repeat(30)}`,
+		};
+		const [title] = nodeStepTitles(stepNode);
+		expect(lone.test(title ?? "")).toBe(false);
+		expect(title).toBe(`Step 1: ${"a".repeat(70)}…`);
+	});
 });
 
 describe("splitRationaleSteps", () => {
@@ -356,9 +392,38 @@ describe("buildTrackPlan per-step Sub-Issues", () => {
 		};
 		const plan = buildTrackPlan({ uplift, graph, clarifications: [], graphId: "ut-fixed" });
 		expect(plan.subIssues[0]?.thought).toBe("x".repeat(200));
-		expect(plan.subIssues[0]?.item.length).toBeLessThan(120);
-		expect(plan.subIssues[0]?.item.endsWith("…")).toBe(true);
-		expect(plan.linearSubIssues[0]?.title.length).toBeLessThan(120);
+		expect(plan.subIssues[0]?.item).toBe(`[n1] Step 1: ${"x".repeat(71)}…`);
+		expect(plan.linearSubIssues[0]?.title).toBe(`T — Step 1: ${"x".repeat(71)}…`);
+	});
+
+	test("a step title holds exactly 72 characters: 72 stay whole, 73 are cut to 72 ending in an ellipsis", () => {
+		const planFor = (text: string) =>
+			buildTrackPlan({
+				uplift,
+				graph: {
+					goal: "g",
+					nodes: [
+						{
+							id: "n1",
+							title: "T",
+							kind: "synthesize",
+							question: "Q",
+							dependsOn: [],
+							thinking: `1. ${text} 2. short`,
+							conclusion: "C",
+						},
+					],
+				},
+				clarifications: [],
+				graphId: "ut-fixed",
+			});
+		const whole = planFor("x".repeat(72));
+		expect(whole.subIssues[0]?.item).toBe(`[n1] Step 1: ${"x".repeat(72)}`);
+		expect(whole.subIssues[0]?.item.endsWith("…")).toBe(false);
+		const cut = planFor("x".repeat(73));
+		expect(cut.subIssues[0]?.thought).toBe("x".repeat(73));
+		expect(cut.subIssues[0]?.item).toBe(`[n1] Step 1: ${"x".repeat(71)}…`);
+		expect(cut.subIssues[0]?.item.length).toBeLessThanOrEqual("[n1] Step 1: ".length + 72);
 	});
 
 	test("a 99-step rationale clamps to MAX_STEPS and the tail folds into the last step", () => {

@@ -10,7 +10,7 @@ import { redactSecrets } from "../redact.ts";
 import { readBodyPrefix } from "./body.ts";
 
 /** Bytes buffered from a response before it is refused as too large; the rest of the stream is cancelled unread. */
-export const MAX_RESPONSE_CHARS = 4_000_000;
+export const MAX_RESPONSE_BYTES = 4_000_000;
 /** setTimeout/AbortSignal.timeout reject delays above the signed 32-bit range. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
@@ -56,6 +56,9 @@ function parseJson(text: string): unknown {
 function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
 		if (signal.aborted) {
+			work.catch(() => {
+				// reason: the aborted work's own rejection is discarded; the caller gets signal.reason
+			});
 			reject(signal.reason);
 			return;
 		}
@@ -88,7 +91,7 @@ export async function requestJson(url: string, request: HttpRequest): Promise<Ht
 			}),
 			signal,
 		);
-		const body = await abortable(readBodyPrefix(response, MAX_RESPONSE_CHARS, signal), signal);
+		const body = await abortable(readBodyPrefix(response, MAX_RESPONSE_BYTES, signal), signal);
 		const ms = Date.now() - started;
 		if (!body.complete) return { kind: "network", message: "response too large", ms };
 		return {

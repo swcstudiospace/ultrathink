@@ -901,6 +901,42 @@ describe("withLaneLock", () => {
 		expect(existsSync(lockPath(stateDir))).toBe(false);
 	});
 
+	test("a holder whose owner write resumes after a waiter re-took its path is refused and leaves that owner in place", () => {
+		const stateDir = tmp();
+		let ran = false;
+		const result = withLaneLock(stateDir, () => (ran = true), {
+			isAlive,
+			identityOf: () => "proc:1",
+			fs: {
+				mkdirSync: (path, options) => {
+					mkdirSync(path, options);
+					// Stalled between its mkdir and its owner write: a waiter recovered the path and stamped it.
+					if (path === lockPath(stateDir)) {
+						writeFileSync(join(path, "owner"), String(LIVE_PID));
+					}
+				},
+			},
+		});
+		expect(result).toEqual({ held: false, reason: "cannot take the lane lock (EEXIST)" });
+		expect(ran).toBe(false);
+		expect(readFileSync(join(lockPath(stateDir), "owner"), "utf8")).toBe(String(LIVE_PID));
+	});
+
+	test("a start time unreadable on the first try is retried, so the owner records it", () => {
+		const stateDir = tmp();
+		let calls = 0;
+		let owner = "";
+		withLaneLock(
+			stateDir,
+			() => {
+				owner = readFileSync(join(lockPath(stateDir), "owner"), "utf8");
+				return 1;
+			},
+			{ identityOf: () => (++calls === 1 ? undefined : "proc:9") },
+		);
+		expect(owner).toBe(`${process.pid} proc:9`);
+	});
+
 	test("release leaves a lock whose owner names another process alone", () => {
 		const stateDir = tmp();
 		const result = withLaneLock(stateDir, () => {

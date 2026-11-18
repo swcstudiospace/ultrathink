@@ -41,6 +41,8 @@ interface Posted {
 	header: string | undefined;
 	sessionUsed: string | undefined;
 	rateLimit?: RateLimit;
+	/** The fetch failure, when no response arrived; its name is logged, never sent upstream. */
+	error?: unknown;
 }
 
 type JsonRpc = { id?: unknown; method?: unknown; result?: unknown };
@@ -59,6 +61,8 @@ const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 120_000;
 /** Every later message waits on the shared re-initialize, so it must settle on its own. */
 const REINIT_TIMEOUT_MS = 30_000;
+/** Stdin messages relayed at once in serve mode; the reader waits for a free slot before it dispatches the next line. */
+const MAX_IN_FLIGHT = 8;
 
 /** Text a request id or method may carry: bounded, and free of control characters. */
 const NO_CONTROL = /^[^\x00-\x1f\x7f]*$/;
@@ -128,10 +132,13 @@ export function createRelay(options: RelayOptions): {
 			// reason: no log sink was given, so relay messages are dropped by design
 		});
 	const host = new URL(options.url).host;
-	let sessionId: string | undefined;
-	let protocolVersion: string | undefined;
-	let initMessage: unknown;
-	let reinitializing: Promise<void> | undefined;
+	/** Upstream session state: the session id and protocol version, the initialize message to replay, and any shared re-initialize in flight. */
+	const transport: {
+		sessionId?: string;
+		protocolVersion?: string;
+		initMessage?: unknown;
+		reinitializing?: Promise<void>;
+	} = {};
 	const requestTimeoutMs = options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
 	const reinitTimeoutMs = options.reinitTimeoutMs ?? REINIT_TIMEOUT_MS;
 	const deadlines: RelayDeadlines = options.deadlines ?? {
@@ -150,9 +157,10 @@ export function createRelay(options: RelayOptions): {
 			"User-Agent": options.userAgent,
 		};
 		if (header !== undefined) headers.Authorization = header;
-		const sessionUsed = withSession ? sessionId : undefined;
+		const sessionUsed = withSession ? transport.sessionId : undefined;
 		if (sessionUsed !== undefined) headers["Mcp-Session-Id"] = sessionUsed;
-		if (protocolVersion !== undefined) headers["MCP-Protocol-Version"] = protocolVersion;
+		if (transport.protocolVersion !== undefined)
+			headers["MCP-Protocol-Version"] = transport.protocolVersion;
 		try {
 			// A redirect would resend the bearer token to wherever it points, so it is an error.
 			const response = await doFetch(options.url, {
@@ -163,8 +171,8 @@ export function createRelay(options: RelayOptions): {
 				redirect: "error",
 			});
 			return { response, header, sessionUsed, rateLimit: await detectRateLimit(response) };
-		} catch {
-			return { header, sessionUsed };
+		} catch (error) {
+			return { header, sessionUsed, error };
 		}
 	};
 
@@ -179,7 +187,11 @@ export function createRelay(options: RelayOptions): {
 		return post(message, withSession, signal);
 	};
 
-	const observe = (message: unknown, initId: unknown, emit: (line: string) => void): void => {
+	const observe = (
+		message: unknown,
+		initId: unknown,
+		emit: (line: string, message: unknown) => void,
+	): void => {
 		const rpc = asRpc(message);
 		if (
 			initId !== undefined &&
@@ -188,15 +200,15 @@ export function createRelay(options: RelayOptions): {
 			rpc.result !== null
 		) {
 			const version = (rpc.result as { protocolVersion?: unknown }).protocolVersion;
-			if (typeof version === "string") protocolVersion = version;
+			if (typeof version === "string") transport.protocolVersion = version;
 		}
-		emit(JSON.stringify(message));
+		emit(JSON.stringify(message), message);
 	};
 
 	const consume = async (
 		response: Response,
 		initId: unknown,
-		emit: (line: string) => void,
+		emit: (line: string, message: unknown) => void,
 		signal?: AbortSignal,
 	): Promise<void> => {
 		if (response.status === 202 || !response.body) {
@@ -257,12 +269,12 @@ export function createRelay(options: RelayOptions): {
 	};
 
 	const reinitialize = async (): Promise<void> => {
-		if (initMessage === undefined) {
-			sessionId = undefined;
+		if (transport.initMessage === undefined) {
+			transport.sessionId = undefined;
 			return;
 		}
 		const signal = deadlines.arm("reinit", reinitTimeoutMs);
-		const posted = await postWithAuth(initMessage, false, signal);
+		const posted = await postWithAuth(transport.initMessage, false, signal);
 		if (!posted.response?.ok) {
 			log(
 				`re-initialize failed: ${posted.response ? `HTTP ${posted.response.status}` : "unreachable"}`,
@@ -270,14 +282,14 @@ export function createRelay(options: RelayOptions): {
 			await posted.response?.body?.cancel().catch(() => {
 				// reason: the failed response body is discarded; the failure is logged above
 			});
-			sessionId = undefined;
+			transport.sessionId = undefined;
 			return;
 		}
-		sessionId = posted.response.headers.get("mcp-session-id") ?? undefined;
+		transport.sessionId = posted.response.headers.get("mcp-session-id") ?? undefined;
 		try {
 			await consume(
 				posted.response,
-				asRpc(initMessage).id,
+				asRpc(transport.initMessage).id,
 				() => {
 					// reason: replayed re-initialize messages are not forwarded; only the session id is kept
 				},
@@ -285,7 +297,7 @@ export function createRelay(options: RelayOptions): {
 			);
 		} catch {
 			log(`re-initialize failed: ${signal.aborted ? "timed out" : "stream failed"}`);
-			sessionId = undefined;
+			transport.sessionId = undefined;
 			return;
 		}
 		const notified = await postWithAuth(
@@ -306,29 +318,30 @@ export function createRelay(options: RelayOptions): {
 		message: unknown,
 		rpc: JsonRpc,
 		isRequest: boolean,
-		emit: (line: string) => void,
-		answered: () => boolean,
+		emit: (line: string, reply: unknown) => void,
+		answered: Set<unknown>,
 		signal: AbortSignal,
 	): Promise<void> => {
 		const isInitialize = rpc.method === "initialize";
-		if (isInitialize) initMessage = message;
-		else if (reinitializing) await reinitializing;
+		if (isInitialize) transport.initMessage = message;
+		else if (transport.reinitializing) await transport.reinitializing;
 		let posted = await postWithAuth(message, true, signal);
 		if (posted.response?.status === 404 && posted.sessionUsed !== undefined && !isInitialize) {
 			await posted.response.body?.cancel().catch(() => {
 				// reason: the 404 body is discarded; the retry below sends the request again
 			});
-			if (posted.sessionUsed === sessionId) {
-				reinitializing ??= reinitialize().finally(() => {
-					reinitializing = undefined;
+			if (posted.sessionUsed === transport.sessionId) {
+				transport.reinitializing ??= reinitialize().finally(() => {
+					transport.reinitializing = undefined;
 				});
 			}
-			if (reinitializing) await reinitializing;
+			if (transport.reinitializing) await transport.reinitializing;
 			posted = await postWithAuth(message, true, signal);
 		}
 		const response = posted.response;
 		if (!response) {
-			log(`upstream unreachable (${String(rpc.method ?? "response")})`);
+			const name = posted.error instanceof Error ? posted.error.name : "unknown";
+			log(`upstream unreachable (${String(rpc.method ?? "response")}): ${name}`);
 			if (isRequest) writeError(rpc.id, -32000, "upstream unreachable");
 			return;
 		}
@@ -359,16 +372,16 @@ export function createRelay(options: RelayOptions): {
 		}
 		if (isInitialize) {
 			const captured = response.headers.get("mcp-session-id");
-			if (captured) sessionId = captured;
+			if (captured) transport.sessionId = captured;
 		}
 		try {
 			await consume(response, isInitialize ? rpc.id : undefined, emit, signal);
 		} catch (error) {
 			log(`upstream stream failed: ${error instanceof Error ? error.message : String(error)}`);
-			if (isRequest && !answered()) writeError(rpc.id, -32000, "upstream unreachable");
+			if (isRequest && !answered.has(rpc.id)) writeError(rpc.id, -32000, "upstream unreachable");
 			return;
 		}
-		if (isRequest && !answered() && response.status !== 202) {
+		if (isRequest && !answered.has(rpc.id) && response.status !== 202) {
 			writeError(rpc.id, -32000, "upstream closed stream before response");
 		}
 	};
@@ -384,14 +397,18 @@ export function createRelay(options: RelayOptions): {
 
 	const forward = async (message: unknown, signal?: AbortSignal): Promise<void> => {
 		const rpc = asRpc(message);
-		const isRequest = rpc.id !== undefined && rpc.id !== null && typeof rpc.method === "string";
-		let replied = false;
-		const emit = (line: string): void => {
-			if (isRequest && !replied) {
-				const out = asRpc(JSON.parse(line)) as JsonRpc & { error?: unknown };
-				if (out.id === rpc.id && out.method === undefined && ("result" in out || "error" in out))
-					replied = true;
-			}
+		// Every id-bearing request in the message, alone or in a batch, is owed exactly one answer.
+		const requestIds = new Set<unknown>();
+		for (const item of Array.isArray(message) ? message : [message]) {
+			const { id, method } = asRpc(item);
+			if (id !== undefined && id !== null && typeof method === "string") requestIds.add(id);
+		}
+		const isRequest = requestIds.has(rpc.id);
+		const answered = new Set<unknown>();
+		const emit = (line: string, reply: unknown): void => {
+			const out = asRpc(reply) as JsonRpc & { error?: unknown };
+			if (requestIds.has(out.id) && out.method === undefined && ("result" in out || "error" in out))
+				answered.add(out.id);
 			options.write(line);
 		};
 		try {
@@ -400,17 +417,13 @@ export function createRelay(options: RelayOptions): {
 				rpc,
 				isRequest,
 				emit,
-				() => replied,
+				answered,
 				signal ?? deadlines.arm("request", requestTimeoutMs),
 			);
 		} catch (error) {
 			log("relay error");
-			if (isRequest && !replied)
-				writeError(
-					rpc.id,
-					-32603,
-					`relay error: ${error instanceof Error ? error.message : String(error)}`,
-				);
+			const text = `relay error: ${error instanceof Error ? error.message : String(error)}`;
+			for (const id of requestIds) if (!answered.has(id)) writeError(id, -32603, text);
 		}
 	};
 
@@ -451,7 +464,7 @@ export async function runStdioRelay(
 	const relay = createRelay({ ...options, write: output });
 	const maxLineChars = options.maxLineChars ?? MAX_BODY_BYTES;
 	const inFlight = new Set<Promise<void>>();
-	const dispatch = (line: string): void => {
+	const dispatch = async (line: string): Promise<void> => {
 		if (line.trim() === "") return;
 		let message: unknown;
 		try {
@@ -471,8 +484,12 @@ export async function runStdioRelay(
 			);
 			return;
 		}
-		const task = relay.handle(message).catch(() => {
-			options.log?.("relay handler failed");
+		// The reader waits for a free slot, so a flood of stdin lines cannot start an unbounded number of upstream requests.
+		while (inFlight.size >= MAX_IN_FLIGHT) await Promise.race(inFlight);
+		const task = relay.handle(message).catch((error: unknown) => {
+			options.log?.(
+				`relay handler failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		});
 		inFlight.add(task);
 		void task.finally(() => inFlight.delete(task));
@@ -503,7 +520,7 @@ export async function runStdioRelay(
 			buffer = buffer.slice(index + 1);
 			if (discarding) discarding = false;
 			else if (line.length > maxLineChars) refuseLong();
-			else dispatch(line);
+			else await dispatch(line);
 			index = buffer.indexOf("\n");
 		}
 		if (discarding) buffer = "";
@@ -516,6 +533,6 @@ export async function runStdioRelay(
 	buffer += decoder.decode();
 	if (discarding) buffer = "";
 	else if (buffer.length > maxLineChars) refuseLong();
-	else dispatch(buffer);
+	else await dispatch(buffer);
 	while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
 }

@@ -432,6 +432,47 @@ describe("createRelay", () => {
 		]);
 	});
 
+	test("a batch whose handler fails answers each request with -32603 and never the notification", async () => {
+		const auth: RelayAuth = {
+			header: async () => {
+				throw new Error("lock timeout");
+			},
+			unauthorized: async () => false,
+		};
+		const { relay, out } = setup(() => json({}), auth);
+		await relay.handle([
+			{ jsonrpc: "2.0", id: 1, method: "tools/call" },
+			{ jsonrpc: "2.0", method: "notifications/initialized" },
+		]);
+		expect(out()).toEqual([
+			{ jsonrpc: "2.0", id: 1, error: { code: -32603, message: "relay error: lock timeout" } },
+		]);
+	});
+
+	test("an unreachable upstream logs the failure's name, and the -32000 reply is unchanged", async () => {
+		const logged: string[] = [];
+		const written: string[] = [];
+		const stubFetch = (async () => {
+			const failure = new Error("The operation timed out.");
+			failure.name = "TimeoutError";
+			throw failure;
+		}) as unknown as typeof fetch;
+		const relay = createRelay({
+			url: URL_,
+			auth: staticAuth("Bearer t"),
+			fetch: stubFetch,
+			userAgent: "ua/1",
+			loginHint: "run: login",
+			log: (message) => logged.push(message),
+			write: (line) => written.push(line),
+		});
+		await relay.handle({ jsonrpc: "2.0", id: 5, method: "tools/call" });
+		expect(logged.some((message) => message.includes("TimeoutError"))).toBe(true);
+		expect(written.map((line) => JSON.parse(line))).toEqual([
+			{ jsonrpc: "2.0", id: 5, error: { code: -32000, message: "upstream unreachable" } },
+		]);
+	});
+
 	test("concurrent re-initialize: waiters use new session, late 404 does not re-init twice", async () => {
 		const initGate = Promise.withResolvers<void>();
 		const lateGate = Promise.withResolvers<void>();
@@ -660,6 +701,48 @@ describe("runStdioRelay", () => {
 			(line) => lines.push(line),
 		);
 		expect(lines.map((line) => JSON.parse(line).id).sort()).toEqual([1, 2]);
+	});
+
+	test("stdin dispatch is capped: no more than eight relayed messages are in flight at once", async () => {
+		let started = 0;
+		let active = 0;
+		let peak = 0;
+		const { promise: saturated, resolve: saturate } = Promise.withResolvers<void>();
+		const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+		const stubFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+			started += 1;
+			if (started === 8) saturate();
+			active += 1;
+			peak = Math.max(peak, active);
+			await gate;
+			active -= 1;
+			const body = JSON.parse(String(init?.body));
+			return json({ jsonrpc: "2.0", id: body.id, result: {} });
+		}) as unknown as typeof fetch;
+		const lines = Array.from({ length: 100 }, (_, index) =>
+			JSON.stringify({ jsonrpc: "2.0", id: index + 1, method: "tools/list" }),
+		);
+		const input = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode(`${lines.join("\n")}\n`));
+				controller.close();
+			},
+		});
+		const written: string[] = [];
+		const run = runStdioRelay(
+			{ url: URL_, auth: staticAuth(), fetch: stubFetch, userAgent: "ua", loginHint: "h" },
+			input,
+			(line) => written.push(line),
+		);
+		await saturated;
+		// Each relayed message takes a few microtask hops before its fetch starts; these hops let every dispatch the cap should hold back start.
+		for (let hop = 0; hop < 100; hop++) await Promise.resolve();
+		expect(started).toBe(8);
+		release();
+		await run;
+		expect(peak).toBe(8);
+		expect(started).toBe(100);
+		expect(written).toHaveLength(100);
 	});
 });
 
