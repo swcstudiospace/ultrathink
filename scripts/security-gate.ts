@@ -114,7 +114,14 @@ export type LicenseResult = {
 	expiredExceptions: LicenseException[];
 };
 
-export type CheckRun = { id: number; name: string; status: string; conclusion: string | null };
+export type CheckRun = {
+	id: number;
+	name: string;
+	status: string;
+	conclusion: string | null;
+	headSha: string;
+	appSlug: string | null;
+};
 export type CheckOutcome = {
 	name: string;
 	status: "pass" | "fail";
@@ -150,10 +157,10 @@ export type CliIo = {
 const SCHEMA = 1;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const USAGE = [
-	"usage: bun scripts/security-gate.ts audit --root <dir>... --out <dir> [--policy <file>] [--today YYYY-MM-DD] [--input <file>]",
-	"       bun scripts/security-gate.ts licenses --root <dir>... --out <dir> [--policy <file>] [--today YYYY-MM-DD]",
-	"       bun scripts/security-gate.ts checks --input <ndjson> --out <dir> [--policy <file>]",
-	"       bun scripts/security-gate.ts report --out <dir> [--sha <sha>] [--tag <tag>] [--policy <file>]",
+	"usage: bun scripts/security-gate.ts audit --root <dir>... --out <dir> [--policy <file>] [--today YYYY-MM-DD] [--input <file>] [--sha <sha>]",
+	"       bun scripts/security-gate.ts licenses --root <dir>... --out <dir> [--policy <file>] [--today YYYY-MM-DD] [--sha <sha>]",
+	"       bun scripts/security-gate.ts checks --input <ndjson> --sha <sha> --out <dir> [--policy <file>]",
+	"       bun scripts/security-gate.ts report --out <dir> --sha <sha> [--tag <tag>] [--policy <file>]",
 	"       bun scripts/security-gate.ts ancestry --sha <sha>",
 ].join("\n");
 
@@ -614,6 +621,9 @@ export function evaluateLicenses(
 
 // ---------- checks ----------
 
+/** The only app whose check runs count toward the gate: GitHub Actions creates the release's required runs. */
+export const CI_CHECK_APP = "github-actions";
+
 function parseCheckRun(line: string, lineNumber: number): CheckRun {
 	const shape = (reason: string): Error => new Error(`checks input line ${lineNumber}: ${reason}`);
 	let value: unknown;
@@ -623,36 +633,55 @@ function parseCheckRun(line: string, lineNumber: number): CheckRun {
 		throw shape("is not JSON");
 	}
 	if (!isPlainObject(value)) throw shape("is not an object");
-	const { id, name, status, conclusion } = value;
+	const { id, name, status, conclusion, head_sha: headSha, app } = value;
 	if (typeof id !== "number" || !Number.isInteger(id)) throw shape("has no integer id");
 	if (typeof name !== "string") throw shape("has no name");
 	if (typeof status !== "string") throw shape("has no status");
 	if (conclusion !== undefined && conclusion !== null && typeof conclusion !== "string")
 		throw shape("has a non-string conclusion");
-	return { id, name, status, conclusion: typeof conclusion === "string" ? conclusion : null };
+	if (typeof headSha !== "string") throw shape("has no head_sha");
+	if (app !== undefined && app !== null && typeof app !== "string")
+		throw shape("has a non-string app");
+	return {
+		id,
+		name,
+		status,
+		conclusion: typeof conclusion === "string" ? conclusion : null,
+		headSha,
+		appSlug: typeof app === "string" ? app : null,
+	};
 }
 
-/** One check run per name; a rerun has a higher id and replaces the earlier run, whatever order the lines arrive in. */
-export function latestChecks(ndjson: string): Map<string, CheckRun> {
+/**
+ * One check run per name among those `app` created; a rerun has a higher id and replaces the earlier run, whatever
+ * order the lines arrive in. Runs from any other app are ignored, so they can neither satisfy nor shadow a requirement.
+ */
+export function latestChecks(ndjson: string, app: string): Map<string, CheckRun> {
 	const latest = new Map<string, CheckRun>();
 	ndjson.split("\n").forEach((line, index) => {
 		if (line.trim() === "") return;
 		const run = parseCheckRun(line, index + 1);
+		if (run.appSlug !== app) return;
 		const prior = latest.get(run.name);
 		if (prior === undefined || run.id > prior.id) latest.set(run.name, run);
 	});
 	return latest;
 }
 
-/** Every required check name must have a completed run with conclusion success. Absent or in-flight runs fail. */
+/**
+ * Every required check name must have a completed run with conclusion success, and that run must be for `sha`, the
+ * release commit. Absent, in-flight and other-commit runs fail.
+ */
 export function evaluateChecks(
 	latest: ReadonlyMap<string, CheckRun>,
 	policy: Policy,
+	sha: string,
 ): ChecksResult {
 	const checks = policy.requiredChecks.map((name): CheckOutcome => {
 		const run = latest.get(name);
 		let problem: string | undefined;
 		if (run === undefined) problem = "no check run with this name";
+		else if (run.headSha !== sha) problem = `run is for commit ${run.headSha}, not ${sha}`;
 		else if (run.status !== "completed") problem = `status is ${run.status}, not completed`;
 		else if (run.conclusion !== "success")
 			problem = `conclusion is ${run.conclusion ?? "null"}, not success`;
@@ -701,15 +730,20 @@ export function isOnMain(
 
 // ---------- report ----------
 
-/** A missing evidence file is a failure; a present file that is not this gate's evidence is a shape error. */
-export function readEvidence(out: string, gate: Gate): EvidenceInput {
+/** A missing evidence file is a failure; a present file that is not this gate's evidence, or was made for another sha, is a shape error. */
+export function readEvidence(out: string, gate: Gate, sha: string): EvidenceInput {
 	const file = `${gate}.json`;
 	const path = join(out, file);
 	if (!existsSync(path)) return { gate, file, present: false, status: "fail" };
 	const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-	const status = isPlainObject(parsed) && parsed.gate === gate ? parsed.status : undefined;
+	const record = isPlainObject(parsed) && parsed.gate === gate ? parsed : undefined;
+	const status = record?.status;
 	if (status !== "pass" && status !== "fail")
 		throw new Error(`${file}: not a ${gate} evidence file with status pass or fail`);
+	if (record?.sha !== sha)
+		throw new Error(
+			`${file}: sha ${JSON.stringify(record?.sha ?? null)} is not the release sha ${sha}`,
+		);
 	return { gate, file, present: true, status };
 }
 
@@ -750,9 +784,9 @@ type Options = {
 };
 
 const ALLOWED_FLAGS: Record<Mode, readonly string[]> = {
-	audit: ["--root", "--policy", "--today", "--out", "--input"],
-	licenses: ["--root", "--policy", "--today", "--out"],
-	checks: ["--input", "--policy", "--out"],
+	audit: ["--root", "--policy", "--today", "--out", "--input", "--sha"],
+	licenses: ["--root", "--policy", "--today", "--out", "--sha"],
+	checks: ["--input", "--policy", "--out", "--sha"],
 	report: ["--out", "--sha", "--tag", "--policy"],
 	ancestry: ["--sha"],
 };
@@ -760,8 +794,8 @@ const ALLOWED_FLAGS: Record<Mode, readonly string[]> = {
 const REQUIRED_FLAGS: Record<Mode, readonly string[]> = {
 	audit: ["--root", "--out"],
 	licenses: ["--root", "--out"],
-	checks: ["--input", "--out"],
-	report: ["--out"],
+	checks: ["--input", "--out", "--sha"],
+	report: ["--out", "--sha"],
 	ancestry: ["--sha"],
 };
 
@@ -855,6 +889,7 @@ function runAudit(options: Options, io: CliIo): number {
 	const file = writeEvidence(out, "audit.json", {
 		schema: SCHEMA,
 		gate: "audit",
+		sha: options.sha ?? null,
 		status,
 		level: policy.audit.level,
 		today,
@@ -887,6 +922,7 @@ function runLicenses(options: Options, io: CliIo): number {
 	const file = writeEvidence(out, "licenses.json", {
 		schema: SCHEMA,
 		gate: "licenses",
+		sha: options.sha ?? null,
 		today,
 		policy: policyFile,
 		roots,
@@ -911,13 +947,19 @@ function runLicenses(options: Options, io: CliIo): number {
 function runChecks(options: Options, io: CliIo): number {
 	const out = need(options.out, "--out");
 	const input = need(options.input, "--input");
+	const sha = need(options.sha, "--sha");
 	const policyFile = options.policy ?? defaultPolicy(io.root);
 	clearEvidence(out, "checks.json");
 	const { policy } = loadPolicy(policyFile);
-	const result = evaluateChecks(latestChecks(readFileSync(input, "utf8")), policy);
+	const result = evaluateChecks(
+		latestChecks(readFileSync(input, "utf8"), CI_CHECK_APP),
+		policy,
+		sha,
+	);
 	const file = writeEvidence(out, "checks.json", {
 		schema: SCHEMA,
 		gate: "checks",
+		sha,
 		status: result.status,
 		input,
 		policy: policyFile,
@@ -938,9 +980,10 @@ function runReport(options: Options, io: CliIo): number {
 	const policyFile = options.policy ?? defaultPolicy(io.root);
 	clearEvidence(out, "manifest.json");
 	const { sha256 } = loadPolicy(policyFile);
-	const inputs = GATES.map((gate) => readEvidence(out, gate));
+	const sha = need(options.sha, "--sha");
+	const inputs = GATES.map((gate) => readEvidence(out, gate, sha));
 	const manifest = buildManifest(inputs, {
-		sha: options.sha ?? null,
+		sha,
 		tag: options.tag ?? null,
 		policy: { file: policyFile, sha256 },
 	});

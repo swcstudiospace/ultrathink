@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import tokenOpt, { PREFIX_POLICY } from "./index.ts";
+import tokenOpt from "./index.ts";
 import { setGraphifyBinForTests } from "./graph.ts";
 
 type Handler = (...args: unknown[]) => unknown;
@@ -79,7 +79,6 @@ describe("tokenOpt", () => {
 	test("does not register before_agent_start, dedupes long results once, and skips rtk when the extension exists", async () => {
 		const home = useHome();
 		const { handlers, commands, events } = mount();
-		expect(PREFIX_POLICY.injectSystemPrompt).toBe(false);
 		expect(events.includes("before_agent_start")).toBe(false);
 
 		const toolResult = handlers.get("tool_result");

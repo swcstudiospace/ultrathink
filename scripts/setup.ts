@@ -147,6 +147,7 @@ export function mergeBlock(current: string, block: string): string {
 const CLAUDE_COMMAND_TIMEOUT_MS = 60_000;
 /** The exit code of a timed-out command (as coreutils `timeout` reports it), so it counts as a failed command. */
 const TIMED_OUT_EXIT = 124;
+const NOT_EXECUTABLE_EXIT = 126;
 
 export type Run = (
 	cmd: string[],
@@ -169,9 +170,12 @@ function defaultRun(
 			};
 		}
 		return { stdout, stderr: proc.stderr?.toString() ?? "", code: proc.exitCode ?? 1 };
-	} catch {
-		// Bun.spawnSync throws when the binary is missing; report it the way a shell does.
-		return { stdout: "", stderr: `${cmd[0]}: not found`, code: 127 };
+	} catch (error) {
+		// Bun.spawnSync throws ENOENT when the binary is not on PATH; a shell reports that as 127.
+		// Any other spawn error means the binary is there but could not run (EACCES): report it as 126 with the cause.
+		if (error instanceof Error && "code" in error && error.code === "ENOENT")
+			return { stdout: "", stderr: `${cmd[0]}: not found`, code: 127 };
+		return { stdout: "", stderr: String(error), code: NOT_EXECUTABLE_EXIT };
 	}
 }
 

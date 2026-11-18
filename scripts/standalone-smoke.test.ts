@@ -82,6 +82,28 @@ function cleanRoomRun(): Promise<StdioSmokeResult> {
 	return cleanRoom;
 }
 
+/**
+ * Replaces Bun.spawn with `impl` and records the cwd of each spawn, which is the connector's temp root. Call `restore`
+ * in a finally block so a failing case cannot leak the spy into the next test.
+ */
+function spySpawn(impl: () => unknown): { cwds: string[]; restore: () => void } {
+	const cwds: string[] = [];
+	const spy = spyOn(Bun, "spawn").mockImplementation(((
+		_cmd: unknown,
+		options: { cwd?: string },
+	) => {
+		cwds.push(options.cwd ?? "");
+		return impl();
+	}) as unknown as typeof Bun.spawn);
+	return { cwds, restore: () => spy.mockRestore() };
+}
+
+/** The smoke run spawned exactly once, and its temp root is gone afterwards. */
+function assertTempRootRemoved(cwds: string[]): void {
+	expect(cwds).toHaveLength(1);
+	expect(existsSync(cwds[0] ?? "")).toBe(false);
+}
+
 describe("stdio connector, clean room", () => {
 	test(
 		"answers the audit recipe with exactly 4 replies and writes only the state dir and Bun's cache under HOME",
@@ -282,25 +304,18 @@ describe("stdio connector, clean room", () => {
 	);
 
 	test("a spawn that throws leaves no temp root behind", async () => {
-		const cwds: string[] = [];
-		const spy = spyOn(Bun, "spawn").mockImplementation(((
-			_cmd: unknown,
-			options: { cwd?: string },
-		) => {
-			cwds.push(options.cwd ?? "");
+		const { cwds, restore } = spySpawn(() => {
 			throw new Error("spawn refused");
-		}) as unknown as typeof Bun.spawn);
+		});
 		try {
 			await expect(runStdioSignalSmoke()).rejects.toThrow("spawn refused");
 		} finally {
-			spy.mockRestore();
+			restore();
 		}
-		expect(cwds).toHaveLength(1);
-		expect(existsSync(cwds[0] ?? "")).toBe(false);
+		assertTempRootRemoved(cwds);
 	});
 
 	test("a failure after the connector starts kills it and removes its temp root", async () => {
-		const cwds: string[] = [];
 		const signals: string[] = [];
 		const child = {
 			stdin: {
@@ -318,39 +333,61 @@ describe("stdio connector, clean room", () => {
 				signals.push(signal ?? "SIGTERM");
 			},
 		};
-		const spy = spyOn(Bun, "spawn").mockImplementation(((
-			_cmd: unknown,
-			options: { cwd?: string },
-		) => {
-			cwds.push(options.cwd ?? "");
-			return child;
-		}) as unknown as typeof Bun.spawn);
+		const { cwds, restore } = spySpawn(() => child);
 		try {
 			await expect(runStdioSignalSmoke()).rejects.toThrow("stdin closed");
 		} finally {
-			spy.mockRestore();
+			restore();
 		}
 		expect(signals).toEqual(["SIGKILL"]);
-		expect(cwds).toHaveLength(1);
-		expect(existsSync(cwds[0] ?? "")).toBe(false);
+		assertTempRootRemoved(cwds);
 	});
 
-	test("a failing spawn in the clean-room run leaves no temp root behind", async () => {
-		const cwds: string[] = [];
-		const spy = spyOn(Bun, "spawn").mockImplementation(((
-			_cmd: unknown,
-			options: { cwd?: string },
-		) => {
-			cwds.push(options.cwd ?? "");
-			throw new Error("spawn refused");
-		}) as unknown as typeof Bun.spawn);
+	test("a rejected exit wait leaves no SIGKILL timer running", async () => {
+		const signals: string[] = [];
+		const { promise: exited, reject: rejectExit } = Promise.withResolvers<number>();
+		const child = {
+			stdin: { write: () => undefined, flush: async () => undefined },
+			stdout: new ReadableStream<Uint8Array>({
+				start: (controller) => {
+					controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ id: 1 })}\n`));
+				},
+			}),
+			stderr: new ReadableStream<Uint8Array>({ start: (controller) => controller.close() }),
+			exitCode: null,
+			signalCode: null,
+			exited,
+			kill: (signal?: string) => {
+				signals.push(signal ?? "SIGTERM");
+				if (signal === "SIGTERM") rejectExit(new Error("exit lost"));
+			},
+		};
+		const timeoutMs = 50;
+		const spy = spyOn(Bun, "spawn").mockImplementation(
+			(() => child) as unknown as typeof Bun.spawn,
+		);
 		try {
-			await expect(runStdioSmoke()).rejects.toThrow("spawn refused");
+			await expect(runStdioSignalSmoke({ timeoutMs })).rejects.toThrow("exit lost");
 		} finally {
 			spy.mockRestore();
 		}
-		expect(cwds).toHaveLength(1);
-		expect(existsSync(cwds[0] ?? "")).toBe(false);
+		// Real clock on purpose: the code under test arms a real setTimeout and its streams run on the real event loop,
+		// so fake timers would never reach the timer this asserts is gone.
+		signals.length = 0;
+		await Bun.sleep(timeoutMs * 4);
+		expect(signals).toEqual([]);
+	});
+
+	test("a failing spawn in the clean-room run leaves no temp root behind", async () => {
+		const { cwds, restore } = spySpawn(() => {
+			throw new Error("spawn refused");
+		});
+		try {
+			await expect(runStdioSmoke()).rejects.toThrow("spawn refused");
+		} finally {
+			restore();
+		}
+		assertTempRootRemoved(cwds);
 	});
 
 	test(

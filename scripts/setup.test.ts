@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
 	existsSync,
 	lstatSync,
@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 import {
 	apply,
 	applyReport,
+	claudeAvailable,
 	claudeMdPath,
 	ensureMcpServer,
 	ensurePluginInstalled,
@@ -1142,5 +1143,37 @@ describe("prime agent host", () => {
 		} finally {
 			cleanup();
 		}
+	});
+});
+
+describe("claudeAvailable", () => {
+	/** Runs `body` with Bun.spawnSync throwing `error`, the way the runtime reports a failed spawn. */
+	function withSpawnError(error: unknown, body: () => void): void {
+		const spy = spyOn(Bun, "spawnSync").mockImplementation(() => {
+			throw error;
+		});
+		try {
+			body();
+		} finally {
+			spy.mockRestore();
+		}
+	}
+
+	test("a claude binary that is installed but cannot run still counts as available", () => {
+		withSpawnError(
+			Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }),
+			() => {
+				expect(claudeAvailable()).toBe(true);
+			},
+		);
+	});
+
+	test("a claude binary that is not on PATH (ENOENT) counts as absent", () => {
+		withSpawnError(
+			Object.assign(new Error('Executable not found in $PATH: "claude"'), { code: "ENOENT" }),
+			() => {
+				expect(claudeAvailable()).toBe(false);
+			},
+		);
 	});
 });

@@ -96,6 +96,24 @@ export function extractSpecifiers(text: string): { line: number; specifier: stri
 	return found;
 }
 
+const DYNAMIC_CALL_OPEN = /\b(?:import|require)\s*\(/g;
+// Anchored at the position right after the opening parenthesis; matches only a single quoted literal.
+const LITERAL_ARGUMENT = /\s*(['"])[^'"`\n]+\1\s*\)/y;
+
+/**
+ * Returns the line of every dynamic import() or require() whose argument is not a single
+ * quoted literal. Such calls cannot be resolved statically, so the boundary check fails closed.
+ */
+export function findUnverifiableDynamicImports(text: string): number[] {
+	const lines: number[] = [];
+	for (const match of text.matchAll(DYNAMIC_CALL_OPEN)) {
+		if (match.index === undefined) continue;
+		LITERAL_ARGUMENT.lastIndex = match.index + match[0].length;
+		if (!LITERAL_ARGUMENT.test(text)) lines.push(lineOf(text, match.index));
+	}
+	return lines;
+}
+
 /** Returns a reason string when the specifier breaks the boundary, otherwise undefined. */
 function classify(fileAbsolute: string, specifier: string): string | undefined {
 	if (specifier.startsWith(".") || path.isAbsolute(specifier)) {
@@ -161,6 +179,12 @@ export async function checkCoreBoundary(coreDir: string = CORE_DIR): Promise<Bou
 		} catch (error) {
 			failures.push({ file: displayed, message: `unreadable: ${errorMessage(error)}` });
 			continue;
+		}
+		for (const line of findUnverifiableDynamicImports(text)) {
+			failures.push({
+				file: displayed,
+				message: `line ${line}: dynamic import()/require() argument is not a single string literal; boundary cannot be verified`,
+			});
 		}
 		for (const { line, specifier } of extractSpecifiers(text)) {
 			const reason = classify(file, specifier);

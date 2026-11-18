@@ -7,7 +7,7 @@
  * install, and restores the previous target directory. Installing identical files again is a no-op.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, win32 } from "node:path";
 
 const INSTALL_RECORD_FILE = ".ultrathink-install.json";
@@ -76,7 +76,7 @@ export async function installPlugin(options: InstallOptions): Promise<InstallRes
 			`.${basename(target)}.staging-${randomBytes(6).toString("hex")}`,
 		);
 		journal.staging = staging;
-		await stageFiles(staging, entries, hash);
+		await stageFiles(staging, entries);
 		await validateRequired(staging, options.requiredFiles);
 
 		if (await pathExists(target)) {
@@ -95,14 +95,15 @@ export async function installPlugin(options: InstallOptions): Promise<InstallRes
 			await registration.apply();
 			journal.applied.push(registration);
 		}
+		// Written last: a record proves every registration completed, so an install interrupted
+		// before then is redone rather than reported unchanged.
+		await writeRecord(target, hash, entries);
 	} catch (error) {
 		return rollback(target, journal, error);
 	}
 
-	if (journal.backup !== undefined) {
-		// The new install is live here; a leftover backup sibling is clutter, not a failed install.
-		await rm(journal.backup, { recursive: true, force: true }).catch(() => undefined);
-	}
+	// The new install is live here; leftover backup siblings are clutter, not a failed install.
+	await removeBackups(target);
 	return { ok: true, status: "installed" };
 }
 
@@ -157,15 +158,30 @@ async function recordMatches(target: string, hash: string): Promise<boolean> {
 	}
 }
 
-async function stageFiles(staging: string, entries: readonly Entry[], hash: string): Promise<void> {
+async function stageFiles(staging: string, entries: readonly Entry[]): Promise<void> {
 	await mkdir(staging);
 	for (const [path, content] of entries) {
 		const destination = join(staging, path);
 		await mkdir(dirname(destination), { recursive: true });
 		await writeFile(destination, content);
 	}
+}
+
+async function writeRecord(target: string, hash: string, entries: readonly Entry[]): Promise<void> {
 	const record = { hash, files: entries.map(([path]) => path) };
-	await writeFile(join(staging, INSTALL_RECORD_FILE), `${JSON.stringify(record, null, 2)}\n`);
+	await writeFile(join(target, INSTALL_RECORD_FILE), `${JSON.stringify(record, null, 2)}\n`);
+}
+
+// Backups are siblings named `.<basename>.backup-*`. Once the new install is live, any such
+// sibling is left over from an install that was interrupted (or succeeded and cleanup failed).
+async function removeBackups(target: string): Promise<void> {
+	const parent = dirname(target);
+	const prefix = `.${basename(target)}.backup-`;
+	const names = await readdir(parent).catch((): string[] => []);
+	for (const name of names) {
+		if (!name.startsWith(prefix)) continue;
+		await rm(join(parent, name), { recursive: true, force: true }).catch(() => undefined);
+	}
 }
 
 async function validateRequired(staging: string, required: readonly string[]): Promise<void> {

@@ -92,13 +92,52 @@ export function hookCommand(node: string, script: string): string {
 	return `${shellQuote(node)} ${shellQuote(script)}`;
 }
 
-/** An entry is ultrathink's when it carries the marker or its command names the staged hook file. */
-export function isOwned(entry: unknown): boolean {
-	return (
-		isRecord(entry) &&
-		(entry[OUR_MARKER] === true ||
-			(typeof entry.command === "string" && entry.command.includes(HOOK_FILE)))
-	);
+/**
+ * Splits a command the way a POSIX shell reads hookCommand's output: single-quoted words, `'\''` for an
+ * embedded quote, and backslash escapes outside quotes. Undefined for an unterminated quote.
+ */
+function shellWords(command: string): string[] | undefined {
+	const words: string[] = [];
+	let word = "";
+	let inWord = false;
+	let quoted = false;
+	for (let i = 0; i < command.length; i++) {
+		const ch = command.charAt(i);
+		if (quoted) {
+			if (ch === "'") quoted = false;
+			else word += ch;
+		} else if (ch === "'") {
+			quoted = true;
+			inWord = true;
+		} else if (ch === "\\" && i + 1 < command.length) {
+			word += command.charAt(++i);
+			inWord = true;
+		} else if (/\s/.test(ch)) {
+			if (inWord) words.push(word);
+			word = "";
+			inWord = false;
+		} else {
+			word += ch;
+			inWord = true;
+		}
+	}
+	if (quoted) return undefined;
+	if (inWord) words.push(word);
+	return words;
+}
+
+/**
+ * An entry is ultrathink's when it carries the marker, or, for an entry written before the marker, when its
+ * command is `<node> <staged>`: the last word is exactly the staged hook path of this cursor directory. A
+ * command that only mentions the file name (`echo ultrathink-cursor-pstack.js`) is not ours. Without
+ * `staged`, only the marker counts.
+ */
+export function isOwned(entry: unknown, staged?: string): boolean {
+	if (!isRecord(entry)) return false;
+	if (entry[OUR_MARKER] === true) return true;
+	if (staged === undefined || typeof entry.command !== "string") return false;
+	const words = shellWords(entry.command);
+	return words !== undefined && words.length >= 2 && words[words.length - 1] === staged;
 }
 
 /** A fresh hooks.json value with hooks.EVENT as an array, or a reason the file cannot be shaped safely. */
@@ -122,32 +161,33 @@ function prepare(
 }
 
 /** Adds or refreshes ultrathink's entry: owned entries are replaced in place (duplicates collapse), otherwise it appends. */
-export function upsertHook(current: unknown, wanted: Json): HookChange {
+export function upsertHook(current: unknown, wanted: Json, staged: string): HookChange {
 	const shaped = prepare(current);
 	if ("reason" in shaped) return { reason: shaped.reason };
 	const { top, hooks, list } = shaped;
-	const first = list.findIndex(isOwned);
+	const owned = (entry: unknown) => isOwned(entry, staged);
+	const first = list.findIndex(owned);
 	if (first < 0) {
 		list.push(wanted);
 		return { next: top, action: "added" };
 	}
-	const duplicates = list.some((entry, index) => index > first && isOwned(entry));
+	const duplicates = list.some((entry, index) => index > first && owned(entry));
 	if (!duplicates && JSON.stringify(list[first]) === JSON.stringify(wanted))
 		return { action: "unchanged" };
 	// Foreign entries keep their slots; owned ones collapse into `wanted` at the first owned slot.
 	hooks[EVENT] = list.flatMap((entry, index) =>
-		index === first ? [wanted] : isOwned(entry) ? [] : [entry],
+		index === first ? [wanted] : owned(entry) ? [] : [entry],
 	);
 	return { next: top, action: "replaced" };
 }
 
 /** Deletes every owned entry, leaving foreign entries and their positions untouched. */
-export function removeHook(current: unknown): HookChange {
+export function removeHook(current: unknown, staged: string): HookChange {
 	const shaped = prepare(current);
 	if ("reason" in shaped) return { reason: shaped.reason };
 	const { top, hooks, list } = shaped;
-	if (!list.some(isOwned)) return { action: "not present" };
-	hooks[EVENT] = list.filter((entry) => !isOwned(entry));
+	if (!list.some((entry) => isOwned(entry, staged))) return { action: "not present" };
+	hooks[EVENT] = list.filter((entry) => !isOwned(entry, staged));
 	return { next: top, action: "removed" };
 }
 
@@ -181,29 +221,12 @@ export function writeHooksFile(file: string, value: unknown, expectedRaw?: strin
 		return false;
 	}
 	if (seen !== expectedRaw) return false;
-	// A unique name opened with "wx" never writes through a symlink planted at an existing path.
-	const tmp = `${file}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
-	let created = false;
-	try {
-		const fd = openSync(tmp, "wx", 0o600);
-		created = true;
-		try {
-			writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`);
-			fchmodSync(fd, 0o600);
-		} finally {
-			closeSync(fd);
-		}
-		// Check again immediately before the rename. The window is small, and a mismatch retries or refuses.
-		if (current() !== expectedRaw) {
-			rmSync(tmp, { force: true });
-			return false;
-		}
-		renameSync(tmp, file);
-		return true;
-	} catch (error) {
-		if (created) rmSync(tmp, { force: true });
-		throw error;
-	}
+	return replaceFile(
+		file,
+		`${JSON.stringify(value, null, 2)}\n`,
+		0o600,
+		() => current() === expectedRaw,
+	);
 }
 
 const HOOK_WRITE_ATTEMPTS = 3;
@@ -229,13 +252,52 @@ function commitHooks(
 	return { code: fail(log, "hooks.json changed while it was being updated; re-run the command") };
 }
 
-/** Puts the staged hook back after a refused install. `undefined` means the file did not exist. */
+/**
+ * Writes `data` to a unique sibling temp file (opened "wx", so a symlink planted at that name is never
+ * followed), then renames it over `file`. `mayReplace` runs after the write; when it refuses, the temp file
+ * is removed, `file` is left alone, and the result is false.
+ */
+function replaceFile(
+	file: string,
+	data: string | Buffer,
+	mode: number,
+	mayReplace: () => boolean = () => true,
+): boolean {
+	const tmp = `${file}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
+	let created = false;
+	try {
+		const fd = openSync(tmp, "wx", mode);
+		created = true;
+		try {
+			writeFileSync(fd, data);
+			fchmodSync(fd, mode);
+		} finally {
+			closeSync(fd);
+		}
+		// Check again immediately before the rename. The window is small, and a mismatch retries or refuses.
+		if (!mayReplace()) {
+			rmSync(tmp, { force: true });
+			return false;
+		}
+		renameSync(tmp, file);
+		return true;
+	} catch (error) {
+		if (created) rmSync(tmp, { force: true });
+		throw error;
+	}
+}
+
+/**
+ * Puts the staged hook back after a refused install. `undefined` means the file did not exist. The previous
+ * bytes go through the same temp-file-and-rename write as hooks.json, so an interrupted restore never leaves a
+ * truncated hook, and a symlink at `file` is replaced rather than written through.
+ */
 function restoreStaged(file: string, previous: Buffer | undefined): void {
 	if (previous === undefined) {
 		rmSync(file, { force: true });
 		return;
 	}
-	writeFileSync(file, previous);
+	replaceFile(file, previous, 0o644);
 }
 
 /** Creates dir (and parents) with `mode` only when missing; existing directories keep their mode. */
@@ -457,14 +519,14 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 		};
 		// Refuse a parseable but unusable hooks.json before copying the script.
 		// {"hooks":[]} is valid JSON and would otherwise replace a staged hook that never gets registered.
-		const preview = upsertHook(initial.config, wanted);
+		const preview = upsertHook(initial.config, wanted, staged);
 		if (preview.reason) return fail(log, preview.reason);
 		// Snapshot, copy, registration and restore share one lock. A second install waits, so its
 		// rollback cannot delete a hook this attempt has already registered.
 		return withHookLock(cursorDir, deps.lockWaitMs, log, () => {
 			const again = readHooksFile(file);
 			if ("reason" in again) return fail(log, again.reason);
-			const currentPreview = upsertHook(again.config, wanted);
+			const currentPreview = upsertHook(again.config, wanted, staged);
 			if (currentPreview.reason) return fail(log, currentPreview.reason);
 			const previous = existsSync(staged) ? readFileSync(staged) : undefined;
 			ensureDir(cursorDir, 0o700);
@@ -476,7 +538,7 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 				log(`staged ${staged}`);
 				committed = commitHooks(
 					file,
-					(current) => upsertHook(current, wanted),
+					(current) => upsertHook(current, wanted, staged),
 					log,
 					deps.beforeCommit,
 				);
@@ -498,12 +560,17 @@ export function main(argv: string[], deps: Partial<MainDeps> = {}): number {
 	}
 
 	// Nothing of ours is installed: do not create the Cursor directory just to take the lock.
-	if (removeHook(initial.config).action === "not present" && !existsSync(staged)) {
+	if (removeHook(initial.config, staged).action === "not present" && !existsSync(staged)) {
 		log(`hooks.json: no ${OUR_MARKER} ${EVENT} entry present`);
 		return 0;
 	}
 	return withHookLock(cursorDir, deps.lockWaitMs, log, () => {
-		const committed = commitHooks(file, (current) => removeHook(current), log, deps.beforeCommit);
+		const committed = commitHooks(
+			file,
+			(current) => removeHook(current, staged),
+			log,
+			deps.beforeCommit,
+		);
 		if (committed.code !== 0) return committed.code;
 		if (existsSync(staged)) {
 			rmSync(staged);

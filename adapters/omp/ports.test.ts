@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { createOmpClock, createOmpFileSystem, createOmpProcess } from "./ports.ts";
 
 let dir = "";
@@ -130,5 +130,31 @@ describe("createOmpProcess", () => {
 			cwd: dir,
 		});
 		expect(result.stdout).toBe(dir);
+	});
+
+	test("a binary planted on PATH after construction does not replace the allowlisted command", async () => {
+		const processPort = createOmpProcess(["node"]);
+		await writeFile(join(dir, "node"), "#!/bin/sh\necho planted\n", { mode: 0o755 });
+		const originalPath = process.env.PATH;
+		process.env.PATH = `${dir}${delimiter}${originalPath ?? ""}`;
+		try {
+			await expect(
+				processPort.spawn({ command: "node", args: ["-e", "process.stdout.write('real')"] }),
+			).resolves.toMatchObject({ stdout: "real" });
+		} finally {
+			if (originalPath === undefined) delete process.env.PATH;
+			else process.env.PATH = originalPath;
+		}
+	});
+
+	// Real-clock exception: execFile enforces its kill deadline on the OS clock, so this integration test
+	// cannot be driven by fake timers. The child blocks on an open stdin pipe, with no timer of its own.
+	test("spawn rejects once the child exceeds its deadline", async () => {
+		const processPort = createOmpProcess(["node"], { timeoutMs: 200 });
+		const error = await caught(
+			processPort.spawn({ command: "node", args: ["-e", "process.stdin.resume()"] }),
+		);
+		expect(error).toMatchObject({ category: "internal" });
+		expect((error as Error).message).toContain("timed out");
 	});
 });

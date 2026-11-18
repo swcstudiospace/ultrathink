@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { createLedger, isValidSnapshot, LedgerReject, releaseLock, type LedgerDrop, type SavingsPoint } from "./ledger.ts";
+import { createLedger, isValidSnapshot, LedgerReject, releaseLock, type Ledger, type LedgerDrop, type SavingsPoint, type TokenSavingsSnapshot } from "./ledger.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, spyOn, test } from "bun:test";
@@ -16,6 +16,13 @@ function thrownClassName(fn: () => void): string {
 		return err instanceof Object ? err.constructor.name : "unknown";
 	}
 	throw new Error("expected fn to throw");
+}
+
+/** The snapshot of a ledger with a loaded session; throws rather than letting a test read a null snapshot. */
+function mustSnapshot(ledger: Ledger): TokenSavingsSnapshot {
+	const snap = ledger.snapshot();
+	if (snap === null) throw new Error("expected a loaded session snapshot");
+	return snap;
 }
 
 describe("ledger", () => {
@@ -57,8 +64,8 @@ describe("ledger", () => {
 		expect(() => ledger.record({ at: 1.5, source: "graph", baseline: 4, current: 0, saved: 4 })).toThrow(LedgerReject);
 		expect(() => ledger.record({ at: 1, source: "graph", baseline: -1, current: 0, saved: -1 })).toThrow(LedgerReject);
 		expect(readFileSync(live, "utf8")).toBe(before);
-		expect(ledger.snapshot()!.points).toEqual([]);
-		expect(ledger.snapshot()!.savedTokens).toBe(0);
+		expect(mustSnapshot(ledger).points).toEqual([]);
+		expect(mustSnapshot(ledger).savedTokens).toBe(0);
 	});
 
 	test("optional perf fields persist and a bad field is rejected", () => {
@@ -67,7 +74,7 @@ describe("ledger", () => {
 		ledger.load("sess");
 		ledger.notePerf({ lastTurnMs: 12, cacheHitPct: 40, lastQueryMs: 3 });
 		ledger.record(point(1, 10, 4));
-		const snap = ledger.snapshot()!;
+		const snap = mustSnapshot(ledger);
 		expect(snap.lastTurnMs).toBe(12);
 		expect(snap.cacheHitPct).toBe(40);
 		expect(snap.lastQueryMs).toBe(3);
@@ -107,7 +114,7 @@ describe("ledger", () => {
 		ledger.load("sess");
 		ledger.record(point(1, 10, 4));
 		ledger.notePerf({ rtkSavedTokens: 15 });
-		const snap = ledger.snapshot()!;
+		const snap = mustSnapshot(ledger);
 		expect(snap.rtkSavedTokens).toBe(15);
 		expect(snap.savedTokens).toBe(6);
 		expect(snap.savedTokens).toBe(snap.baselineTokens - snap.currentTokens);
@@ -126,13 +133,13 @@ describe("ledger", () => {
 		const ledger = createLedger({ dir, now: () => 10 });
 		ledger.load("sess");
 		ledger.notePerf({ costCents: 12 });
-		expect(ledger.snapshot()!.costCents).toBe(12);
-		expect(ledger.snapshot()!.savedTokens).toBe(0);
-		expect(isValidSnapshot({ ...ledger.snapshot()!, costCents: -1 }, "sess")).toBe(false);
+		expect(mustSnapshot(ledger).costCents).toBe(12);
+		expect(mustSnapshot(ledger).savedTokens).toBe(0);
+		expect(isValidSnapshot({ ...mustSnapshot(ledger), costCents: -1 }, "sess")).toBe(false);
 		const before = readFileSync(join(dir, "live.json"), "utf8");
 		expect(() => ledger.notePerf({ costCents: -1 })).toThrow(LedgerReject);
 		expect(readFileSync(join(dir, "live.json"), "utf8")).toBe(before);
-		expect(ledger.snapshot()!.costCents).toBe(12);
+		expect(mustSnapshot(ledger).costCents).toBe(12);
 		expect(JSON.parse(before).costCents).toBe(12);
 		expect("lastIdleMs" in JSON.parse(before)).toBe(false);
 	});
@@ -146,7 +153,7 @@ describe("ledger", () => {
 		mkdirSync(join(dir, ".lock"));
 		expect(() => ledger.notePerf({ lastQueryMs: 9 })).toThrow(LedgerReject);
 		expect(readFileSync(live, "utf8")).toBe(before);
-		expect(ledger.snapshot()!.lastQueryMs).toBeUndefined();
+		expect(mustSnapshot(ledger).lastQueryMs).toBeUndefined();
 	});
 
 	test("a lock owned by a live process is neither broken nor removed by a rejected write", () => {
@@ -269,7 +276,7 @@ describe("ledger", () => {
 		const ledger = createLedger({ dir, now: () => 1 });
 		for (let i = 0; i < 300; i += 1) ledger.load(`s${i}`);
 		expect(ledger.loadedSessions()).toBe(128);
-		expect(ledger.snapshot()!.sessionId).toBe("s299");
+		expect(mustSnapshot(ledger).sessionId).toBe("s299");
 	});
 
 	test("an evicted session reloads its saved totals from disk", () => {
@@ -289,7 +296,7 @@ describe("ledger", () => {
 			ledger.addProviderUsage(1, 1, 0);
 			ledger.record(point(i, 4, 0));
 		}
-		const snap = ledger.snapshot()!;
+		const snap = mustSnapshot(ledger);
 		expect(snap.points.length).toBe(200);
 		expect(snap.baselineTokens).toBe(804);
 		expect(snap.savedTokens).toBe(snap.baselineTokens - snap.currentTokens);
@@ -300,7 +307,7 @@ describe("ledger", () => {
 		const dir = mkdtempSync(join(tmpdir(), "token-opt-"));
 		const ledger = createLedger({ dir, now: () => 1 });
 		ledger.load("sess");
-		const before = ledger.snapshot()!;
+		const before = mustSnapshot(ledger);
 		const snap = ledger.addProviderUsage(2, 1, 0, 4);
 		expect(snap.providerInput).toBe(2);
 		expect(snap.providerOutput).toBe(4);
@@ -329,8 +336,8 @@ describe("ledger", () => {
 		const ledger = createLedger({ dir, now: () => 1, asyncWrites: true });
 		ledger.load("sess");
 		ledger.record(point(1, 10, 4));
-		expect(ledger.snapshot()!.savedTokens).toBe(6);
-		expect(ledger.snapshot()!.points.length).toBe(1);
+		expect(mustSnapshot(ledger).savedTokens).toBe(6);
+		expect(mustSnapshot(ledger).points.length).toBe(1);
 		expect(ledger.writesCompleted()).toBe(0);
 		expect(existsSync(join(dir, "sess.json"))).toBe(false);
 	});
@@ -343,7 +350,7 @@ describe("ledger", () => {
 		ledger.notePerf({ lastTurnMs: 7 });
 		ledger.record(point(2, 8, 1));
 		await ledger.flush();
-		const latest = ledger.snapshot()!;
+		const latest = mustSnapshot(ledger);
 		expect(JSON.parse(readFileSync(join(dir, "sess.json"), "utf8"))).toEqual(latest);
 		expect(JSON.parse(readFileSync(join(dir, "live.json"), "utf8"))).toEqual(latest);
 	});
@@ -357,7 +364,7 @@ describe("ledger", () => {
 		ledger.addProviderUsage(1, 0, 0);
 		await ledger.flush();
 		expect(ledger.writesCompleted()).toBe(1);
-		expect(ledger.snapshot()!.points.length).toBe(5);
+		expect(mustSnapshot(ledger).points.length).toBe(5);
 		await ledger.flush();
 		expect(ledger.writesCompleted()).toBe(1);
 	});
@@ -371,11 +378,11 @@ describe("ledger", () => {
 		const ledger = createLedger({ dir, now: () => 1, asyncWrites: true });
 		ledger.load("sess");
 		ledger.record(point(1, 10, 4));
-		expect(ledger.snapshot()!.savedTokens).toBe(6);
+		expect(mustSnapshot(ledger).savedTokens).toBe(6);
 		await ledger.flush();
 		expect(ledger.droppedWrites()).toBe(1);
 		expect(ledger.writesCompleted()).toBe(0);
-		expect(ledger.snapshot()!.savedTokens).toBe(6);
+		expect(mustSnapshot(ledger).savedTokens).toBe(6);
 	});
 
 	test("async: a failed write reports one event naming the error class, then the flush count", async () => {
@@ -502,6 +509,6 @@ describe("ledger legacy adoption", () => {
 		const second = createLedger({ dir, now: () => 11 });
 		second.load("sess");
 		second.addProviderUsage(10, 0, 0, 1);
-		expect(second.snapshot()!.cacheHitPct).toBe(0);
+		expect(mustSnapshot(second).cacheHitPct).toBe(0);
 	});
 });

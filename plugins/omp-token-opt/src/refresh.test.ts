@@ -122,4 +122,18 @@ describe("createTrailingRefresh", () => {
 		await refresh();
 		expect(calls).toBe(2);
 	});
+
+	test("a read that throws synchronously is handled and does not stop later reads", async () => {
+		let calls = 0;
+		const refresh = createTrailingRefresh(
+			() => {
+				calls++;
+				throw new Error("rtk missing");
+			},
+			0,
+		);
+		await expect(refresh()).resolves.toBeUndefined();
+		await expect(refresh()).resolves.toBeUndefined();
+		expect(calls).toBe(2);
+	});
 });

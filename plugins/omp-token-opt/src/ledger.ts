@@ -343,22 +343,30 @@ function writeAtomic(path: string, body: string): void {
 	}
 }
 
+/** Every PerfFields key. `satisfies Record<keyof PerfFields, true>` makes a key missing from or added to PerfFields a type error here. */
+const PERF_KEYS = {
+	lastTurnMs: true,
+	cacheHitPct: true,
+	lastQueryMs: true,
+	rtkSavedTokens: true,
+	lastPayloadChars: true,
+	ttftMs: true,
+	lastIdleMs: true,
+	costCents: true,
+	providerInput: true,
+	providerOutput: true,
+	providerCacheRead: true,
+	providerCacheWrite: true,
+	prefixChanged: true,
+	toolsChanged: true,
+	graphReady: true,
+} satisfies Record<keyof PerfFields, true>;
+
 function copyPerf(from: TokenSavingsSnapshot, onto: TokenSavingsSnapshot): void {
-	if (from.lastTurnMs !== undefined) onto.lastTurnMs = from.lastTurnMs;
-	if (from.cacheHitPct !== undefined) onto.cacheHitPct = from.cacheHitPct;
-	if (from.lastQueryMs !== undefined) onto.lastQueryMs = from.lastQueryMs;
-	if (from.rtkSavedTokens !== undefined) onto.rtkSavedTokens = from.rtkSavedTokens;
-	if (from.lastPayloadChars !== undefined) onto.lastPayloadChars = from.lastPayloadChars;
-	if (from.ttftMs !== undefined) onto.ttftMs = from.ttftMs;
-	if (from.lastIdleMs !== undefined) onto.lastIdleMs = from.lastIdleMs;
-	if (from.costCents !== undefined) onto.costCents = from.costCents;
-	if (from.providerInput !== undefined) onto.providerInput = from.providerInput;
-	if (from.providerOutput !== undefined) onto.providerOutput = from.providerOutput;
-	if (from.providerCacheRead !== undefined) onto.providerCacheRead = from.providerCacheRead;
-	if (from.providerCacheWrite !== undefined) onto.providerCacheWrite = from.providerCacheWrite;
-	if (from.prefixChanged !== undefined) onto.prefixChanged = from.prefixChanged;
-	if (from.toolsChanged !== undefined) onto.toolsChanged = from.toolsChanged;
-	if (from.graphReady !== undefined) onto.graphReady = from.graphReady;
+	for (const key of Object.keys(PERF_KEYS) as (keyof PerfFields)[]) {
+		const value = from[key];
+		if (value !== undefined) onto[key] = value;
+	}
 }
 
 interface ProviderTotals {

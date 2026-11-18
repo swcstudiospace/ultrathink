@@ -293,8 +293,12 @@ export async function runStdioSignalSmoke(
 			timedOut = true;
 			proc.kill("SIGKILL");
 		}, timeoutMs);
-		const exitCode = await proc.exited;
-		clearTimeout(timer);
+		let exitCode: number;
+		try {
+			exitCode = await proc.exited;
+		} finally {
+			clearTimeout(timer);
+		}
 		const exitMs = Date.now() - signalledAt;
 		const stderrText = await stderr;
 		completed = true;
@@ -727,6 +731,150 @@ function preflightChecks(room: ServiceRoom, port: number): SmokeCheck[] {
 	return checks;
 }
 
+/** A request to the hosted service; every reply it gives is kept for the secret sweep. */
+type ServiceRequest = (path: string, init?: RequestInit) => Promise<HttpReply>;
+
+/** Polls /healthz until it answers 200, the deadline passes or `hasExited` turns true. True when it answered. */
+async function waitForHealthz(
+	request: ServiceRequest,
+	hasExited: () => boolean,
+	timeoutMs: number,
+): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	let healthy = false;
+	while (!healthy && !hasExited() && Date.now() < deadline) {
+		try {
+			healthy = (await request("/healthz")).status === 200;
+		} catch {
+			// reason: the service is still starting; the loop retries until the deadline.
+			healthy = false;
+		}
+		if (!healthy) await Bun.sleep(100);
+	}
+	return healthy;
+}
+
+/** The HTTP and MCP checklist, run in order against a service that answered /healthz. */
+async function httpChecklist(request: ServiceRequest, connectorKey: string): Promise<SmokeCheck[]> {
+	const mcp = (key: string | undefined, message: object): Promise<HttpReply> =>
+		request("/mcp", {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				"mcp-protocol-version": PROTOCOL_VERSION,
+				...(key === undefined ? {} : { "x-connector-key": key }),
+			},
+			body: JSON.stringify(message),
+		});
+	const list = { jsonrpc: "2.0", id: 2, method: "tools/list" };
+	return [
+		await attempt("POST /mcp without a key is 401", async () => {
+			const reply = await mcp(undefined, list);
+			return { ok: reply.status === 401, detail: `status ${reply.status}` };
+		}),
+		await attempt("POST /mcp with a wrong key is 401", async () => {
+			const reply = await mcp(WRONG_KEY, list);
+			return { ok: reply.status === 401, detail: `status ${reply.status}` };
+		}),
+		await attempt("GET /mcp is 405 with Allow: POST", async () => {
+			const reply = await request("/mcp");
+			const allow = reply.headers.get("allow") ?? "";
+			const methods = allow.split(",").map((method) => method.trim());
+			return {
+				ok: reply.status === 405 && methods.includes("POST"),
+				detail: `status ${reply.status}, Allow "${allow}"`,
+			};
+		}),
+		await attempt("GET /readyz is 200 with the documented checks", async () => {
+			const reply = await request("/readyz");
+			const body = parseLine(reply.text);
+			const readyChecks = asRecord(body?.checks);
+			const keys = Object.keys(readyChecks ?? {}).sort();
+			const allPass = Object.values(readyChecks ?? {}).every((value) => value === true);
+			return {
+				ok:
+					reply.status === 200 &&
+					body?.status === "ready" &&
+					keys.join(",") === READY_CHECKS.join(",") &&
+					allPass,
+				detail: `status ${reply.status}, checks ${keys.join(",")}`,
+			};
+		}),
+		await attempt("MCP initialize with the connector key", async () => {
+			const reply = await mcp(connectorKey, INITIALIZE);
+			const result = asRecord(parseLine(reply.text)?.result);
+			const info = asRecord(result?.serverInfo);
+			return {
+				ok:
+					reply.status === 200 &&
+					info?.name === SERVER_NAME &&
+					result?.protocolVersion === PROTOCOL_VERSION,
+				detail: `status ${reply.status}, server ${String(info?.name)}`,
+			};
+		}),
+		await attempt("MCP tools/list shows the 9 client-driven tools, no uplift", async () => {
+			const reply = await mcp(connectorKey, list);
+			const names = toolNames(parseLine(reply.text));
+			return {
+				ok:
+					reply.status === 200 &&
+					names.join(",") === EXPECTED_TOOLS.join(",") &&
+					!names.includes("ultrathink_uplift"),
+				detail: `status ${reply.status}, ${names.length} tools`,
+			};
+		}),
+		await attempt("MCP tools/call ultrathink_sessions succeeds", async () => {
+			const reply = await mcp(connectorKey, {
+				jsonrpc: "2.0",
+				id: 3,
+				method: "tools/call",
+				params: { name: "ultrathink_sessions", arguments: {} },
+			});
+			return {
+				ok: reply.status === 200 && succeeded(parseLine(reply.text), 3),
+				detail: `status ${reply.status}`,
+			};
+		}),
+	];
+}
+
+/** After SIGTERM: /readyz must stop answering 200 within DRAIN_OBSERVE_MS while /healthz stays 200. */
+async function drainObservation(request: ServiceRequest): Promise<{ ok: boolean; detail: string }> {
+	const until = Date.now() + DRAIN_OBSERVE_MS;
+	let readyStatus = 200;
+	while (readyStatus === 200 && Date.now() < until) {
+		readyStatus = (await request("/readyz")).status;
+		if (readyStatus === 200) await Bun.sleep(50);
+	}
+	const healthStatus = readyStatus === 200 ? 0 : (await request("/healthz")).status;
+	return {
+		ok: readyStatus !== 200 && healthStatus === 200,
+		detail: `readyz ${readyStatus}, healthz ${healthStatus}`,
+	};
+}
+
+/** The three sweep checks: no secret in a response, in the service's log, or in the report `preSweep`. */
+function secretSweepChecks(
+	seen: readonly string[],
+	logText: readonly string[],
+	preSweep: string,
+	secretValues: readonly string[],
+): SmokeCheck[] {
+	return [
+		check(
+			"SECRET-SWEEP http responses",
+			secretsAbsent(seen, secretValues),
+			`${seen.length} bodies and headers`,
+		),
+		check(
+			"SECRET-SWEEP service logs",
+			secretsAbsent(logText, secretValues),
+			`${logText.join("").split("\n").length} lines`,
+		),
+		check("SECRET-SWEEP report", secretsAbsent([preSweep], secretValues), "report lines"),
+	];
+}
+
 /**
  * Starts the real hosted service on loopback with throwaway secrets, runs the HTTP and MCP checklist, ends it with
  * SIGTERM and checks the drain and the exit code. Every HTTP response, every log line and the report itself are swept
@@ -779,7 +927,7 @@ export async function runServiceSmoke(opts: ServiceSmokeOptions = {}): Promise<S
 	const base = `http://127.0.0.1:${port}`;
 	/** Every response body and header, kept for the secret sweep. */
 	const seen: string[] = [];
-	const request = async (path: string, init: RequestInit = {}): Promise<HttpReply> => {
+	const request: ServiceRequest = async (path, init = {}) => {
 		const reply = await httpRequest(`${base}${path}`, init);
 		seen.push(
 			reply.text,
@@ -787,121 +935,25 @@ export async function runServiceSmoke(opts: ServiceSmokeOptions = {}): Promise<S
 		);
 		return reply;
 	};
-	const mcp = (key: string | undefined, message: object): Promise<HttpReply> =>
-		request("/mcp", {
-			method: "POST",
-			headers: {
-				"content-type": "application/json",
-				"mcp-protocol-version": PROTOCOL_VERSION,
-				...(key === undefined ? {} : { "x-connector-key": key }),
-			},
-			body: JSON.stringify(message),
-		});
 
 	let serviceExit = -1;
 	try {
-		const deadline = Date.now() + healthTimeoutMs;
-		let healthy = false;
-		while (!healthy && state.exited === undefined && Date.now() < deadline) {
-			try {
-				healthy = (await request("/healthz")).status === 200;
-			} catch {
-				// reason: the service is still starting; the loop retries until the deadline.
-				healthy = false;
-			}
-			if (!healthy) await Bun.sleep(100);
-		}
+		const healthy = await waitForHealthz(
+			request,
+			() => state.exited !== undefined,
+			healthTimeoutMs,
+		);
 		const startupDetail =
 			state.exited === undefined ? "no answer in time" : `exited ${state.exited} while starting`;
 		checks.push(check("service answers /healthz 200", healthy, healthy ? "up" : startupDetail));
 
 		if (healthy) {
-			const list = { jsonrpc: "2.0", id: 2, method: "tools/list" };
-			checks.push(
-				await attempt("POST /mcp without a key is 401", async () => {
-					const reply = await mcp(undefined, list);
-					return { ok: reply.status === 401, detail: `status ${reply.status}` };
-				}),
-				await attempt("POST /mcp with a wrong key is 401", async () => {
-					const reply = await mcp(WRONG_KEY, list);
-					return { ok: reply.status === 401, detail: `status ${reply.status}` };
-				}),
-				await attempt("GET /mcp is 405 with Allow: POST", async () => {
-					const reply = await request("/mcp");
-					const allow = reply.headers.get("allow") ?? "";
-					const methods = allow.split(",").map((method) => method.trim());
-					return {
-						ok: reply.status === 405 && methods.includes("POST"),
-						detail: `status ${reply.status}, Allow "${allow}"`,
-					};
-				}),
-				await attempt("GET /readyz is 200 with the documented checks", async () => {
-					const reply = await request("/readyz");
-					const body = parseLine(reply.text);
-					const readyChecks = asRecord(body?.checks);
-					const keys = Object.keys(readyChecks ?? {}).sort();
-					const allPass = Object.values(readyChecks ?? {}).every((value) => value === true);
-					return {
-						ok:
-							reply.status === 200 &&
-							body?.status === "ready" &&
-							keys.join(",") === READY_CHECKS.join(",") &&
-							allPass,
-						detail: `status ${reply.status}, checks ${keys.join(",")}`,
-					};
-				}),
-				await attempt("MCP initialize with the connector key", async () => {
-					const reply = await mcp(room.secrets.connectorKey, INITIALIZE);
-					const result = asRecord(parseLine(reply.text)?.result);
-					const info = asRecord(result?.serverInfo);
-					return {
-						ok:
-							reply.status === 200 &&
-							info?.name === SERVER_NAME &&
-							result?.protocolVersion === PROTOCOL_VERSION,
-						detail: `status ${reply.status}, server ${String(info?.name)}`,
-					};
-				}),
-				await attempt("MCP tools/list shows the 9 client-driven tools, no uplift", async () => {
-					const reply = await mcp(room.secrets.connectorKey, list);
-					const names = toolNames(parseLine(reply.text));
-					return {
-						ok:
-							reply.status === 200 &&
-							names.join(",") === EXPECTED_TOOLS.join(",") &&
-							!names.includes("ultrathink_uplift"),
-						detail: `status ${reply.status}, ${names.length} tools`,
-					};
-				}),
-				await attempt("MCP tools/call ultrathink_sessions succeeds", async () => {
-					const reply = await mcp(room.secrets.connectorKey, {
-						jsonrpc: "2.0",
-						id: 3,
-						method: "tools/call",
-						params: { name: "ultrathink_sessions", arguments: {} },
-					});
-					return {
-						ok: reply.status === 200 && succeeded(parseLine(reply.text), 3),
-						detail: `status ${reply.status}`,
-					};
-				}),
-			);
-
+			checks.push(...(await httpChecklist(request, room.secrets.connectorKey)));
 			proc.kill("SIGTERM");
 			checks.push(
-				await attempt("SIGTERM: /readyz fails while /healthz stays 200", async () => {
-					const until = Date.now() + DRAIN_OBSERVE_MS;
-					let readyStatus = 200;
-					while (readyStatus === 200 && Date.now() < until) {
-						readyStatus = (await request("/readyz")).status;
-						if (readyStatus === 200) await Bun.sleep(50);
-					}
-					const healthStatus = readyStatus === 200 ? 0 : (await request("/healthz")).status;
-					return {
-						ok: readyStatus !== 200 && healthStatus === 200,
-						detail: `readyz ${readyStatus}, healthz ${healthStatus}`,
-					};
-				}),
+				await attempt("SIGTERM: /readyz fails while /healthz stays 200", () =>
+					drainObservation(request),
+				),
 			);
 			let killedByTimer = false;
 			const timer = setTimeout(() => {
@@ -928,19 +980,7 @@ export async function runServiceSmoke(opts: ServiceSmokeOptions = {}): Promise<S
 
 	const logText = [await stdout, await stderr];
 	const preSweep = formatSmokeReport("hosted service", checks);
-	checks.push(
-		check(
-			"SECRET-SWEEP http responses",
-			secretsAbsent(seen, secretValues),
-			`${seen.length} bodies and headers`,
-		),
-		check(
-			"SECRET-SWEEP service logs",
-			secretsAbsent(logText, secretValues),
-			`${logText.join("").split("\n").length} lines`,
-		),
-		check("SECRET-SWEEP report", secretsAbsent([preSweep], secretValues), "report lines"),
-	);
+	checks.push(...secretSweepChecks(seen, logText, preSweep, secretValues));
 	return finish(serviceExit, formatSmokeReport("hosted service", checks));
 }
 

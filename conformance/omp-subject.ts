@@ -18,11 +18,10 @@ const KEPT_ENV = ["PATH", "TMPDIR"];
 const PINNED_ENV: Record<string, string> = { TZ: "UTC", LANG: "C.UTF-8", LC_ALL: "C.UTF-8" };
 const SECRET_WORDS = /token|secret|password/i;
 
-type CommandOptions = {
-	description?: string;
-	getArgumentCompletions?: (prefix: string) => unknown;
-	handler: (args: string | undefined, ctx: unknown) => unknown;
-};
+/** The registration shape `ExtensionAPI.registerCommand` accepts, read from the interface so the mock cannot drift from it. */
+type CommandOptions = NonNullable<Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]>;
+/** The context a command handler receives, read from the same interface. */
+type CommandContext = Parameters<CommandOptions["handler"]>[1];
 
 interface HostState {
 	commands: Map<string, CommandOptions>;
@@ -31,14 +30,14 @@ interface HostState {
 
 interface Session {
 	readonly host: { pi: ExtensionAPI; state: HostState };
-	readonly ctx: unknown;
+	readonly ctx: CommandContext;
 	readonly dispose: () => void;
 }
 
 /** Mocked ExtensionAPI recording registrations, the same surface capture.ts's createHost() records. */
 function createHost(): { pi: ExtensionAPI; state: HostState } {
 	const state: HostState = { commands: new Map(), events: [] };
-	const pi = {
+	const pi: ExtensionAPI = {
 		on: (event: string) => {
 			state.events.push(event);
 		},
@@ -48,7 +47,7 @@ function createHost(): { pi: ExtensionAPI; state: HostState } {
 			state.commands.set(name, options);
 		},
 		registerMessageRenderer: () => undefined,
-	} as unknown as ExtensionAPI;
+	};
 	return { pi, state };
 }
 
@@ -58,41 +57,47 @@ function createHost(): { pi: ExtensionAPI; state: HostState } {
  */
 function openSession(): Session {
 	const root = mkdtempSync(join(tmpdir(), "omp-conformance-"));
-	const home = join(root, "home");
-	const workspace = join(root, "workspace");
-	mkdirSync(home, { recursive: true });
-	mkdirSync(workspace, { recursive: true });
-
 	const saved = { ...process.env };
-	for (const name of Object.keys(process.env)) {
-		if (!KEPT_ENV.includes(name)) delete process.env[name];
-	}
-	Object.assign(process.env, PINNED_ENV, {
-		HOME: home,
-		PI_CODING_AGENT_DIR: join(root, "omp-agent"),
-		XDG_CONFIG_HOME: join(root, "xdg"),
-		CLAUDE_CONFIG_DIR: join(root, "claude"),
-		GROK_HOME: join(root, "grok"),
-		HERMES_HOME: join(root, "hermes"),
-		PRIME_AGENT_CODING_AGENT_DIR: join(root, "prime"),
-	});
-
-	const host = createHost();
-	createOmpExtension()(host.pi);
-
-	return {
-		host,
-		ctx: {
-			cwd: workspace,
-			sessionManager: { getSessionId: () => SESSION_ID },
-			ui: { notify: () => undefined },
-		},
-		dispose: () => {
-			for (const name of Object.keys(process.env)) delete process.env[name];
-			Object.assign(process.env, saved);
-			rmSync(root, { recursive: true, force: true });
-		},
+	const restore = (): void => {
+		for (const name of Object.keys(process.env)) delete process.env[name];
+		Object.assign(process.env, saved);
+		rmSync(root, { recursive: true, force: true });
 	};
+	try {
+		const home = join(root, "home");
+		const workspace = join(root, "workspace");
+		mkdirSync(home, { recursive: true });
+		mkdirSync(workspace, { recursive: true });
+
+		for (const name of Object.keys(process.env)) {
+			if (!KEPT_ENV.includes(name)) delete process.env[name];
+		}
+		Object.assign(process.env, PINNED_ENV, {
+			HOME: home,
+			PI_CODING_AGENT_DIR: join(root, "omp-agent"),
+			XDG_CONFIG_HOME: join(root, "xdg"),
+			CLAUDE_CONFIG_DIR: join(root, "claude"),
+			GROK_HOME: join(root, "grok"),
+			HERMES_HOME: join(root, "hermes"),
+			PRIME_AGENT_CODING_AGENT_DIR: join(root, "prime"),
+		});
+
+		const host = createHost();
+		createOmpExtension()(host.pi);
+
+		return {
+			host,
+			ctx: {
+				cwd: workspace,
+				sessionManager: { getSessionId: () => SESSION_ID },
+				ui: { notify: () => undefined },
+			},
+			dispose: restore,
+		};
+	} catch (error) {
+		restore();
+		throw error;
+	}
 }
 
 /** Input is either the argument string itself or an object with a string `args`; anything else means no arguments. */
