@@ -67,6 +67,7 @@ Status: Complete (ADR and state-machine spec merged in PR #116, 2026-11-17).
 **Goal:** specify the persistent, checkpointed, audit-gated lifecycle as an ADR and a state-machine spec.
 **Requirements:** LIFE-01 to LIFE-05 (design only).
 **Depends on:** none.
+**Owner:** SomeRandmGuyy
 **Success criteria:** the ADR is merged; the state machine lists every phase-loop transition; out-of-repo changes are named.
 
 ### Phase 110: Persist and checkpoint the phase loop
@@ -76,6 +77,7 @@ Status: Verified human_needed on 2026-11-18 at origin/main 99ce989. The three in
 **Goal:** the phase loop writes its state at every transition and resumes after an interrupt.
 **Requirements:** LIFE-01, LIFE-04.
 **Depends on:** 109.
+**Owner:** SomeRandmGuyy
 **Success criteria:** a restart restores the same state; an interrupt writes a checkpoint; resume reports what was restored.
 
 ### Phase 111: Audit gate and owner override record
@@ -85,6 +87,7 @@ Status: Verified human_needed on 2026-11-18 at origin/main 99ce989. The three in
 **Goal:** a phase or milestone cannot close without an audit record; an override needs a recorded owner decision.
 **Requirements:** LIFE-02, LIFE-05.
 **Depends on:** 110.
+**Owner:** SomeRandmGuyy
 **Success criteria:** a close without an audit is refused; an override without an owner record is refused; human items appear as HTIL entries. The milestone-complete gate is in gsd-core (out of repo).
 
 ### Phase 112: Single guarded writer for STATE and ROADMAP
@@ -94,6 +97,7 @@ Status: Verified human_needed on 2026-11-18 at origin/main 6eedb14 (PR #170 merg
 **Goal:** one guarded writer for STATE.md and ROADMAP.md; concurrent writes fail loudly.
 **Requirements:** LIFE-03.
 **Depends on:** 109.
+**Owner:** SomeRandmGuyy
 **Success criteria:** a concurrent write fails loudly in a test; the contract is documented. The writer itself is in gsd-core (out of repo).
 
 ### Phase 113: Decomposition task matrix
@@ -103,4 +107,5 @@ Status: Verified 2026-11-18: passed 3/3 success criteria on origin/main a95752c 
 **Goal:** a source-grounded task matrix for every remaining phase and Backlog item.
 **Requirements:** DEC-01, DEC-02, DEC-03.
 **Depends on:** none.
+**Owner:** SomeRandmGuyy
 **Success criteria:** every remaining phase and Backlog item has a row, each citing its source; the non-overlap check is recorded.
