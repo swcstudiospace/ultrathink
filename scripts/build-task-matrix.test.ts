@@ -101,22 +101,22 @@ describe("buildTaskMatrix", () => {
 	test("status comes from ROADMAP or STATE and the bucket follows dependencies", () => {
 		const out = buildTaskMatrix(FIXTURE);
 		expect(rowsFor(out, "PHASE-1")).toEqual([
-			"| PHASE-1 | phase | Alpha lifecycle | Complete (merged) | closed | - | - | - | R:5 | - |",
+			"| PHASE-1 | phase | Alpha lifecycle | Complete (merged) | closed | - | - | none | - | - | not in sources | not in sources | R:5 | - |",
 		]);
 		expect(rowsFor(out, "PHASE-2")).toEqual([
-			"| PHASE-2 | phase | Beta writer | Contract merged | executable | G0 | PHASE-1 | none | R:12 | I:5 |",
+			"| PHASE-2 | phase | Beta writer | Contract merged | executable | G0 | PHASE-1 | PHASE-1 | none | I:5 | not in sources | not in sources | R:12 | I:5 |",
 		]);
 		expect(rowsFor(out, "PHASE-3")).toEqual([
-			"| PHASE-3 | phase | Gamma audit | Not started | blocked | G1 | PHASE-2 | none | R:18 | - |",
+			"| PHASE-3 | phase | Gamma audit | Not started | blocked | G1 | PHASE-2 | PHASE-2; missing: phase 2 must reach Complete (currently: Contract merged) | none | - | not in sources | not in sources | R:18 | - |",
 		]);
 		expect(rowsFor(out, "DEFERRED-9")).toEqual([
-			"| DEFERRED-9 | deferred | Phase 9 verification | verification_deferred_human | blocked | external | - | - | S:7, S:15 | - |",
+			"| DEFERRED-9 | deferred | Phase 9 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 9` (verification_deferred_human, S:7, S:15) | - | S:7, S:15 | not in sources | /gsd:verify-work 9 | S:7, S:15 | - |",
 		]);
 		expect(rowsFor(out, "DEFERRED-8")).toEqual([
-			"| DEFERRED-8 | deferred | Phase 8 verification | accepted_tech_debt | closed | - | - | - | S:8 | - |",
+			"| DEFERRED-8 | deferred | Phase 8 verification | accepted_tech_debt | closed | - | - | none | - | S:8 | not in sources | not in sources | S:8 | - |",
 		]);
 		expect(rowsFor(out, "BACKLOG-01")).toEqual([
-			"| BACKLOG-01 | backlog | Do not auto-run the extractor. | backlog | constraint | - | - | - | R:27 | - |",
+			"| BACKLOG-01 | backlog | Do not auto-run the extractor. | backlog | constraint | - | - | none | - | - | not in sources | not in sources | R:27 | - |",
 		]);
 	});
 
@@ -143,6 +143,95 @@ describe("buildTaskMatrix", () => {
 		);
 	});
 
+	test("the conflict section names both sources with their line numbers", () => {
+		const roadmap = doc(
+			"### Phase 1: Alpha lifecycle", // 1
+			"", // 2
+			"Status: Complete.", // 3
+			"", // 4
+			"**Depends on:** none", // 5
+			"", // 6
+			"## Backlog", // 7
+			"", // 8
+			"- **CIMD:** Scheduled as v1.22 phases 101 to 105.", // 9
+			"", // 10
+			"Completed v1.22: CIMD withdrawn by owner.", // 11
+		);
+		const out = buildTaskMatrix({ ...FIXTURE, roadmap });
+		expect(section(out, "Conflicts")).toBe(
+			'- BACKLOG-CIMD: own R:9 says open ("blocked"); R:11 says closed ("completed", "withdrawn")',
+		);
+	});
+
+	test("a deferred conflict cites the STATE row and the inventory status cell", () => {
+		const state = doc(
+			"# State", // 1
+			"", // 2
+			"## Deferred Verification", // 3
+			"", // 4
+			"| Phase | State | Resume |", // 5
+			"|-------|-------|--------|", // 6
+			"| 9 | accepted_tech_debt |  |", // 7
+			"", // 8
+			"## Deferred Items", // 9
+			"", // 10
+			"| Category | Item | Status | Deferred At | Milestone |", // 11
+			"|----------|------|--------|-------------|-----------|", // 12
+		);
+		const inventory = doc(
+			"# Inventory", // 1
+			"", // 2
+			"| Phase | Dir | Status |", // 3
+			"|---|---|---|", // 4
+			"| 9 | 9-thing | needs VERIFICATION (pending) |", // 5
+		);
+		const out = buildTaskMatrix({ roadmap: ROADMAP, state, inventory });
+		expect(section(out, "Conflicts")).toBe(
+			'- DEFERRED-9: own S:7 says closed ("accepted_tech_debt"); I:5 says open ("needs", "pending")',
+		);
+	});
+
+	test("a line that names more than one ID attributes its status to none of them", () => {
+		const roadmap = doc(
+			"### Phase 1: Alpha lifecycle", // 1
+			"", // 2
+			"Status: Not started.", // 3
+			"", // 4
+			"**Depends on:** none", // 5
+			"", // 6
+			"Phases 1 and 2 are withdrawn.", // 7
+			"", // 8
+			"Phase 1 was withdrawn.", // 9
+		);
+		const out = buildTaskMatrix({ ...FIXTURE, roadmap });
+		expect(section(out, "Conflicts")).toBe(
+			'- PHASE-1: own R:3 says open ("not_started"); R:9 says closed ("withdrawn")',
+		);
+	});
+
+	test("owner and validation come from the sources when present, otherwise 'not in sources'", () => {
+		const roadmap = doc(
+			"### Phase 1: Alpha lifecycle", // 1
+			"", // 2
+			"Status: Complete.", // 3
+			"", // 4
+			"**Owner:** Dana", // 5
+			"**Validation:** `bun test scripts/build-task-matrix.test.ts`", // 6
+			"**Depends on:** none", // 7
+			"", // 8
+			"### Phase 2: Beta writer", // 9
+			"", // 10
+			"Status: Not started.", // 11
+			"", // 12
+			"**Depends on:** 1.", // 13
+		);
+		const out = buildTaskMatrix({ ...FIXTURE, roadmap });
+		expect(rowsFor(out, "PHASE-1")[0]).toContain(
+			"| Dana | bun test scripts/build-task-matrix.test.ts | R:1 | - |",
+		);
+		expect(rowsFor(out, "PHASE-2")[0]).toContain("| not in sources | not in sources | R:9 | I:5 |");
+	});
+
 	test("the header names the input paths and carries no timestamp", () => {
 		const out = buildTaskMatrix({
 			...FIXTURE,
@@ -163,20 +252,6 @@ describe("buildTaskMatrix", () => {
 		expect(() => buildTaskMatrix({ ...FIXTURE, roadmap })).toThrow(/has no phase lines/);
 	});
 
-	test("escapes a backslash before a pipe so the table cell keeps its column count", () => {
-		const roadmap = doc(
-			"### Phase 1: Path a\\|b",
-			"",
-			"Status: Complete.",
-			"",
-			"**Depends on:** none",
-		);
-		const out = buildTaskMatrix({ ...FIXTURE, roadmap });
-		expect(rowsFor(out, "PHASE-1")).toEqual([
-			"| PHASE-1 | phase | Path a\\\\\\|b | Complete | closed | - | - | - | R:1 | - |",
-		]);
-	});
-
 	test("rejects a phase number defined twice", () => {
 		const roadmap = doc(
 			"### Phase 1: First",
@@ -194,6 +269,20 @@ describe("buildTaskMatrix", () => {
 		expect(() => buildTaskMatrix({ ...FIXTURE, roadmap })).toThrow(
 			/phase 1 is defined more than once/,
 		);
+	});
+
+	test("escapes a backslash before a pipe so the table cell keeps its column count", () => {
+		const roadmap = doc(
+			"### Phase 1: Path a\\|b",
+			"",
+			"Status: Complete.",
+			"",
+			"**Depends on:** none",
+		);
+		const out = buildTaskMatrix({ ...FIXTURE, roadmap });
+		expect(rowsFor(out, "PHASE-1")).toEqual([
+			"| PHASE-1 | phase | Path a\\\\\\|b | Complete | closed | - | - | none | - | - | not in sources | not in sources | R:1 | - |",
+		]);
 	});
 });
 

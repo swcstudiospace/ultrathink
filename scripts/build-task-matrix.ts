@@ -8,8 +8,9 @@
 //   bun scripts/build-task-matrix.ts --roadmap <path> --state <path> \
 //     --inventory <path> --out <path>
 //
-// Without flags the sources are the repo's .planning files and the output is
-// docs/roadmap/task-matrix.md. Relative --out and source paths resolve from the cwd.
+// Without flags (`bun run matrix`) the sources are the repo's .planning files and the
+// output is docs/roadmap/task-matrix.md. Relative --out and source paths resolve from the
+// cwd; defaults resolve from the repo root.
 
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
@@ -19,6 +20,7 @@ const DEFAULT_ROADMAP = ".planning/ROADMAP.md";
 const DEFAULT_STATE = ".planning/STATE.md";
 const DEFAULT_INVENTORY = ".planning/PHASES-INVENTORY.md";
 const DEFAULT_OUT = "docs/roadmap/task-matrix.md";
+
 /** Repo-relative header labels for the planning inputs, keyed by basename. */
 const PLANNING_LABELS: Record<string, string> = {
 	"ROADMAP.md": DEFAULT_ROADMAP,
@@ -29,6 +31,12 @@ const PLANNING_LABELS: Record<string, string> = {
 const PHASE_HEADING = /^### Phase (\d+): (.+)$/;
 const SECTION_HEADING = /^#{2,3} /;
 const STANDING_RULE = /^(Do not|One-way)\b/;
+const CLOSED_WORDS =
+	/\b(withdrawn|superseded|accepted[ _]tech[ _]debt|complete|completed|closed|passed)\b/gi;
+const OPEN_WORDS =
+	/\b(pending|blocked|gaps?[ _]found|human[ _]needed|verification_deferred_human|not started|partial|needs?)\b/gi;
+/** "phase N", "phases N and M", "phases N to M", "phases N/M": the list of numbers after the word. */
+const PHASE_LIST = /\bphases?\s+(\d+(?:\s*(?:\/|,|\u2013|-|to|and)\s*\d+)*)/gi;
 const CLOSED_STATES: Record<string, true> = { accepted_tech_debt: true, withdrawn: true };
 const OPEN_STATES: Record<string, true> = {
 	verification_deferred_human: true,
@@ -37,6 +45,7 @@ const OPEN_STATES: Record<string, true> = {
 };
 const DV_HEADER = "Phase|State|Resume";
 const DI_HEADER = "Category|Item|Status|Deferred At|Milestone";
+const NOT_IN_SOURCES = "not in sources";
 
 type MatrixInput = {
 	roadmap: string;
@@ -47,6 +56,9 @@ type MatrixInput = {
 };
 
 type Bucket = "executable" | "blocked" | "closed" | "constraint";
+type Claim = { cls: "open" | "closed"; words: string[] };
+type Witness = { file: "R" | "S" | "I"; no: number; claim: Claim };
+type Match = { mode: "number" | "word"; key: string };
 
 type Item = {
 	id: string;
@@ -54,6 +66,11 @@ type Item = {
 	label: string;
 	status: string;
 	source: string;
+	/** The line that carries the item's own status claim. */
+	own: { file: "R" | "S"; no: number };
+	ownClaim: Claim | null;
+	/** How other sources name this item; null when they cannot be matched. */
+	match: Match | null;
 	/** Phase numbers this item depends on. */
 	dependsOn: string[];
 	bucket: Bucket;
@@ -61,21 +78,44 @@ type Item = {
 	/** The exact input that must become true. Empty unless blocked. */
 	missing: string;
 	inventory: string;
+	evidence: string[];
+	owner: string;
+	validation: string;
 };
 
 type Line = { no: number; text: string };
+type InventoryRow = { no: number; num: string; status: string };
+type Sources = {
+	roadmap: Line[];
+	state: Line[];
+	inventory: Line[];
+	invRows: InventoryRow[];
+	backlogKeys: string[];
+};
 type Labels = { roadmap: string; state: string; inventory: string };
-type PhaseDef = { num: string; title: string; status: string; deps: string[]; line: number };
+type PhaseDef = {
+	num: string;
+	title: string;
+	status: string;
+	statusLine: number;
+	deps: string[];
+	owner: string | null;
+	validation: string | null;
+	line: number;
+};
 type TableRow = { no: number; cells: string[] };
-type DeferredRow = { phase: string; state: string; resume: string; sources: string[] };
+type DeferredRow = { phase: string; state: string; resume: string; lines: number[] };
 
 const RULES = [
 	"- Status: a phase shows its ROADMAP `Status:` line, trailing period removed. A deferred item shows its STATE state from Deferred Verification, or from Deferred Items when it has no Deferred Verification row. A backlog item shows `backlog`.",
 	"- Bucket: `closed` when a phase status starts with `Complete`, or a deferred state is `accepted_tech_debt` or `withdrawn`. `constraint` for a standing rule whose text starts with `Do not` or `One-way`; it is not work. `blocked` when a dependency is not Complete or a human or external input is missing. `executable` otherwise.",
 	"- Parallel group: `G0` has no open dependency. `Gn` is one more than its deepest open dependency. `external` waits on a human or external input. `-` means closed or constraint.",
 	"- Non-overlap: the other phase items in the same group. Items in one group have no dependency edge between them. File overlap is not derivable from these sources; check file sets before dispatching a group.",
-	"- Depends on: phase numbers from `**Depends on:**`. Deferred and backlog items have no dependency edge.",
-	"- Blocked input: the exact text that must become true. Backlog classification reads only the bullet text; status recorded elsewhere in ROADMAP is not consulted.",
+	"- Depends on: phase numbers from `**Depends on:**`. Entry condition: those IDs, or `none`; a blocked item adds `missing:` and its exact missing input.",
+	"- Evidence: the STATE (`S:`) and PHASES-INVENTORY (`I:`) lines the row cites, or `-`.",
+	"- Owner and Validation command: a phase's `**Owner:**` and `**Validation:**` lines, and a deferred item's STATE resume cell when it is a slash command. Otherwise `not in sources`; nothing is inferred.",
+	"- Conflicts: an item whose own status is open or closed, and whose first status-bearing line in each source file that names it (phase or deferred: `phase N` or an inventory row for N; backlog: its bold key) states the opposite class. A line that names more than one phase or backlog ID is not used for any of them. A line carrying both open and closed words is not a status claim. The item's own line is excluded.",
+	"- Blocked input: the exact text that must become true. Backlog classification reads only the bullet text; status recorded elsewhere in ROADMAP is not consulted, except through Conflicts.",
 ];
 
 function toLines(text: string): Line[] {
@@ -92,6 +132,52 @@ function escapeRegex(text: string): string {
 
 function isComplete(status: string): boolean {
 	return /^Complete\b/.test(status);
+}
+
+function splitRow(text: string): string[] {
+	return text
+		.trim()
+		.replace(/^\|/, "")
+		.replace(/\|$/, "")
+		.split("|")
+		.map((c) => c.trim());
+}
+
+function uniqueMatches(text: string, re: RegExp): string[] {
+	const found = [...text.matchAll(re)].map((m) => m[0].toLowerCase().replace(/[ _]/g, "_"));
+	return found.filter((word, i) => found.indexOf(word) === i);
+}
+
+/** A status claim: open or closed words, but not both. Null when the text makes no claim. */
+function claimOf(text: string): Claim | null {
+	const closed = uniqueMatches(text, CLOSED_WORDS);
+	const open = uniqueMatches(text, OPEN_WORDS);
+	if (closed.length > 0 && open.length === 0) return { cls: "closed", words: closed };
+	if (open.length > 0 && closed.length === 0) return { cls: "open", words: open };
+	return null;
+}
+
+/** The distinct IDs a line names: phase numbers in "phase(s) N ..." lists, and backlog keys. */
+function namedIds(text: string, backlogKeys: string[]): string[] {
+	const phases = [...text.matchAll(PHASE_LIST)].flatMap((m) =>
+		[...(m[1] ?? "").matchAll(/\d+/g)].map((n) => n[0]),
+	);
+	const keys = backlogKeys.filter((k) => new RegExp(`\\b${escapeRegex(k)}\\b`).test(text));
+	return [...phases, ...keys].filter((id, i, all) => all.indexOf(id) === i);
+}
+
+function backlogKeysOf(ls: Line[]): string[] {
+	const keys: string[] = [];
+	let inBacklog = false;
+	for (const line of ls) {
+		if (line.text.startsWith("## ")) {
+			inBacklog = /^## Backlog\b/.test(line.text);
+			continue;
+		}
+		const key = inBacklog ? /^- \*\*([^*]+):\*\* /.exec(line.text)?.[1] : undefined;
+		if (key) keys.push(key);
+	}
+	return keys;
 }
 
 function parseDeps(raw: string, at: string): string[] {
@@ -115,11 +201,17 @@ function parsePhases(ls: Line[], label: string): PhaseDef[] {
 		}
 		let statusLine: Line | undefined;
 		let depsLine: Line | undefined;
+		let owner: string | null = null;
+		let validation: string | null = null;
 		for (let j = idx + 1; j < ls.length; j++) {
 			const line = ls[j];
 			if (!line || SECTION_HEADING.test(line.text)) break;
 			if (!statusLine && line.text.startsWith("Status: ")) statusLine = line;
 			if (!depsLine && line.text.startsWith("**Depends on:** ")) depsLine = line;
+			const ownerLine = /^\*\*Owner:\*\* (.+)$/.exec(line.text);
+			if (ownerLine && owner === null) owner = ownerLine[1] ?? null;
+			const validationLine = /^\*\*Validation:\*\* `([^`]+)`/.exec(line.text);
+			if (validationLine && validation === null) validation = validationLine[1] ?? null;
 		}
 		if (!statusLine) throw new Error(`${label}:${heading.no}: phase ${num} has no "Status:" line`);
 		if (!depsLine) {
@@ -129,16 +221,38 @@ function parsePhases(ls: Line[], label: string): PhaseDef[] {
 			num,
 			title: m[2] ?? "",
 			status: statusLine.text.slice("Status: ".length).trim().replace(/\.$/, ""),
+			statusLine: statusLine.no,
 			deps: parseDeps(depsLine.text.slice("**Depends on:** ".length), `${label}:${depsLine.no}`),
+			owner,
+			validation,
 			line: heading.no,
 		});
 	}
 	return phases;
 }
 
-function inventoryForPhase(num: string, inv: Line[]): string {
-	const re = new RegExp(`^\\| ${num}(?:-[^|]*)?\\s*\\|`);
-	const hit = inv.find((l) => re.test(l.text));
+/** Rows of every table whose first header cell starts with "Phase", with the Status column. */
+function inventoryRows(ls: Line[]): InventoryRow[] {
+	const rows: InventoryRow[] = [];
+	let statusIdx = -1;
+	for (const line of ls) {
+		if (!line.text.trim().startsWith("|")) continue;
+		const cells = splitRow(line.text);
+		if (cells.every((c) => /^:?-+:?$/.test(c))) continue;
+		if (cells[0]?.startsWith("Phase")) {
+			statusIdx = cells.findIndex((c) => c.startsWith("Status"));
+			continue;
+		}
+		const num = /^(\d+)(?:-|$)/.exec(cells[0] ?? "")?.[1];
+		if (num) {
+			rows.push({ no: line.no, num, status: statusIdx >= 0 ? (cells[statusIdx] ?? "") : "" });
+		}
+	}
+	return rows;
+}
+
+function inventoryFor(num: string, rows: InventoryRow[]): string {
+	const hit = rows.find((r) => r.num === num);
 	return hit ? `I:${hit.no}` : "-";
 }
 
@@ -148,7 +262,7 @@ function inventoryForKey(key: string, inv: Line[]): string {
 	return hit ? `I:${hit.no}` : "-";
 }
 
-function phaseItems(defs: PhaseDef[], inv: Line[], label: string): Item[] {
+function phaseItems(defs: PhaseDef[], src: Sources, label: string): Item[] {
 	const byNum = new Map(defs.map((d) => [d.num, d] as const));
 	for (const d of defs) {
 		for (const dep of d.deps) {
@@ -175,15 +289,22 @@ function phaseItems(defs: PhaseDef[], inv: Line[], label: string): Item[] {
 		levels.set(num, level);
 		return level;
 	};
-	return defs.map((d) => {
+	return defs.map((d): Item => {
+		const inventory = inventoryFor(d.num, src.invRows);
 		const base = {
 			id: `PHASE-${d.num}`,
 			kind: "phase" as const,
 			label: d.title,
 			status: d.status,
 			source: `R:${d.line}`,
+			own: { file: "R" as const, no: d.statusLine },
+			ownClaim: claimOf(d.status),
+			match: { mode: "number" as const, key: d.num },
 			dependsOn: d.deps,
-			inventory: inventoryForPhase(d.num, inv),
+			inventory,
+			evidence: inventory === "-" ? [] : [inventory],
+			owner: d.owner ?? NOT_IN_SOURCES,
+			validation: d.validation ?? NOT_IN_SOURCES,
 		};
 		if (isComplete(d.status)) return { ...base, bucket: "closed", group: "-", missing: "" };
 		const group = `G${levelOf(d.num, [])}`;
@@ -200,11 +321,11 @@ function phaseItems(defs: PhaseDef[], inv: Line[], label: string): Item[] {
 	});
 }
 
-function backlogItems(ls: Line[], inv: Line[]): Item[] {
+function backlogItems(src: Sources): Item[] {
 	const items: Item[] = [];
 	let inBacklog = false;
 	let plain = 0;
-	for (const line of ls) {
+	for (const line of src.roadmap) {
 		if (line.text.startsWith("## ")) {
 			inBacklog = /^## Backlog\b/.test(line.text);
 			continue;
@@ -216,20 +337,31 @@ function backlogItems(ls: Line[], inv: Line[]): Item[] {
 		const key = bold?.[1];
 		const text = bold?.[2] ?? body;
 		const source = `R:${line.no}`;
+		const inventory = key ? inventoryForKey(key, src.inventory) : "-";
 		const base = {
 			id: key ? `BACKLOG-${key}` : `BACKLOG-${String(++plain).padStart(2, "0")}`,
 			kind: "backlog" as const,
 			label: text,
 			status: "backlog",
 			source,
+			own: { file: "R" as const, no: line.no },
+			match: key ? { mode: "word" as const, key } : null,
 			dependsOn: [],
-			inventory: key ? inventoryForKey(key, inv) : "-",
+			inventory,
+			evidence: inventory === "-" ? [] : [inventory],
+			owner: NOT_IN_SOURCES,
+			validation: NOT_IN_SOURCES,
 		};
 		if (STANDING_RULE.test(text)) {
-			items.push({ ...base, bucket: "constraint", group: "-", missing: "" });
+			items.push({ ...base, ownClaim: null, bucket: "constraint", group: "-", missing: "" });
 		} else {
-			const missing = `condition in ${source} is not yet met: ${text}`;
-			items.push({ ...base, bucket: "blocked", group: "external", missing });
+			items.push({
+				...base,
+				ownClaim: { cls: "open", words: ["blocked"] },
+				bucket: "blocked",
+				group: "external",
+				missing: `condition in ${source} is not yet met: ${text}`,
+			});
 		}
 	}
 	return items;
@@ -245,12 +377,7 @@ function tableRows(ls: Line[], title: string, header: string, label: string): Ta
 		const line = ls[j];
 		if (!line || line.text.startsWith("## ")) break;
 		if (!line.text.trim().startsWith("|")) continue;
-		const cells = line.text
-			.trim()
-			.replace(/^\|/, "")
-			.replace(/\|$/, "")
-			.split("|")
-			.map((c) => c.trim());
+		const cells = splitRow(line.text);
 		if (!headerSeen) {
 			if (cells.join("|") !== header) {
 				throw new Error(`${label}:${line.no}: "${title}" table header must match "${header}"`);
@@ -270,34 +397,42 @@ function tableRows(ls: Line[], title: string, header: string, label: string): Ta
 	return rows;
 }
 
-function deferredItem(row: DeferredRow, inv: Line[], label: string): Item {
+function deferredItem(row: DeferredRow, src: Sources, label: string): Item {
 	const key = row.state.split(/[\s(]/)[0] ?? "";
-	const source = row.sources.join(", ");
+	const refs = row.lines.map((n) => `S:${n}`);
+	const inventory = inventoryFor(row.phase, src.invRows);
 	const base = {
 		id: `DEFERRED-${row.phase}`,
 		kind: "deferred" as const,
 		label: `Phase ${row.phase} verification`,
 		status: row.state,
-		source,
+		source: refs.join(", "),
+		own: { file: "S" as const, no: row.lines[0] ?? 0 },
+		ownClaim: claimOf(row.state),
+		match: { mode: "number" as const, key: row.phase },
 		dependsOn: [],
-		inventory: inventoryForPhase(row.phase, inv),
+		inventory,
+		evidence: inventory === "-" ? refs : [...refs, inventory],
+		owner: NOT_IN_SOURCES,
+		validation: row.resume.startsWith("/") ? row.resume : NOT_IN_SOURCES,
 	};
-	if (Object.hasOwn(CLOSED_STATES, key))
+	if (Object.hasOwn(CLOSED_STATES, key)) {
 		return { ...base, bucket: "closed", group: "-", missing: "" };
+	}
 	if (!Object.hasOwn(OPEN_STATES, key)) {
 		throw new Error(
-			`${label}: phase ${row.phase} has unrecognised deferred state "${row.state}" (${source})`,
+			`${label}: phase ${row.phase} has unrecognised deferred state "${row.state}" (${base.source})`,
 		);
 	}
 	const missing = row.resume
-		? `human verification pending: run \`${row.resume}\` (${key}, ${source})`
-		: `phase ${row.phase} ${key} with no resume command (${source}): owner decision or verification evidence required`;
+		? `human verification pending: run \`${row.resume}\` (${key}, ${base.source})`
+		: `phase ${row.phase} ${key} with no resume command (${base.source}): owner decision or verification evidence required`;
 	return { ...base, bucket: "blocked", group: "external", missing };
 }
 
-function deferredItems(ls: Line[], inv: Line[], label: string): Item[] {
+function deferredItems(src: Sources, label: string): Item[] {
 	const rows = new Map<string, DeferredRow>();
-	for (const row of tableRows(ls, "Deferred Verification", DV_HEADER, label)) {
+	for (const row of tableRows(src.state, "Deferred Verification", DV_HEADER, label)) {
 		const phase = row.cells[0] ?? "";
 		if (!/^\d+$/.test(phase)) {
 			throw new Error(`${label}:${row.no}: phase cell "${phase}" is not a number`);
@@ -311,10 +446,10 @@ function deferredItems(ls: Line[], inv: Line[], label: string): Item[] {
 			phase,
 			state: row.cells[1] ?? "",
 			resume: row.cells[2] ?? "",
-			sources: [`S:${row.no}`],
+			lines: [row.no],
 		});
 	}
-	for (const row of tableRows(ls, "Deferred Items", DI_HEADER, label)) {
+	for (const row of tableRows(src.state, "Deferred Items", DI_HEADER, label)) {
 		const item = row.cells[1] ?? "";
 		const phase = /^(\d+)\//.exec(item)?.[1];
 		if (!phase) {
@@ -322,41 +457,116 @@ function deferredItems(ls: Line[], inv: Line[], label: string): Item[] {
 		}
 		const existing = rows.get(phase);
 		if (existing) {
-			existing.sources.push(`S:${row.no}`);
+			existing.lines.push(row.no);
 		} else {
-			rows.set(phase, {
-				phase,
-				state: row.cells[2] ?? "",
-				resume: "",
-				sources: [`S:${row.no}`],
-			});
+			rows.set(phase, { phase, state: row.cells[2] ?? "", resume: "", lines: [row.no] });
 		}
 	}
-	return [...rows.values()].map((row) => deferredItem(row, inv, label));
+	return [...rows.values()].map((row) => deferredItem(row, src, label));
 }
 
-function renderMatrix(items: Item[], labels: Labels): string {
+/**
+ * The first status-bearing line per source file that names the item, other than the item's
+ * own status line. Phase and deferred items match `phase N` in prose and inventory rows for N;
+ * backlog items match their bold key as a whole word.
+ */
+function witnesses(item: Item, src: Sources): Witness[] {
+	if (!item.match) return [];
+	const { mode, key } = item.match;
+	const re =
+		mode === "number"
+			? new RegExp(`\\bphases?\\s+${key}\\b`, "i")
+			: new RegExp(`\\b${escapeRegex(key)}\\b`);
+	const found: Witness[] = [];
+	/** True when the line names this item and no other phase or backlog ID. */
+	const namesOnly = (text: string): boolean => {
+		const ids = namedIds(text, src.backlogKeys);
+		return ids.length === 1 && ids[0] === key;
+	};
+	const scan = (file: "R" | "S", ls: Line[]): void => {
+		for (const line of ls) {
+			if (item.own.file === file && item.own.no === line.no) continue;
+			if (!re.test(line.text) || !namesOnly(line.text)) continue;
+			const claim = claimOf(line.text);
+			if (claim) found.push({ file, no: line.no, claim });
+		}
+	};
+	scan("R", src.roadmap);
+	scan("S", src.state);
+	if (mode === "number") {
+		for (const row of src.invRows) {
+			const claim = row.num === key ? claimOf(row.status) : null;
+			if (claim) found.push({ file: "I", no: row.no, claim });
+		}
+	} else {
+		for (const line of src.inventory) {
+			if (!re.test(line.text) || !namesOnly(line.text)) continue;
+			const claim = claimOf(line.text);
+			if (claim) found.push({ file: "I", no: line.no, claim });
+		}
+	}
+	return (["R", "S", "I"] as const).flatMap((file) =>
+		found.filter((w) => w.file === file).slice(0, 1),
+	);
+}
+
+function conflictLines(items: Item[], src: Sources): string[] {
+	const lines: string[] = [];
+	for (const item of items) {
+		const own = item.ownClaim;
+		if (!own) continue;
+		const disagree = witnesses(item, src).filter((w) => w.claim.cls !== own.cls);
+		if (disagree.length === 0) continue;
+		const claims = [{ file: item.own.file, no: item.own.no, claim: own }, ...disagree];
+		const parts = claims.map(
+			(c, i) =>
+				`${i === 0 ? "own " : ""}${c.file}:${c.no} says ${c.claim.cls} (${c.claim.words.map((w) => `"${w}"`).join(", ")})`,
+		);
+		lines.push(`- ${item.id}: ${parts.join("; ")}`);
+	}
+	return lines;
+}
+
+function renderMatrix(items: Item[], src: Sources, labels: Labels): string {
 	const nonOverlap = (item: Item): string => {
 		if (item.kind !== "phase" || item.group === "-" || item.group === "external") return "-";
 		const peers = items.filter((o) => o !== item && o.kind === "phase" && o.group === item.group);
 		return peers.length > 0 ? peers.map((p) => p.id).join(", ") : "none";
 	};
-	const rows = items.map((item) => {
+	const rows = items.map((item): string => {
 		const deps =
-			item.dependsOn.length > 0 ? item.dependsOn.map((n) => `PHASE-${n}`).join(", ") : "-";
-		return `| ${item.id} | ${item.kind} | ${escapeCell(item.label)} | ${escapeCell(item.status)} | ${item.bucket} | ${item.group} | ${deps} | ${nonOverlap(item)} | ${item.source} | ${item.inventory} |`;
+			item.dependsOn.length > 0 ? item.dependsOn.map((n) => `PHASE-${n}`).join(", ") : "none";
+		const entry = item.bucket === "blocked" ? `${deps}; missing: ${item.missing}` : deps;
+		const cells = [
+			item.id,
+			item.kind,
+			item.label,
+			item.status,
+			item.bucket,
+			item.group,
+			deps === "none" ? "-" : deps,
+			entry,
+			nonOverlap(item),
+			item.evidence.join(", ") || "-",
+			item.owner,
+			item.validation,
+			item.source,
+			item.inventory,
+		];
+		return `| ${cells.map(escapeCell).join(" | ")} |`;
 	});
 	const of = (bucket: Bucket): Item[] => items.filter((i) => i.bucket === bucket);
 	const executable = of("executable").map((i) => `- ${i.id} (${i.group})`);
 	const blocked = of("blocked").map((i) => `- ${i.id} (blocked): ${i.missing}`);
 	const closed = of("closed").map((i) => `- ${i.id}`);
 	const constraints = of("constraint").map((i) => `- ${i.id}`);
-	const section = (lines: string[], header: string[] = []): string =>
-		lines.length === 0 ? "None." : [...header, ...lines].join("\n");
+	const conflicts = conflictLines(items, src);
+	const section = (lines: string[]): string => (lines.length === 0 ? "None." : lines.join("\n"));
 	return [
 		"# V1.24 task matrix",
 		"",
-		"Generated by `scripts/build-task-matrix.ts` from the sources below. Do not edit by hand; regenerate it.",
+		"Generated by `scripts/build-task-matrix.ts` from the sources below. Do not edit by hand.",
+		"Regenerate with `bun run matrix` from a checkout that has `.planning/`; the planning inputs are gitignored.",
 		"",
 		"## Sources",
 		"",
@@ -370,8 +580,8 @@ function renderMatrix(items: Item[], labels: Labels): string {
 		"",
 		"## Matrix",
 		"",
-		"| ID | Kind | Item | Status | Bucket | Group | Depends on | Non-overlap | Source | Inventory |",
-		"|---|---|---|---|---|---|---|---|---|---|",
+		"| ID | Kind | Item | Status | Bucket | Group | Depends on | Entry condition | Non-overlap | Evidence | Owner | Validation command | Source | Inventory |",
+		"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
 		...rows,
 		"",
 		"## Executable now",
@@ -389,6 +599,10 @@ function renderMatrix(items: Item[], labels: Labels): string {
 		"## Standing constraints (not work)",
 		"",
 		section(constraints),
+		"",
+		"## Conflicts",
+		"",
+		section(conflicts),
 		"",
 	].join("\n");
 }
@@ -410,13 +624,20 @@ export function buildTaskMatrix(input: MatrixInput): string {
 			`${labels.roadmap} has no phase lines ("### Phase N: title"); refusing to write an empty matrix`,
 		);
 	}
-	const inventory = toLines(input.inventory);
+	const inventoryLines = toLines(input.inventory);
+	const src: Sources = {
+		roadmap: roadmapLines,
+		state: toLines(input.state),
+		inventory: inventoryLines,
+		invRows: inventoryRows(inventoryLines),
+		backlogKeys: backlogKeysOf(roadmapLines),
+	};
 	const items = [
-		...phaseItems(phases, inventory, labels.roadmap),
-		...backlogItems(roadmapLines, inventory),
-		...deferredItems(toLines(input.state), inventory, labels.state),
+		...phaseItems(phases, src, labels.roadmap),
+		...backlogItems(src),
+		...deferredItems(src, labels.state),
 	];
-	return renderMatrix(items, labels);
+	return renderMatrix(items, src, labels);
 }
 
 type Source = { label: string; abs: string };
@@ -443,19 +664,18 @@ function locate(flags: Map<string, string>, flag: string, fallback: string): Sou
 	return { label: given, abs: resolve(given) };
 }
 
+/** The header label for a source: the repo-relative .planning path when the basename is one of the three planning files. */
+function headerLabel(src: Source): string {
+	const name = basename(src.abs);
+	return Object.hasOwn(PLANNING_LABELS, name) ? (PLANNING_LABELS[name] ?? src.label) : src.label;
+}
+
 async function readSource(src: Source): Promise<string> {
 	try {
 		return await readFile(src.abs, "utf8");
 	} catch (err) {
 		throw new Error(`cannot read ${src.label}: ${(err as Error).message}`);
 	}
-}
-
-/** The header label for a source: the repo-relative .planning path when the basename is one of the three planning files. */
-function headerLabel(src: Source): string {
-	return Object.hasOwn(PLANNING_LABELS, basename(src.abs))
-		? (PLANNING_LABELS[basename(src.abs)] ?? src.label)
-		: src.label;
 }
 
 async function runCli(argv: string[]): Promise<number> {
