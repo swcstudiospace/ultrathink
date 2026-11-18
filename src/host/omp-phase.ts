@@ -7,12 +7,13 @@
  * records a phase; plain prompts write nothing. The Omp refusal is advisory; the merge gate enforces the record.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { join } from "node:path";
 import { type LockOptions, withFileLock } from "../claude/atomic.ts";
 import { OMP_LOCK } from "../claude/state.ts";
 import { redactSecrets } from "../redact.ts";
 import { parseSkillScaffold, parseSlashCommand } from "../uplift/skill.ts";
-import { fileStore } from "../workflow/phase-loop-store.ts";
+import { type CheckpointReason, fileStore } from "../workflow/phase-loop-store.ts";
 import {
 	attemptPhase,
 	checkpointPhaseLoop,
@@ -232,16 +233,95 @@ export function restoreSessionPhases(session: PhaseSession): PhaseReport {
 }
 
 /**
- * Checkpoints the session's stored phase record as paused at shutdown. A session with no record has no loop to pause and
- * writes nothing.
+ * Checkpoints the session's stored phase record with `reason`, under the phase-record lock. A session with no record has
+ * no loop to checkpoint and writes nothing.
  */
-export function pauseSessionPhases(session: PhaseSession & { at: string }): PhaseReport {
+function checkpointSessionPhases(
+	session: PhaseSession & { at: string },
+	reason: CheckpointReason,
+): PhaseReport {
 	const dir = join(session.stateDir, "phase-loop");
 	if (session.sessionId === "" || !existsSync(dir)) return NONE;
 	return underPhaseLock(dir, (): PhaseReport => {
 		const store = fileStore(dir);
 		if (store.load(session.sessionId).status === "absent") return NONE;
-		checkpointPhaseLoop(store, session.sessionId, "pause", session.at);
+		checkpointPhaseLoop(store, session.sessionId, reason, session.at);
 		return NONE;
 	});
+}
+
+/**
+ * Checkpoints the session's stored phase record as paused at shutdown. A session with no record has no loop to pause and
+ * writes nothing.
+ */
+export function pauseSessionPhases(session: PhaseSession & { at: string }): PhaseReport {
+	return checkpointSessionPhases(session, "pause");
+}
+
+/**
+ * Checkpoints the session's stored phase record as killed when a host signal ends the process (LIFE-04). The same
+ * record, lock and no-record rule as the pause.
+ */
+export function killSessionPhases(session: PhaseSession & { at: string }): PhaseReport {
+	return checkpointSessionPhases(session, "kill");
+}
+
+/** The signals the kill hook checkpoints on (LIFE-04): an interrupt and a termination request. */
+const KILL_SIGNALS = ["SIGINT", "SIGTERM"] as const;
+type KillSignal = (typeof KILL_SIGNALS)[number];
+
+/** Disposes the kill hook registered last. A new install replaces it, so a process holds one hook at a time. */
+let activeKillHook: (() => void) | undefined;
+
+/**
+ * Checkpoints the live session as killed. The process is ending and has no notice surface, so a failure goes to stderr.
+ */
+function checkpointOnKill(
+	signal: KillSignal,
+	live: () => PhaseSession | undefined,
+	now: () => number,
+): void {
+	try {
+		const session = live();
+		if (session === undefined) return;
+		const report = killSessionPhases({ ...session, at: new Date(now()).toISOString() });
+		if (report.kind === "notice") process.stderr.write(`[ultrathink] ${signal}: ${report.text}\n`);
+	} catch (error) {
+		process.stderr.write(`[ultrathink] ${signal}: ${failureText(error)}\n`);
+	}
+}
+
+/**
+ * Installs the host's kill hook (LIFE-04). On SIGINT or SIGTERM the live session's phase record is checkpointed as
+ * killed, synchronously and under the phase-record lock, before the process ends. When no other listener is registered
+ * for the signal, the hook removes its listeners and re-raises the signal, so the exit status is that signal. When
+ * another listener is registered, that listener owns termination and the hook only checkpoints. A later install
+ * replaces an earlier one. Returns the dispose that removes this registration.
+ */
+export function installKillCheckpoint(
+	live: () => PhaseSession | undefined,
+	now: () => number,
+): () => void {
+	activeKillHook?.();
+	const hooks = new Map<KillSignal, () => void>();
+	const dispose = (): void => {
+		for (const [signal, hook] of hooks) process.removeListener(signal, hook);
+		hooks.clear();
+		if (activeKillHook === dispose) activeKillHook = undefined;
+	};
+	for (const signal of KILL_SIGNALS) {
+		const hook = (): void => {
+			checkpointOnKill(signal, live, now);
+			const ours: unknown[] = [...hooks.values()];
+			if (process.listeners(signal).some((listener) => !ours.includes(listener))) return;
+			dispose();
+			process.kill(process.pid, signal);
+			// Reached only if the runtime kept a handler for the signal: end with the signal's conventional status.
+			process.exit(128 + osConstants.signals[signal]);
+		};
+		hooks.set(signal, hook);
+		process.on(signal, hook);
+	}
+	activeKillHook = dispose;
+	return dispose;
 }
