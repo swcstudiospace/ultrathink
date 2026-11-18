@@ -143,11 +143,17 @@ export function normalizeGraph(
 	};
 }
 
+/** The fields isFallbackGraph reads; a partially validated graph object satisfies it without a cast. */
+interface FallbackGraphCandidate {
+	goal: string;
+	nodes: ReadonlyArray<{ id?: unknown; kind?: unknown; question?: unknown }>;
+}
+
 /**
  * True when the graph is the boilerplate fallback: normalizeGraph substitutes it whenever fewer
  * than minNodes parse, so a model echoing it verbatim is boilerplate too and reports the same.
  */
-export function isFallbackGraph(graph: ThoughtGraph): boolean {
+export function isFallbackGraph(graph: FallbackGraphCandidate): boolean {
 	if (graph.goal !== FALLBACK_GRAPH.goal || graph.nodes.length !== FALLBACK_GRAPH.nodes.length)
 		return false;
 	return FALLBACK_GRAPH.nodes.every((node, index) => {

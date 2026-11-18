@@ -15,7 +15,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSweeper, type SweepResult, sweepStateDir } from "./retention.ts";
+import type { Logger } from "../obs/log.ts";
+import { createSweeper, nextNamesBatch, type SweepResult, sweepStateDir } from "./retention.ts";
 
 const dirs: string[] = [];
 const tmp = (): string => {
@@ -509,5 +510,51 @@ describe("createSweeper", () => {
 		const sweeper = createSweeper({ sweep: () => EMPTY, intervalMs: 3_600_000 });
 		const stop = sweeper.start();
 		stop();
+	});
+});
+
+describe("nextNamesBatch", () => {
+	function recorder(): { logger: Logger; lines: string[] } {
+		const lines: string[] = [];
+		return {
+			lines,
+			logger: {
+				info: () => {
+					// reason: only error lines are collected; the assertions read those
+				},
+				warn: () => {
+					// reason: only error lines are collected; the assertions read those
+				},
+				error: (event: string) => {
+					lines.push(event);
+				},
+			},
+		};
+	}
+
+	test("a missing directory is an empty batch with no log line", () => {
+		const { logger, lines } = recorder();
+		expect(nextNamesBatch(join(tmp(), "absent"), 10, logger)).toEqual([]);
+		expect(lines).toEqual([]);
+	});
+
+	test("a path that is not a directory is logged under its error code and answered undefined", () => {
+		const { logger, lines } = recorder();
+		const file = join(tmp(), "jobs");
+		writeFileSync(file, "not a directory");
+		expect(nextNamesBatch(file, 10, logger)).toBeUndefined();
+		expect(lines).toEqual(["nextNamesBatch: ENOTDIR"]);
+	});
+
+	test("batches resume where the last one stopped, then start again from the top", () => {
+		const { logger, lines } = recorder();
+		const dir = tmp();
+		const expected = ["a.json", "b.json", "c.json", "d.json", "e.json"];
+		for (const name of expected) writeFileSync(join(dir, name), "{}");
+		const batches = [0, 1, 2].map(() => nextNamesBatch(dir, 2, logger) ?? []);
+		expect(batches.map((batch) => batch.length)).toEqual([2, 2, 1]);
+		expect(batches.flat().sort()).toEqual(expected);
+		expect(nextNamesBatch(dir, 2, logger)?.length).toBe(2);
+		expect(lines).toEqual([]);
 	});
 });

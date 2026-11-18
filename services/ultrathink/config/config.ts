@@ -142,7 +142,7 @@ const MAX_PREVIOUS_SESSION_SECRETS = 4;
 const INTEGER_PATTERN = /^[0-9]+$/;
 const PLANNING_MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,80}$/;
 const DEFAULT_MAX_CONCURRENT_PLANS = 2;
-const DEFAULT_PLAN_CONCURRENCY = 2;
+export const DEFAULT_PLAN_CONCURRENCY = 2;
 const MAX_PLAN_CONCURRENCY = 6;
 // 0 means unlimited; a positive value is an explicit cap.
 const DEFAULT_MODEL_TIMEOUT_MS = 0;

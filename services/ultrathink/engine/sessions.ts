@@ -12,9 +12,9 @@ import { type Dir, lstatSync, opendirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger, failureLabel, type Logger } from "../obs/log.ts";
 import { isFallbackGraph } from "../../../src/think/graph.ts";
-import type { ThoughtGraph } from "../../../src/think/types.ts";
 import { readJson } from "../../../src/shared.ts";
 import { isSessionId } from "./journal.ts";
+import { oneLine } from "./text.ts";
 
 type SessionStatus = "running" | "planned" | "failed" | "invalid" | "skipped";
 
@@ -97,22 +97,12 @@ function clampLimit(limit: unknown): number {
 	return Math.min(MAX_LIMIT, Math.max(1, Math.trunc(limit)));
 }
 
-/** First non-blank line, control characters and runs of whitespace collapsed, cut to GOAL_MAX_CHARS characters. */
-function oneLine(value: unknown): string {
+/** First non-blank line of the head of `value`, sanitised by the shared `oneLine` and cut to GOAL_MAX_CHARS characters. */
+function goalLine(value: unknown): string {
 	if (typeof value !== "string") return "";
-	const head = value.slice(0, GOAL_SCAN_CHARS);
-	for (const line of head.split(/[\r\n\u2028\u2029]/)) {
-		const text = line
-			.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-			.replace(/\s+/g, " ")
-			.trim();
-		if (text.length === 0) continue;
-		if (text.length <= GOAL_MAX_CHARS) return text;
-		let cut = text.slice(0, GOAL_MAX_CHARS - 1);
-		// Never leave half of a surrogate pair behind.
-		const last = cut.charCodeAt(cut.length - 1);
-		if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
-		return `${cut.trimEnd()}…`;
+	for (const line of value.slice(0, GOAL_SCAN_CHARS).split(/[\r\n\u2028\u2029]/)) {
+		const text = oneLine(line, GOAL_MAX_CHARS);
+		if (text.length > 0) return text;
 	}
 	return "";
 }
@@ -252,7 +242,7 @@ function readRecord(path: string): RecordView | "unread" | undefined {
 		typeof graph.goal === "string" &&
 		Array.isArray(graph.nodes) &&
 		graph.nodes.every(isObject) &&
-		!isFallbackGraph(graph as unknown as ThoughtGraph)
+		!isFallbackGraph({ goal: graph.goal, nodes: graph.nodes })
 	) {
 		view.graphGoal = graph.goal.slice(0, GOAL_SCAN_CHARS);
 		view.hasGraph = graph.nodes.length > 0;
@@ -360,7 +350,7 @@ function summarize(
 		if (loaded === "unread") recordUnread = true;
 		else record = loaded;
 	}
-	const goal = oneLine(record?.graphGoal) || oneLine(record?.original) || oneLine(metaOriginal);
+	const goal = goalLine(record?.graphGoal) || goalLine(record?.original) || goalLine(metaOriginal);
 	return {
 		sessionId: id,
 		status,

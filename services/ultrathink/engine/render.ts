@@ -5,6 +5,7 @@ import type { Clarification } from "../../../src/hitl/types.ts";
 import { dependencyLevels, isFallbackGraph, topoSort } from "../../../src/think/graph.ts";
 import type { ThoughtNode } from "../../../src/think/types.ts";
 import { buildGraphView, fenced, renderGraphBlock } from "./graph-view.ts";
+import { oneLine } from "./text.ts";
 
 export interface ChatQuestion {
 	question: string;
@@ -53,20 +54,6 @@ interface Unit {
 	diagram?: true;
 }
 
-/** The first `max` UTF-16 code units, minus a trailing high surrogate that would be left without its pair. */
-function cutUnits(text: string, max: number): string {
-	let end = Math.max(0, max);
-	const last = text.charCodeAt(end - 1);
-	if (end > 0 && last >= 0xd800 && last <= 0xdbff) end -= 1;
-	return text.slice(0, end);
-}
-
-/** One line, bounded: ids, titles and labels come from model output and must not open a new section. */
-function oneLine(value: string | undefined, max = 200): string {
-	const flat = (value ?? "").replace(/\s+/g, " ").trim();
-	return flat.length > max ? `${cutUnits(flat, max - 1)}…` : flat;
-}
-
 /** Indents every line so model text can never start a line that reads like a section heading. */
 function indent(text: string, prefix = INDENT): string {
 	return text
@@ -105,7 +92,9 @@ function shortenSpecification(spec: string, cap: number): string {
 }
 
 function nodeText(node: ThoughtNode, detail: RenderOptions["detail"]): string {
-	const lines = [`- ${oneLine(node.id, 40)} ${oneLine(node.title)} [${oneLine(node.kind, 40)}]`];
+	const lines = [
+		`- ${oneLine(node.id, 40)} ${oneLine(node.title, 200)} [${oneLine(node.kind, 40)}]`,
+	];
 	lines.push(`${INDENT}Question: ${oneLine(node.question, 2_000)}`);
 	const conclusion = node.conclusion?.trim();
 	if (conclusion) lines.push(`${INDENT}Conclusion:`, indent(conclusion, INDENT.repeat(2)));

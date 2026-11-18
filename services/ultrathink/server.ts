@@ -6,7 +6,13 @@ import pkg from "../../package.json";
 import { installChildReaper } from "../../src/resilience/child.ts";
 import { createAuth } from "./auth/auth.ts";
 import { loadChaosBackend } from "./chaos/faults.ts";
-import { ConfigError, type TlsFiles, type UltrathinkConfig, loadConfig } from "./config/config.ts";
+import {
+	ConfigError,
+	DEFAULT_PLAN_CONCURRENCY,
+	type TlsFiles,
+	type UltrathinkConfig,
+	loadConfig,
+} from "./config/config.ts";
 import { createPlanBackend } from "./engine/plan.ts";
 import { createShutdown, installProcessHandlers } from "./lifecycle.ts";
 import { ToolDefinitionError, assertToolDefinitions } from "./mcp/definitions.ts";
@@ -164,7 +170,7 @@ const chaosBackend = loadChaosBackend(config, (claude) =>
 	createPlanBackend({
 		model: config.planningModel,
 		fallback: config.planFallback ?? "none",
-		concurrency: config.planConcurrency ?? 2,
+		concurrency: config.planConcurrency ?? DEFAULT_PLAN_CONCURRENCY,
 		timeoutMs: config.modelTimeoutMs,
 		env: process.env,
 		claude,

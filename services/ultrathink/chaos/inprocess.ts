@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createAuth } from "../auth/auth.ts";
-import { type UltrathinkConfig, loadConfig } from "../config/config.ts";
+import { DEFAULT_PLAN_CONCURRENCY, type UltrathinkConfig, loadConfig } from "../config/config.ts";
 import { createPlanBackend } from "../engine/plan.ts";
 import { createLogger } from "../obs/log.ts";
 import { type App, createApp } from "../routes/router.ts";
@@ -88,7 +88,7 @@ export async function createInProcessTarget(
 		const planBackend = createPlanBackend({
 			model: PLANNING_MODEL,
 			fallback: "none",
-			concurrency: config.planConcurrency ?? 2,
+			concurrency: config.planConcurrency ?? DEFAULT_PLAN_CONCURRENCY,
 			timeoutMs: config.modelTimeoutMs,
 			env: { PATH: CHILD_PATH },
 			// The stand-in stands for the `claude` binary, so readiness holds without one installed.

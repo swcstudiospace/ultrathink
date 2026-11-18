@@ -11,10 +11,12 @@
  * directory is read up to a cap; a file that cannot be parsed is left alone. A sweep never throws once its
  * options are valid: every failure is counted in `errors` and the walk continues.
  *
- * This module is pure. It has no logger and no clock of its own; `now` and the sweeper's timers are injected.
+ * Apart from the file system and the log line for an unreadable directory, this module is pure: `now`, the logger
+ * and the sweeper's timers are injected.
  */
 import { type Dir, lstatSync, opendirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { createLogger, failureLabel, type Logger } from "../obs/log.ts";
 import { isSessionId } from "./journal.ts";
 
 export interface SweepOptions {
@@ -26,6 +28,8 @@ export interface SweepOptions {
 	now?: () => number;
 	/** Directory entries read per directory; a runaway directory is swept in slices of this size. Default 5000. */
 	maxEntries?: number;
+	/** Receives the line logged for a directory that cannot be read. Defaults to the stdout logger. */
+	logger?: Logger;
 }
 
 export interface SweepResult {
@@ -98,6 +102,7 @@ interface Walk {
 	/** Cutoff for a journal that never finished; older than `cutoff` by STUCK_JOURNAL_FACTOR. */
 	stuckCutoff: number;
 	maxEntries: number;
+	logger: Logger;
 }
 
 function realSetTimer(run: () => void, intervalMs: number): object {
@@ -124,10 +129,10 @@ function closeScan(dir: string): void {
 
 /**
  * Up to `max` names of a directory, continuing where the previous sweep stopped. When the directory ends, its scan is
- * closed and the next sweep starts again from the top, so every entry is visited once per cycle. `undefined` when the
- * directory cannot be read.
+ * closed and the next sweep starts again from the top, so every entry is visited once per cycle. A missing directory
+ * is an empty batch; any other failure is logged and answered `undefined`, which the sweep counts as an error.
  */
-function listNames(dir: string, max: number): string[] | undefined {
+export function nextNamesBatch(dir: string, max: number, logger: Logger): string[] | undefined {
 	const names: string[] = [];
 	try {
 		const { dev, ino } = lstatSync(dir);
@@ -147,8 +152,12 @@ function listNames(dir: string, max: number): string[] | undefined {
 			names.push(entry.name);
 		}
 		return names;
-	} catch {
+	} catch (error) {
 		closeScan(dir);
+		const label = failureLabel(error);
+		// reason: a directory removed since the sweep began is simply empty; any other failure is logged and counted.
+		if (label === "ENOENT") return [];
+		logger.error(`nextNamesBatch: ${label}`);
 		return undefined;
 	}
 }
@@ -216,7 +225,7 @@ function sweepSessions(stateDir: string, walk: Walk): void {
 	const { tally } = walk;
 	const dir = subdir(stateDir, "sessions", tally);
 	if (dir === undefined) return;
-	const names = listNames(dir, walk.maxEntries);
+	const names = nextNamesBatch(dir, walk.maxEntries, walk.logger);
 	if (names === undefined) {
 		tally.errors += 1;
 		return;
@@ -249,7 +258,7 @@ function sweepJobs(stateDir: string, walk: Walk): void {
 	const { tally } = walk;
 	const dir = subdir(stateDir, "jobs", tally);
 	if (dir === undefined) return;
-	const names = listNames(dir, walk.maxEntries);
+	const names = nextNamesBatch(dir, walk.maxEntries, walk.logger);
 	if (names === undefined) {
 		tally.errors += 1;
 		return;
@@ -292,7 +301,7 @@ function sweepJournals(stateDir: string, walk: Walk): void {
 	const { tally } = walk;
 	const root = subdir(stateDir, "journal", tally);
 	if (root === undefined) return;
-	const names = listNames(root, walk.maxEntries);
+	const names = nextNamesBatch(root, walk.maxEntries, walk.logger);
 	if (names === undefined) {
 		tally.errors += 1;
 		return;
@@ -390,6 +399,7 @@ export function sweepStateDir(options: SweepOptions): SweepResult {
 		cutoff: at - options.retentionDays * DAY_MS,
 		stuckCutoff: at - STUCK_JOURNAL_FACTOR * options.retentionDays * DAY_MS,
 		maxEntries,
+		logger: options.logger ?? createLogger(),
 	};
 	sweepJobs(options.stateDir, walk);
 	sweepJournals(options.stateDir, walk);
