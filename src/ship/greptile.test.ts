@@ -26,6 +26,7 @@ const config: ShipConfig = {
 	mergeMethod: "squash",
 	deleteBranch: true,
 	greptileOrganization: "",
+	owners: [],
 	reviewTimeoutMs: 1000,
 	pollMs: 100,
 	waitMs: 1000,

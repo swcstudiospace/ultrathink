@@ -47,6 +47,7 @@ const CONFIG: ShipConfig = {
 	mergeTimeoutMs: 10_000,
 	judge: "gate",
 	reviewer: "greptile",
+	owners: [],
 };
 const PR: PrRef = { number: 7, url: "https://github.com/o/r/pull/7", head: "feat", base: "master" };
 const PASSED: ReviewResult = {
@@ -2011,6 +2012,8 @@ describe("merge phase gate", () => {
 	/** Runs a ship command on the session's state file with extra flags. */
 	const withFlags = (command: string, d: ShipDeps, ...flags: string[]) =>
 		runShip([command, "--state", statePath, "--cwd", dir, ...flags], d);
+	/** Ship deps whose user config lists alice as an owner: the owner decisions below name her. */
+	const owned = (o: FakeOpts = {}) => deps({ ...o, config: { owners: ["alice"], ...o.config } });
 
 	beforeEach(() => {
 		writeShip(statePath, { pr: PR, phase: "pr-open", rounds: [PASSED] });
@@ -2112,7 +2115,7 @@ describe("merge phase gate", () => {
 	test("an owner override with a reason lets the merge proceed without an audit, and the record keeps the reason", async () => {
 		const out = await withFlags(
 			"merge",
-			deps(),
+			owned(),
 			"--owner",
 			"alice",
 			"--owner-override",
@@ -2152,6 +2155,91 @@ describe("merge phase gate", () => {
 		expect(mergeCalls()).toEqual([]);
 		expect(phaseRecord()?.closedBy).toBeUndefined();
 		expect(phaseRecord()?.overrides).toBeUndefined();
+	});
+
+	test("ship.owners: a listed owner is accepted by resolve; an unlisted one is refused and writes nothing", async () => {
+		phaseFixture("01-core");
+		open("s", { id: "verification:01-core", owner: "human" }, fileStore(phaseDir()));
+		const before = JSON.stringify(phaseRecord());
+		const unlisted = await withFlags(
+			"resolve",
+			deps({ config: { owners: ["alice"] } }),
+			"01-core",
+			"--owner",
+			"bob",
+			"--evidence",
+			"UAT passed",
+		);
+		expect(unlisted.output).toMatchObject({
+			ok: false,
+			error: 'owner "bob" is not in ship.owners in your user config',
+		});
+		expect(JSON.stringify(phaseRecord())).toBe(before);
+		const listed = await withFlags(
+			"resolve",
+			deps({ config: { owners: ["alice"] } }),
+			"01-core",
+			"--owner",
+			"alice",
+			"--evidence",
+			"UAT passed",
+		);
+		expect(listed.output).toMatchObject({ ok: true, resolvedBy: "alice" });
+	});
+
+	test("ship.owners: an owner override naming an unlisted owner is refused before any stage runs, for merge and run", async () => {
+		for (const command of ["merge", "run"]) {
+			const before = readFileSync(statePath, "utf8");
+			const out = await withFlags(
+				command,
+				deps({ config: { owners: ["alice"] } }),
+				"--owner",
+				"bob",
+				"--owner-override",
+				"GitHub audit is down",
+			);
+			expect(out.output).toMatchObject({
+				ok: false,
+				error: 'owner "bob" is not in ship.owners in your user config',
+			});
+			expect(calls).toEqual([]);
+			expect(readFileSync(statePath, "utf8")).toBe(before);
+		}
+	});
+
+	test("ship.owners: an empty list refuses every owner decision, saying no owner is configured", async () => {
+		phaseFixture("01-core");
+		open("s", { id: "verification:01-core", owner: "human" }, fileStore(phaseDir()));
+		const resolved = await withFlags(
+			"resolve",
+			deps({ config: { owners: [] } }),
+			"01-core",
+			"--owner",
+			"alice",
+			"--evidence",
+			"UAT passed",
+		);
+		expect(resolved.output).toMatchObject({
+			ok: false,
+			error: 'owner "alice" is not in ship.owners in your user config; no owner is configured',
+		});
+		expect(phaseRecord()?.humanItems).toMatchObject([
+			{ id: "verification:01-core", state: "open" },
+		]);
+		const overridden = await withFlags(
+			"merge",
+			deps({ config: { owners: [] } }),
+			"--owner",
+			"alice",
+			"--owner-override",
+			"GitHub audit is down",
+		);
+		expect(overridden.output).toMatchObject({
+			ok: false,
+			error: 'owner "alice" is not in ship.owners in your user config; no owner is configured',
+		});
+		expect(mergeCalls()).toEqual([]);
+		expect(phaseRecord()?.closedBy).toBeUndefined();
 	});
 
 	test("a rerun after a transient GitHub failure merges without confirming again", async () => {
@@ -2218,7 +2306,7 @@ describe("merge phase gate", () => {
 		expect(mergeCalls()).toEqual([]);
 		const resolved = await withFlags(
 			"resolve",
-			deps(),
+			owned(),
 			"01-core",
 			"--owner",
 			"alice",
@@ -2313,7 +2401,7 @@ describe("merge phase gate", () => {
 		// The owner resolves the entry on the same head.
 		const resolved = await withFlags(
 			"resolve",
-			deps(),
+			owned(),
 			"01-core",
 			"--owner",
 			"alice",
@@ -2353,7 +2441,7 @@ describe("merge phase gate", () => {
 		});
 		const none = await withFlags(
 			"resolve",
-			deps(),
+			owned(),
 			"01-core",
 			"--owner",
 			"alice",
@@ -2366,7 +2454,7 @@ describe("merge phase gate", () => {
 		open("s", { id: "verification:01-core", owner: "human" }, fileStore(phaseDir()));
 		const once = await withFlags(
 			"resolve",
-			deps(),
+			owned(),
 			"01-core",
 			"--owner",
 			"alice",
@@ -2376,7 +2464,7 @@ describe("merge phase gate", () => {
 		expect(once.output).toMatchObject({ ok: true });
 		const again = await withFlags(
 			"resolve",
-			deps(),
+			owned(),
 			"01-core",
 			"--owner",
 			"alice",
@@ -2395,7 +2483,7 @@ describe("merge phase gate", () => {
 		open("s", { id: `verification:${P111}`, owner: "human" }, fileStore(phaseDir()));
 		const resolved = await withFlags(
 			"resolve",
-			deps(),
+			owned(),
 			"110",
 			"--owner",
 			"alice",
@@ -2415,7 +2503,7 @@ describe("merge phase gate", () => {
 		open("s", { id: `verification:${P110}`, owner: "human" }, fileStore(phaseDir()));
 		const resolved = await withFlags(
 			"resolve",
-			deps(),
+			owned(),
 			P110,
 			"--owner",
 			"alice",
@@ -2433,7 +2521,7 @@ describe("merge phase gate", () => {
 		phaseFixture(P111);
 		const out = await withFlags(
 			"resolve",
-			deps(),
+			owned(),
 			"110",
 			"--owner",
 			"alice",

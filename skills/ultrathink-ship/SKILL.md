@@ -72,6 +72,8 @@ Only when `ship.autoMerge` is on. Otherwise `merge` refuses with `autoMerge disa
 
 The owner may close a merge without a recorded audit: `bin/ultrathink-ship merge --state <stateFile> --owner <name> --owner-override <reason>` (an empty reason is refused). Never add `--owner-override` yourself. Only the owner runs `bin/ultrathink-ship resolve <phase> --state <stateFile> --owner <name> --evidence <text>` to close an open HTIL entry. Only the owner runs `bin/ultrathink-ship phase repair-runtime --phase <phase> --session <session-id> --reason <text>` to set the runtime marker on a Verify record written before it existed.
 
+The owner must be listed in `ship.owners` in the user config; the CLI refuses any other name, and an empty list refuses every owner decision.
+
 The merge gate never changes: a completed Greptile review of the exact PR head with score >= `ship.minScore` (default 5, Greptile's maximum) and no open threads, an open mergeable PR, CI neither pending nor failing. On success it merges with config `mergeMethod` (squash by default) and, only when `ship.deleteBranch` is on, deletes the branch locally and remotely. `run` also merges within its own `ship.waitMs` budget when the review passed.
 
 `merge` keeps retrying inside the call (pending CI, mergeability not computed, unreadable PR state or threads, transient GitHub errors) for up to `ship.waitMs`:

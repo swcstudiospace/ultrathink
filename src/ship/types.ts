@@ -37,6 +37,11 @@ export interface ShipConfig {
 	 * "claude": a headless `claude -p` review of the PR diff (see claude-review.ts). Both report the same ReviewResult.
 	 */
 	reviewer: "greptile" | "claude";
+	/**
+	 * Names allowed to make an owner decision (`ultrathink-ship resolve --owner`, `--owner-override`). User files only; a
+	 * project layer is ignored. Empty means no owner decision is accepted.
+	 */
+	owners: readonly string[];
 }
 
 /** How the pre-PR LLM done-judge takes part in `assess`; see ShipConfig.judge. */
@@ -63,6 +68,7 @@ export const DEFAULT_SHIP_CONFIG: ShipConfig = {
 	mergeTimeoutMs: 3_600_000,
 	judge: "gate",
 	reviewer: "greptile",
+	owners: [],
 };
 
 export interface GitSignals {

@@ -338,7 +338,11 @@ export function defaultConfig(): UltrathinkConfig {
 		notion: { ...DEFAULT_NOTION_CONFIG },
 		linear: { ...DEFAULT_LINEAR_CONFIG },
 		track: { ...DEFAULT_TRACK_CONFIG },
-		ship: { ...DEFAULT_SHIP_CONFIG, skills: [...DEFAULT_SHIP_CONFIG.skills] },
+		ship: {
+			...DEFAULT_SHIP_CONFIG,
+			skills: [...DEFAULT_SHIP_CONFIG.skills],
+			owners: [...DEFAULT_SHIP_CONFIG.owners],
+		},
 		substrate: { ...DEFAULT_SUBSTRATE_CONFIG },
 		decisions: { ...DEFAULT_DECISIONS_CONFIG, points: [...DEFAULT_DECISIONS_CONFIG.points] },
 		hindsight: { ...DEFAULT_HINDSIGHT_CONFIG },
@@ -808,10 +812,21 @@ function mergeShip(ship: Record<string, unknown> | undefined, defaults: ShipConf
 		Array.isArray(ship.skills) && ship.skills.every((s) => typeof s === "string" && s.trim())
 			? (ship.skills as string[]).map((s) => s.trim())
 			: defaults.skills;
+	const owners = Array.isArray(ship.owners)
+		? [
+				...new Set(
+					ship.owners
+						.filter((owner): owner is string => typeof owner === "string")
+						.map((owner) => owner.trim())
+						.filter((owner) => owner !== ""),
+				),
+			]
+		: defaults.owners;
 	return {
 		enabled: typeof ship.enabled === "boolean" ? ship.enabled : defaults.enabled,
 		autoMerge: typeof ship.autoMerge === "boolean" ? ship.autoMerge : defaults.autoMerge,
 		skills,
+		owners,
 		minScore:
 			typeof ship.minScore === "number" &&
 			Number.isFinite(ship.minScore) &&
@@ -1215,7 +1230,7 @@ function mergeUi(
  * lets a project move a key toward the safer side and nothing else. `ship.greptileOrganization` is the one other key a
  * project file fills: only where no earlier file sets it. It names an organization the user's own Greptile account
  * already belongs to, and the repository's code goes to Greptile for review either way. Notion and Linear are user-only
- * (see `mergeConfig`). Think is user-only.
+ * (see `mergeConfig`). Think is user-only. `ship.owners` is user-only, so the base list passes through unchanged.
  */
 function tightenShip(ship: Record<string, unknown> | undefined, base: ShipConfig): ShipConfig {
 	if (!ship) return base;

@@ -1198,6 +1198,16 @@ async function stepMerge(
 }
 
 /**
+ * The owner allowlist (`ship.owners`, user files only): an owner decision names only a listed owner. `resolve --owner`
+ * and `--owner-override` both check it before any stage or record write. Undefined when the owner may decide.
+ */
+function ownerRefusal(owners: readonly string[], owner: string): string | undefined {
+	if (owners.includes(owner.trim())) return undefined;
+	const none = owners.length === 0 ? "; no owner is configured" : "";
+	return `owner "${owner}" is not in ship.owners in your user config${none}`;
+}
+
+/**
  * Resolves the phase's open HTIL entry `verification:<phase directory>` (LIFE-05) with the owner's evidence and the
  * time, under the phase-record lock. An entry that is not open is refused and nothing is written.
  */
@@ -1400,6 +1410,10 @@ export async function runShip(
 		override = { owner, reason: overrideReason };
 	} else if (owner !== undefined && command !== "resolve") {
 		return usageError("--owner applies to resolve and --owner-override");
+	}
+	if (resolution !== undefined || override !== undefined) {
+		const refusal = ownerRefusal(deps.config.owners, owner ?? "");
+		if (refusal !== undefined) return { code: 0, output: { ok: false, error: refusal } };
 	}
 	const ctx: Ctx = {
 		deps,
