@@ -657,17 +657,20 @@ function mergeTotModels(
 /**
  * Per-entry merge of `models` (D-05): a wrong type keeps the lower value, a blank host field clears it, a blank provider
  * default removes the lower selector (exposing the host-catalog tier), and unknown hosts, prototype keys and inherited fields are ignored.
+ * A project layer (`project`) may set a host's `model` only: its `provider`, `providerDefaults` and `tot` are ignored.
  */
 function mergeModels(
 	models: Record<string, unknown> | undefined,
 	defaults: ModelsConfig,
+	project: boolean,
 ): ModelsConfig {
 	if (!models) return defaults;
 	const hosts: Partial<Record<HostId, HostModelOverride>> = { ...defaults.hosts };
 	for (const [host, entry] of Object.entries(asRecord(models.hosts) ?? {})) {
 		const fields = asRecord(entry);
 		if (!fields || !isHostId(host)) continue;
-		const provider = Object.hasOwn(fields, "provider") ? selectorField(fields.provider) : undefined;
+		const provider =
+			!project && Object.hasOwn(fields, "provider") ? selectorField(fields.provider) : undefined;
 		const model = Object.hasOwn(fields, "model") ? selectorField(fields.model) : undefined;
 		if (provider === undefined && model === undefined) continue;
 		const lower = hosts[host];
@@ -677,6 +680,8 @@ function mergeModels(
 		};
 	}
 	const providerDefaults = providerDictionary(defaults.providerDefaults);
+	// A project layer cannot choose the provider a host plans with, the provider defaults or the ToT allowlist.
+	if (project) return { hosts, providerDefaults, tot: defaults.tot };
 	for (const [provider, selector] of Object.entries(asRecord(models.providerDefaults) ?? {})) {
 		if (UNSAFE_DICTIONARY_KEYS.includes(provider)) continue;
 		const value = selectorField(selector);
@@ -1295,7 +1300,7 @@ export function mergeConfig(
 			options.project === true
 				? base.recallSettings
 				: parseRecallSettings(file, base.recallSettings),
-		models: mergeModels(asRecord(file.models), base.models),
+		models: mergeModels(asRecord(file.models), base.models, options.project === true),
 		modelProvenance: {
 			claude: modelPin(claude, base.modelProvenance.claude, true),
 			grok: modelPin(grok, base.modelProvenance.grok, false),

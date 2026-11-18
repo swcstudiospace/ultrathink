@@ -7,7 +7,7 @@ import {
 	extractDigestDocument,
 	formatDefaultOption,
 } from "../decisions/questions.ts";
-import type { DecisionRecord } from "../decisions/types.ts";
+import { DEFAULT_DECISIONS_CONFIG, type DecisionRecord } from "../decisions/types.ts";
 import { clip, clipHeadTail, FIELD_CAPS } from "../resilience/limits.ts";
 import { redactLine } from "../teach/redact.ts";
 import { extractJsonObject } from "../think/graph.ts";
@@ -35,9 +35,9 @@ export interface RunClarifyOptions {
 	signal?: AbortSignal;
 	maxQuestions?: number;
 	onProgress?: (message: string) => void;
-	/** Greptile knowledge-base digest (untrusted evidence) and the document paths it holds; questions it settles are recorded, not asked. */
+	/** Greptile knowledge-base digest (untrusted evidence) and the document paths it holds; a question it settles is asked unless the knowledge check verifies it. */
 	knowledge?: { digest: string; docs: string[] };
-	/** Jev runtime for the knowledge and blocking points; absent = no checks (today's behaviour). */
+	/** Jev runtime for the knowledge and blocking points; absent = no checks, so every question the digest settles is asked. */
 	decisions?: Decisions;
 	/** Receives every DecisionRecord of this clarify pass: round-1 knowledge, round-1 blocking, then round-2 blocking. */
 	onDecision?: (record: DecisionRecord) => void;
@@ -387,31 +387,33 @@ interface Checked {
  * DP-KNOWLEDGE and DP-BLOCKING on the pass-1 `list` (contract §6.3). Round 1 checks, concurrently, every settled claim
  * against its cited digest section and the default of every open question the clarifier left non-blocking. A claim Jev
  * finds unsupported is asked instead (pass 2, {@link reopenRejected}) when an open slot is left; round 2 then checks
- * the default of each one admitted. A risky default makes its question blocking; nothing is demoted.
+ * the default of each one admitted. A risky default makes its question blocking; nothing is demoted. A settled claim no
+ * grounding check verified (no Jev, no active knowledge point, or no digest section) is asked the same way.
  * Errors change nothing; only a caller abort rejects.
  */
 async function checkClarifications(
 	opts: RunClarifyOptions,
-	decisions: Decisions,
+	decisions: Decisions | undefined,
 	parsed: unknown,
 	max: number,
 	knowledge: { digest: string; docs: string[] } | undefined,
 	list: Clarification[],
 	idOffset: number,
 ): Promise<Clarification[]> {
-	const kb = knowledge && decisions.active("knowledge") ? knowledge : undefined;
-	const blockingOn = decisions.active("blocking");
-	if (!kb && !blockingOn) return list;
-	const { groundedAt, blockingAt } = decisions.config;
+	const knowledgeDecisions = knowledge && decisions?.active("knowledge") ? decisions : undefined;
+	const blockingDecisions = decisions?.active("blocking") ? decisions : undefined;
+	const settled = list.filter((item) => item.source === "knowledge");
+	if (!knowledgeDecisions && !blockingDecisions && settled.length === 0) return list;
+	const { groundedAt, blockingAt } = decisions?.config ?? DEFAULT_DECISIONS_CONFIG;
 
 	// LLM-blocking questions are never sent: Jev may only promote.
 	const checkBlocking = (open: Clarification[]): Promise<Checked>[] =>
-		blockingOn
+		blockingDecisions
 			? open
 					.filter((item) => !item.blocking)
 					.map(async (item) => ({
 						key: normalizeQuestion(item.question),
-						outcome: await decisions.run(
+						outcome: await blockingDecisions.run(
 							"blocking",
 							buildBlockingState({
 								task: opts.uplift.original,
@@ -427,33 +429,33 @@ async function checkClarifications(
 					}))
 			: [];
 
-	const settled = list.filter((item) => item.source === "knowledge");
 	const knowledgeChecks: Promise<Checked>[] = [];
-	// A settled claim whose cited document has no digest section has nothing to check against, so it is never settled
-	// unchecked: it joins the rejected claims and is asked instead.
+	// A settled claim is settled only by a grounding check. Without one, or when its cited document has no digest
+	// section to check against, it joins the rejected claims and is asked instead.
 	const ungrounded = new Set<string>();
-	if (kb) {
-		for (const claim of settled) {
-			const key = normalizeQuestion(claim.question);
-			const document = extractDigestDocument(kb.digest, claim.evidence ?? "", kb.docs);
-			if (!document) {
-				ungrounded.add(key);
-				continue;
-			}
-			knowledgeChecks.push(
-				decisions
-					.run(
-						"knowledge",
-						buildKnowledgeState({ question: claim.question, answer: claim.answer ?? "", document }),
-						{
-							signal: opts.signal,
-							threshold: groundedAt,
-							action: (p) => (p >= groundedAt ? "keep" : "reject-claim"),
-						},
-					)
-					.then((outcome) => ({ key, outcome })),
-			);
+	for (const claim of settled) {
+		const key = normalizeQuestion(claim.question);
+		const document =
+			knowledgeDecisions && knowledge
+				? extractDigestDocument(knowledge.digest, claim.evidence ?? "", knowledge.docs)
+				: undefined;
+		if (!document || !knowledgeDecisions) {
+			ungrounded.add(key);
+			continue;
 		}
+		knowledgeChecks.push(
+			knowledgeDecisions
+				.run(
+					"knowledge",
+					buildKnowledgeState({ question: claim.question, answer: claim.answer ?? "", document }),
+					{
+						signal: opts.signal,
+						threshold: groundedAt,
+						action: (p) => (p >= groundedAt ? "keep" : "reject-claim"),
+					},
+				)
+				.then((outcome) => ({ key, outcome })),
+		);
 	}
 	const [known, risky] = await Promise.all([
 		Promise.all(knowledgeChecks),
@@ -470,8 +472,8 @@ async function checkClarifications(
 	]);
 	let checked = list;
 	let second: Checked[] = [];
-	if (kb && rejected.size > 0) {
-		checked = reopenRejected(parsed, list, rejected, max, kb.docs, idOffset);
+	if (rejected.size > 0) {
+		checked = reopenRejected(parsed, list, rejected, max, knowledge?.docs ?? [], idOffset);
 		second = await Promise.all(
 			checkBlocking(
 				checked.filter(
@@ -596,17 +598,15 @@ export async function runClarify(
 			opts.onProgress?.(`clarify failed: ${failed}`);
 		}
 		const normalized = normalizeClarifications(parsed, max, knowledge?.docs, idOffset);
-		const list = opts.decisions
-			? await checkClarifications(
-					opts,
-					opts.decisions,
-					parsed,
-					max,
-					knowledge,
-					normalized,
-					idOffset,
-				)
-			: normalized;
+		const list = await checkClarifications(
+			opts,
+			opts.decisions,
+			parsed,
+			max,
+			knowledge,
+			normalized,
+			idOffset,
+		);
 		const settled = list.filter((item) => item.source === "knowledge").length;
 		const settledBit = settled > 0 ? ` (+${settled} settled)` : "";
 		if (!failed) opts.onProgress?.(`Clarifications → ${list.length - settled}${settledBit}`);
