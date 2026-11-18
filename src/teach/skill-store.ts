@@ -9,21 +9,32 @@
  * always listed, and a failure between the two writes leaves a listed skill that a retry repairs; it never leaves an
  * unlisted directory that would later read as user-authored. Files are written through a temporary file in the same
  * directory and a rename, so a reader sees the old or the new content, never a mix.
+ *
+ * Each successful create, update, disable and delete also appends one record to `audit.ndjson` at the store root
+ * (see `skill-audit.ts`). A failed append is reported in the result and never undoes the mutation.
  */
 import { randomBytes } from "node:crypto";
 import type { Stats } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { isRecord } from "../shared.ts";
+import {
+	appendAudit,
+	type AuditOutcome,
+	type AuditRecord,
+	type MatchBy,
+	type QualificationBy,
+} from "./skill-audit.ts";
 import { type AutoSkill, contentHashOf } from "./skill-author.ts";
 
 const MANIFEST = "manifest.json";
 const SKILL_FILE = "SKILL.md";
-const MANIFEST_SCHEMA = 1;
+const MANIFEST_SCHEMA = 2;
 /** Kebab-case, the same shape `skill-author` gives names. Excludes separators and dot segments by construction. */
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const ISO_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 const HEX64_RE = /^[0-9a-f]{64}$/;
+const HEX32_RE = /^[0-9a-f]{32}$/;
 const LINE_BREAK_RE = /[\r\n\u2028\u2029]/;
 /** A YAML plain scalar is written bare only when no YAML syntax character can change its meaning. */
 const PLAIN_SCALAR_RE = /^[A-Za-z0-9][^#:"'\\]*$/;
@@ -41,6 +52,10 @@ interface GeneratedEntry {
 	generated_at: string;
 	source_ids: string[];
 	stale: boolean;
+	description: string;
+	applies_when: AutoSkill["applies_when"];
+	/** Optional: a manifest may omit it. When present it is the exact-match key for merges. */
+	signature_hash?: string;
 }
 
 type StoreReason =
@@ -60,9 +75,17 @@ interface StoreFailure {
 	detail: string;
 }
 
-export type WriteResult = { ok: true; entry: GeneratedEntry } | StoreFailure;
-export type StatusResult = { ok: true; entry: GeneratedEntry } | StoreFailure;
-export type RemoveResult = { ok: true; name: string } | StoreFailure;
+type WriteAction = "created" | "updated";
+/** What the pipeline decided before the write; the audit record names it. Empty when the caller decided nothing. */
+export interface WriteProvenance {
+	qualification_by?: QualificationBy;
+	match_by?: MatchBy;
+}
+export type WriteResult =
+	| { ok: true; action: WriteAction; entry: GeneratedEntry; audit: AuditOutcome }
+	| StoreFailure;
+export type StatusResult = { ok: true; entry: GeneratedEntry; audit: AuditOutcome } | StoreFailure;
+export type RemoveResult = { ok: true; name: string; audit: AuditOutcome } | StoreFailure;
 export type ListResult = { ok: true; entries: GeneratedEntry[] } | StoreFailure;
 
 /** Internal: carries a typed reason through the helpers to the exported functions, which return it as a `StoreFailure`. */
@@ -79,15 +102,24 @@ const SLUG_RULE = "kebab-case, 1 to 64 characters";
 
 /**
  * Writes or replaces the generated skill `skill.name` under `storeDir`. A new skill starts at its record's version; an
- * existing generated skill keeps its status and gets the next version. `nowIso` becomes the entry's `generated_at`.
+ * existing generated skill keeps its status and gets the next version. `nowIso` becomes the entry's `generated_at`, and
+ * the audit record's time. `provenance` is the decision the audit record names.
  */
 export async function writeGeneratedSkill(
 	storeDir: string,
 	skill: AutoSkill,
 	nowIso: string,
+	provenance: WriteProvenance = {},
 ): Promise<WriteResult> {
 	try {
-		return { ok: true, entry: await writeSkill(storeDir, skill, nowIso) };
+		const { action, entry } = await writeSkill(storeDir, skill, nowIso);
+		const audit = appendAudit(storeDir, {
+			ts: nowIso,
+			action: action === "created" ? "create" : "update",
+			...auditFieldsOf(entry),
+			...provenance,
+		});
+		return { ok: true, action, entry, audit };
 	} catch (error) {
 		return failureOf(error);
 	}
@@ -100,7 +132,13 @@ export async function setGeneratedStatus(
 	status: GeneratedStatus,
 ): Promise<StatusResult> {
 	try {
-		return { ok: true, entry: await setStatus(storeDir, name, status) };
+		const entry = await setStatus(storeDir, name, status);
+		const audit = appendAudit(storeDir, {
+			ts: new Date().toISOString(),
+			action: status === "disabled" ? "disable" : "update",
+			...auditFieldsOf(entry),
+		});
+		return { ok: true, entry, audit };
 	} catch (error) {
 		return failureOf(error);
 	}
@@ -109,8 +147,13 @@ export async function setGeneratedStatus(
 /** Removes a generated skill: its `SKILL.md`, its directory and its manifest entry. Nothing else is touched. */
 export async function removeGeneratedSkill(storeDir: string, name: string): Promise<RemoveResult> {
 	try {
-		await removeSkill(storeDir, name);
-		return { ok: true, name };
+		const entry = await removeSkill(storeDir, name);
+		const audit = appendAudit(storeDir, {
+			ts: new Date().toISOString(),
+			action: "delete",
+			...auditFieldsOf(entry),
+		});
+		return { ok: true, name, audit };
 	} catch (error) {
 		return failureOf(error);
 	}
@@ -129,7 +172,7 @@ async function writeSkill(
 	storeDir: string,
 	skill: AutoSkill,
 	nowIso: string,
-): Promise<GeneratedEntry> {
+): Promise<{ action: WriteAction; entry: GeneratedEntry }> {
 	if (!isSlug(skill.name)) throw new StoreError("invalid_name", SLUG_RULE);
 	const problem = inputProblem(skill, nowIso);
 	if (problem !== undefined) throw new StoreError("invalid_input", `${problem} is invalid`);
@@ -146,13 +189,20 @@ async function writeSkill(
 		generated_at: nowIso,
 		source_ids: [...skill.source_ids],
 		stale: skill.stale,
+		description: skill.description,
+		applies_when: {
+			task_types: [...skill.applies_when.task_types],
+			scope_globs: [...skill.applies_when.scope_globs],
+			error_signatures: [...skill.applies_when.error_signatures],
+		},
+		signature_hash: skill.signature_hash,
 	};
 
 	await writeManifest(storeDir, [...entries.filter((other) => other.name !== entry.name), entry]);
 	const dir = join(storeDir, skill.name);
 	await mkdir(dir, { recursive: true, mode: 0o700 });
 	await writeAtomic(join(dir, SKILL_FILE), renderSkill(skill, entry));
-	return entry;
+	return { action: prior === undefined ? "created" : "updated", entry };
 }
 
 async function setStatus(
@@ -181,12 +231,13 @@ async function setStatus(
 	return entry;
 }
 
-async function removeSkill(storeDir: string, name: string): Promise<void> {
+async function removeSkill(storeDir: string, name: string): Promise<GeneratedEntry> {
 	if (!isSlug(name)) throw new StoreError("invalid_name", SLUG_RULE);
 
 	const entries = await readManifest(storeDir);
 	await assertOwnedOrAbsent(storeDir, name, entries);
-	if (!entries.some((entry) => entry.name === name)) {
+	const removed = entries.find((entry) => entry.name === name);
+	if (removed === undefined) {
 		throw new StoreError("not_found", "no generated skill with that name");
 	}
 
@@ -204,6 +255,7 @@ async function removeSkill(storeDir: string, name: string): Promise<void> {
 		storeDir,
 		entries.filter((entry) => entry.name !== name),
 	);
+	return removed;
 }
 
 /** The manifest's entries. Missing manifest: none. Unreadable, unparseable or off-schema: `manifest_corrupt`, never replaced. */
@@ -222,8 +274,11 @@ async function readManifest(storeDir: string): Promise<GeneratedEntry[]> {
 	} catch {
 		throw new StoreError("manifest_corrupt", "manifest.json is not valid JSON");
 	}
+	if (isRecord(raw) && raw.schema === 1) {
+		throw new StoreError("manifest_corrupt", "manifest.json is schema 1; expected schema 2");
+	}
 	if (!isRecord(raw) || raw.schema !== MANIFEST_SCHEMA || !Array.isArray(raw.skills)) {
-		throw new StoreError("manifest_corrupt", "manifest.json does not match schema 1");
+		throw new StoreError("manifest_corrupt", "manifest.json does not match schema 2");
 	}
 	const entries: GeneratedEntry[] = [];
 	for (const item of raw.skills) {
@@ -240,12 +295,30 @@ async function readManifest(storeDir: string): Promise<GeneratedEntry[]> {
 
 function parseEntry(raw: unknown): GeneratedEntry | undefined {
 	if (!isRecord(raw)) return undefined;
-	const { name, status, version, content_hash, generated_at, source_ids, stale } = raw;
+	const {
+		name,
+		status,
+		version,
+		content_hash,
+		generated_at,
+		source_ids,
+		stale,
+		description,
+		applies_when,
+		signature_hash,
+	} = raw;
 	if (!isSlug(name) || !isStatus(status) || raw.generated_by !== "auto") return undefined;
 	if (typeof version !== "number" || !Number.isInteger(version) || version < 1) return undefined;
 	if (typeof content_hash !== "string" || !HEX64_RE.test(content_hash)) return undefined;
 	if (typeof generated_at !== "string" || !ISO_UTC_RE.test(generated_at)) return undefined;
 	if (!isStringList(source_ids) || typeof stale !== "boolean") return undefined;
+	if (!isSingleLine(description) || !isAppliesWhen(applies_when)) return undefined;
+	if (
+		signature_hash !== undefined &&
+		(typeof signature_hash !== "string" || !HEX32_RE.test(signature_hash))
+	) {
+		return undefined;
+	}
 	return {
 		name,
 		status,
@@ -255,6 +328,9 @@ function parseEntry(raw: unknown): GeneratedEntry | undefined {
 		generated_at,
 		source_ids,
 		stale,
+		description,
+		applies_when,
+		...(typeof signature_hash === "string" ? { signature_hash } : {}),
 	};
 }
 
@@ -331,6 +407,7 @@ function inputProblem(skill: AutoSkill, nowIso: string): string | undefined {
 	if (!isSingleLine(skill.description)) return "description";
 	if (!isSingleLineList(skill.steps)) return "steps";
 	if (!isAppliesWhen(skill.applies_when)) return "applies_when";
+	if (!HEX32_RE.test(skill.signature_hash)) return "signature_hash";
 	if (!isSingleLineList(skill.source_ids)) return "source_ids";
 	if (!Number.isInteger(skill.version) || skill.version < 1) return "version";
 	if (typeof skill.stale !== "boolean") return "stale";
@@ -367,6 +444,17 @@ function renderSkill(skill: AutoSkill, entry: GeneratedEntry): string {
 	];
 	const body = sections.map(([heading, lines]) => `## ${heading}\n\n${lines.join("\n")}`);
 	return `${[...frontmatter, "", ...body].join("\n")}\n`;
+}
+
+function auditFieldsOf(
+	entry: GeneratedEntry,
+): Pick<AuditRecord, "name" | "version" | "content_hash" | "source_ids"> {
+	return {
+		name: entry.name,
+		version: entry.version,
+		content_hash: entry.content_hash,
+		source_ids: [...entry.source_ids],
+	};
 }
 
 function isSlug(name: unknown): name is string {

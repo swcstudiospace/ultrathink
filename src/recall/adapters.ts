@@ -114,7 +114,7 @@ export function skillsLookupToPanel(lookup: SkillsLookup): PanelEnvelope {
 					excluded.push({ ref: sanitizePanelText(row.name, REF_MAX_CHARS), reason: "filtered" });
 				else
 					items.push({
-						id: `skill:${row.name}`,
+						id: `skill:${row.target}:${row.name}`,
 						title: sanitizePanelText(row.name, TITLE_MAX_CHARS),
 						preview: sanitizePanelText(row.description, PREVIEW_MAX_CHARS),
 						source: { kind: "skill", ref: sanitizePanelText(row.name, REF_MAX_CHARS) },

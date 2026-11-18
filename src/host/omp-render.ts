@@ -16,6 +16,7 @@ import { type PlanView, projectResolution } from "./view.ts";
 import { isRecord } from "../shared.ts";
 import { renderPanel } from "../recall/panel-render.ts";
 import type { PanelEnvelope } from "../recall/panel-model.ts";
+import type { TurnPanels } from "../recall/turn-panels.ts";
 
 export const PLAN_TYPE = "ultrathink-plan";
 export const PENDING_TYPE = "ultrathink-pending";
@@ -1127,17 +1128,31 @@ function activityRows(details: unknown, p: Paint): string[] {
 	return rows;
 }
 
+/** Header label of each information panel, keyed by the TurnPanels entry it is drawn from. */
+const PANEL_LABELS: Record<keyof TurnPanels, string> = {
+	knowledge: "Greptile knowledge base",
+	lessons: "Lessons",
+	skills: "Skills",
+	substrate: "Substrate brief",
+};
+
 /**
  * The information panels of a plan, drawn under the plan rows. `details` is untrusted session data: an entry without a
  * string status, or one that fails to render, is not drawn, so a malformed panel never throws into Omp's renderer.
  */
-function panelSectionRows(panels: unknown, room: number): string[] {
+function panelSectionRows(panels: unknown, recordRef: string | undefined, room: number): string[] {
 	if (!isRecord(panels)) return [];
+	const now = Date.now();
 	const rows: string[] = [];
-	for (const panel of Object.values(panels)) {
+	for (const key of Object.keys(PANEL_LABELS) as Array<keyof TurnPanels>) {
+		const panel = panels[key];
 		if (!isRecord(panel) || typeof panel.status !== "string") continue;
 		try {
-			rows.push("", ...renderPanel(panel as unknown as PanelEnvelope, room));
+			const label = PANEL_LABELS[key];
+			rows.push(
+				"",
+				...renderPanel(panel as unknown as PanelEnvelope, room, { label, now, recordRef }),
+			);
 		} catch {
 			// not drawn: see the comment above
 		}
@@ -1158,7 +1173,7 @@ export function registerUltrathinkRenderers(pi: {
 			const graph = planViewToGraph(view);
 			const rows = (room: number) => [
 				...planRows(view, graph, options.expanded, p, theme, room),
-				...panelSectionRows(view.panels, room),
+				...panelSectionRows(view.panels, view.graphId, room),
 			];
 			return card(rows, p, {
 				border: "borderMuted",
@@ -1241,7 +1256,7 @@ export function registerUltrathinkRenderers(pi: {
 			if (!isRecord(details)) return undefined;
 			const p = paint(theme);
 			const label = p.fg("customMessageLabel", p.bold(RECALL_TYPE));
-			return card((room) => [label, ...panelSectionRows(details, room)], p, {
+			return card((room) => [label, ...panelSectionRows(details, undefined, room)], p, {
 				border: "borderMuted",
 				padY: 0,
 			});

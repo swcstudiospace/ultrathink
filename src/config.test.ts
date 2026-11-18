@@ -1501,6 +1501,32 @@ describe("swarm config", () => {
 	});
 });
 
+describe("ui config", () => {
+	const base = defaultConfig();
+	const roots: string[] = [];
+	afterEach(() => {
+		for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+	});
+
+	test("reducedMotion defaults to false", () => {
+		expect(base.ui).toEqual({ reducedMotion: false });
+		expect(loadLayerFiles(roots, undefined).ui).toEqual({ reducedMotion: false });
+	});
+
+	test("a user file turns it on", () => {
+		expect(mergeConfig({ ui: { reducedMotion: true } }, base).ui.reducedMotion).toBe(true);
+		expect(loadLayerFiles(roots, { ui: { reducedMotion: true } }).ui.reducedMotion).toBe(true);
+	});
+
+	test("a non-boolean reducedMotion keeps the lower layer's value", () => {
+		const on = mergeConfig({ ui: { reducedMotion: true } }, base);
+		for (const value of ["yes", 1, null]) {
+			expect(mergeConfig({ ui: { reducedMotion: value } }, on).ui.reducedMotion).toBe(true);
+			expect(mergeConfig({ ui: { reducedMotion: value } }, base).ui.reducedMotion).toBe(false);
+		}
+	});
+});
+
 describe("ragflow config", () => {
 	const base = defaultConfig();
 	const roots: string[] = [];

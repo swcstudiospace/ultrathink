@@ -217,7 +217,7 @@ describe("skillsLookupToPanel", () => {
 			status: "success",
 			items: [
 				{
-					id: "skill:bun-snapshot-tests",
+					id: "skill:omp:bun-snapshot-tests",
 					title: "bun-snapshot-tests",
 					preview: "Use when snapshot tests fail.",
 					source: { kind: "skill", ref: "bun-snapshot-tests" },
@@ -238,7 +238,7 @@ describe("skillsLookupToPanel", () => {
 		);
 		expect(panel).toMatchObject({
 			status: "success",
-			items: [{ id: "skill:bun-snapshot-tests" }],
+			items: [{ id: "skill:omp:bun-snapshot-tests" }],
 			excluded: [{ ref: "lesson-draft", reason: "filtered" }],
 		});
 		expect(listed(panel).items.map((item) => item.id)).not.toContain("skill:lesson-draft");
@@ -260,7 +260,7 @@ describe("skillsLookupToPanel", () => {
 	test("a disabled skill is omitted: it never reaches the record, so it is absent from the panel", () => {
 		expect(skillsLookupToPanel(skills([skillRow({ name: "enabled-skill" })]))).toMatchObject({
 			status: "success",
-			items: [{ id: "skill:enabled-skill" }],
+			items: [{ id: "skill:omp:enabled-skill" }],
 			excluded: [],
 		});
 	});

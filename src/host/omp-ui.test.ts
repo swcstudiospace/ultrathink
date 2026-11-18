@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import type { ModelResolution } from "./engine.ts";
+import { renderGraph } from "./omp-graph.ts";
 import { paint, truncateToWidth, visibleWidth } from "./omp-paint.ts";
 import {
 	type BarState,
@@ -433,6 +434,61 @@ describe("createBarComponent", () => {
 		expect(second).not.toBe(first);
 		expect(second).toHaveLength(1);
 		expect(component.render(80)).toBe(second);
+	});
+});
+
+describe("ui.reducedMotion", () => {
+	const graphNodes = [{ id: "a", title: "Design the schema", kind: "analysis", dependsOn: [] }];
+
+	function runningStore() {
+		const store = createBarStore();
+		store.begin(1_000);
+		store.apply({ type: "begin", at: 1_000, sessionId: "s", engine: "grok", skill: "gsd-quick" });
+		store.apply({ type: "graph", at: 2_000, total: 1, nodes: graphNodes });
+		store.apply({
+			type: "node",
+			at: 2_500,
+			phase: "start",
+			id: "a",
+			title: "Design the schema",
+			kind: "analysis",
+			index: 0,
+			total: 1,
+		});
+		return store;
+	}
+
+	test("true drops motion, false animates, a missing value means false", () => {
+		const store = runningStore();
+		const model = store.get().model;
+		if (!model) throw new Error("expected a live graph model");
+		const at = 2_600;
+		const bar = (reducedMotion?: boolean) =>
+			createBarComponent(
+				store,
+				fakeTheme(),
+				() => at,
+				() => 40,
+				reducedMotion,
+			).render(120);
+		expect(bar(true).slice(0, -1)).toEqual(
+			renderGraph(model, fakeTheme(), 120, {
+				now: at,
+				steps: "active",
+				animate: false,
+				maxRows: 18,
+			}),
+		);
+		expect(bar(false).slice(0, -1)).toEqual(
+			renderGraph(model, fakeTheme(), 120, {
+				now: at,
+				steps: "active",
+				animate: true,
+				maxRows: 18,
+			}),
+		);
+		expect(bar()).toEqual(bar(false));
+		expect(bar(true)).not.toEqual(bar(false));
 	});
 });
 

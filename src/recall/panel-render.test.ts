@@ -8,7 +8,13 @@ import { type PanelRenderContext, renderPanel } from "./panel-render.ts";
 
 const T0 = 1_700_000_000_000;
 const WIDE = 400;
-const CTX: PanelRenderContext = { now: 1_000 + 65_000, recordRef: "session-record/7f3a" };
+const KNOWLEDGE = "Greptile knowledge base";
+const CTX: PanelRenderContext = {
+	label: KNOWLEDGE,
+	now: 1_000 + 65_000,
+	recordRef: "session-record/7f3a",
+};
+const HEADER: PanelRenderContext = { label: KNOWLEDGE };
 
 const ITEM_ROW = "  item ";
 const EXCLUDED_ROW = "  excluded ";
@@ -100,12 +106,31 @@ describe("renderPanel states", () => {
 	});
 
 	test("loading without a render time says the elapsed time is unknown", () => {
-		const [row] = renderPanel(LOADING, WIDE);
+		const [row] = renderPanel(LOADING, WIDE, HEADER);
 		expect(row).toContain("elapsed unknown");
 	});
 
+	test("loading shows the elapsed time from the supplied clock", () => {
+		const [row] = renderPanel(LOADING, WIDE, {
+			label: "Lessons",
+			now: LOADING.startedAt + 3_723_000,
+		});
+		expect(row).toContain("[LOADING] Lessons ");
+		expect(row).toContain("elapsed 62:03");
+	});
+
+	test.each([
+		["knowledge", "Greptile knowledge base"],
+		["lessons", "Lessons"],
+		["skills", "Skills"],
+		["substrate", "Substrate brief"],
+	])("the %s panel header is its source label", (_source, label) => {
+		expect(renderPanel(SUCCESS, WIDE, { label })[0]).toBe(`[SUCCESS] ${label}`);
+		expect(renderPanel(ERROR, WIDE, { label })[0]).toBe(`[ERROR] ${label}`);
+	});
+
 	test("success lists each item with its fields and score only when it carries one", () => {
-		const rows = renderPanel(SUCCESS, WIDE);
+		const rows = renderPanel(SUCCESS, WIDE, HEADER);
 		expect(rows[0]).toBe("[SUCCESS] Greptile knowledge base");
 		const [withScore, withoutScore] = rowsStarting(rows, ITEM_ROW);
 		expect(withScore).toContain("[returned] doc:docs/a.md");
@@ -119,7 +144,7 @@ describe("renderPanel states", () => {
 	});
 
 	test("empty shows the reason label, the reasons that removed results, and the stage ladder", () => {
-		const rows = renderPanel(EMPTY, WIDE);
+		const rows = renderPanel(EMPTY, WIDE, HEADER);
 		expect(rows[0]).toBe("[EMPTY] Greptile knowledge base");
 		expect(rows).toContain("  reason: below_floor — every candidate scored below the floor");
 		expect(rows).toContain("  removed by: below_floor, filtered");
@@ -130,7 +155,7 @@ describe("renderPanel states", () => {
 	});
 
 	test("partial shows the returned item and the remainder reason", () => {
-		const rows = renderPanel(PARTIAL, WIDE);
+		const rows = renderPanel(PARTIAL, WIDE, HEADER);
 		expect(rows[0]).toBe("[PARTIAL] Greptile knowledge base");
 		expect(rows).toContain("  remainder: budget_cap — the budget cap stopped the lookup");
 		expect(rowsStarting(rows, ITEM_ROW)).toHaveLength(1);
@@ -158,6 +183,7 @@ describe("renderPanel states", () => {
 				stages: [],
 			},
 			WIDE,
+			HEADER,
 		);
 		expect(rows).toContain("  retry: not scheduled");
 		expect(rows).toContain("  record: not attached");
@@ -172,7 +198,7 @@ describe("renderPanel rows", () => {
 	] as [string, PanelEnvelope, number, number, number][])(
 		"header counts match the list lengths for %s",
 		(_name, panel, returned, excluded, missing) => {
-			const rows = renderPanel(panel, WIDE);
+			const rows = renderPanel(panel, WIDE, HEADER);
 			expect(rows).toContain(
 				`  counts: requested ${returned + excluded + missing} · returned ${returned} · excluded ${excluded} · missing ${missing}`,
 			);
@@ -183,26 +209,26 @@ describe("renderPanel rows", () => {
 	);
 
 	test("excluded and missing rows show their closed-enum reasons as text", () => {
-		expect(renderPanel(SUCCESS, WIDE)).toEqual(
+		expect(renderPanel(SUCCESS, WIDE, HEADER)).toEqual(
 			expect.arrayContaining([
 				"  excluded docs/b.md · reason: cooldown",
 				"  missing  docs/c.md · reason: not_generated",
 			]),
 		);
-		expect(renderPanel(EMPTY, WIDE)).toEqual(
+		expect(renderPanel(EMPTY, WIDE, HEADER)).toEqual(
 			expect.arrayContaining([
 				"  excluded docs/d.md · reason: below_floor",
 				"  excluded docs/e.md · reason: filtered",
 			]),
 		);
-		expect(renderPanel(PARTIAL, WIDE)).toContain(
+		expect(renderPanel(PARTIAL, WIDE, HEADER)).toContain(
 			"  missing  docs/f.md · reason: source_unavailable",
 		);
 	});
 
 	test("stage rows appear only when the envelope carries stages", () => {
-		expect(rowsStarting(renderPanel(PARTIAL, WIDE), STAGE_ROW)).toEqual([]);
-		expect(rowsStarting(renderPanel(SUCCESS, WIDE), STAGE_ROW)).toHaveLength(STAGES.length);
+		expect(rowsStarting(renderPanel(PARTIAL, WIDE, HEADER), STAGE_ROW)).toEqual([]);
+		expect(rowsStarting(renderPanel(SUCCESS, WIDE, HEADER), STAGE_ROW)).toHaveLength(STAGES.length);
 	});
 
 	test("a long preview is cut to the width with an ellipsis", () => {
@@ -210,7 +236,7 @@ describe("renderPanel rows", () => {
 			...SUCCESS,
 			items: [item("doc:long.md", { preview: "alpha beta gamma ".repeat(30) })],
 		};
-		const row = rowsStarting(renderPanel(long, 60), ITEM_ROW)[0] ?? "";
+		const row = rowsStarting(renderPanel(long, 60, HEADER), ITEM_ROW)[0] ?? "";
 		expect(row.endsWith("…")).toBe(true);
 		expect(visibleWidth(row)).toBe(60);
 		expect(row).toContain("alpha beta");
@@ -230,7 +256,7 @@ describe("renderPanel rows", () => {
 	});
 
 	test("a width below one column renders no rows", () => {
-		expect(renderPanel(SUCCESS, 0)).toEqual([]);
+		expect(renderPanel(SUCCESS, 0, HEADER)).toEqual([]);
 	});
 
 	test("line breaks and terminal escapes in untrusted text neither split nor style a row", () => {
@@ -240,7 +266,7 @@ describe("renderPanel rows", () => {
 			excluded: [{ ref: "docs/a\n\u001b[2J\u001b[31mb.md", reason: "cooldown" }],
 			missing: [],
 		};
-		const rows = renderPanel(hostile, WIDE);
+		const rows = renderPanel(hostile, WIDE, HEADER);
 		expect(rows.some((line) => line.includes("\n") || line.includes("\u001b"))).toBe(false);
 		expect(rowsStarting(rows, EXCLUDED_ROW)).toEqual([
 			"  excluded docs/a [2J [31mb.md · reason: cooldown",
