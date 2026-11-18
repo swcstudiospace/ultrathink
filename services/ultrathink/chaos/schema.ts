@@ -98,7 +98,7 @@ const ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 const HYPOTHESIS_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const METRIC_PATTERN = /^[a-zA-Z_:][a-zA-Z0-9_:]*$/;
 const LABEL_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
-const REQUEST_PATH_PATTERN = /^\/(?!\/)\S*$/;
+const REQUEST_PATH_PATTERN = /^\/(?!\/)[^\s:\\]*$/;
 
 const MAX_HYPOTHESES = 20;
 const MAX_REQUESTS = 500;
