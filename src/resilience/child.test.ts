@@ -57,8 +57,13 @@ function alive(pid: number): boolean {
 }
 
 async function waitDead(pid: number): Promise<boolean> {
-	await pollUntil(() => !alive(pid));
-	return !alive(pid);
+	// The verdict is the observation that decided it. A second read after the poll can see a reused or unreadable pid and report it alive.
+	let dead = false;
+	await pollUntil(() => {
+		dead = !alive(pid);
+		return dead;
+	});
+	return dead;
 }
 
 describe("runChild basics", () => {
