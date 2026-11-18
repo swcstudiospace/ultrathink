@@ -751,20 +751,32 @@ describe("judging and compacting", () => {
 
 		expect(done).toEqual([1, 2, 3, 4]);
 		for (const outcome of report.outcomes) {
-			expect(outcome.verdict).toBeDefined();
 			expect(outcome.record).toBeUndefined();
 			expect(outcome.specXml).toBeUndefined();
 			expect(outcome.context).toBe("");
 			expect(outcome.rows).toEqual([]);
 			expect(outcome.expected).toBe("");
-			expect(outcome.state).toBeDefined();
 		}
-		expect(report.outcomes[0]?.verdict).toMatchObject({
-			planned: true,
+		// No fault is injected, so the plan implies no finding on any prompt: the three with text plan, the empty one is skipped.
+		const noFinding = {
+			allowedAbort: false,
 			terminal: [],
+			original: [],
+			uplift: [],
+			degraded: [],
+			cot: [],
 			isolation: [],
-		});
-		expect(report.outcomes[1]?.verdict?.planned).toBe(false);
+			calls: [],
+		};
+		expect(report.outcomes.map((outcome) => outcome.verdict)).toMatchObject([
+			{ ...noFinding, planned: true },
+			{ ...noFinding, planned: false },
+			{ ...noFinding, planned: true },
+			{ ...noFinding, planned: true },
+		]);
+		for (const outcome of report.outcomes) {
+			expect(outcome.state).toMatchObject({ bad: [], stale: [] });
+		}
 	});
 
 	test("without compact the judged outcome keeps its record", async () => {
@@ -773,8 +785,12 @@ describe("judging and compacting", () => {
 
 		const report = await runPrompts(scenario, { ...deps, judge: createJudge({}) });
 
-		expect(report.outcomes[0]?.verdict).toBeDefined();
-		expect(report.outcomes[0]?.record).toBeDefined();
+		expect(report.outcomes[0]?.verdict).toMatchObject({
+			planned: true,
+			terminal: [],
+			isolation: [],
+		});
+		expect(report.outcomes[0]?.record?.result.source).toBe("llm");
 	});
 });
 
