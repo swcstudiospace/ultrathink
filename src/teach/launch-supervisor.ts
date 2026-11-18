@@ -13,6 +13,7 @@
  * process group, as the direct launch did. Never throws; always exits 0.
  */
 import { type ChildProcess, spawn } from "node:child_process";
+import type { TimerPort } from "../shared.ts";
 import { appendRun } from "./runlog.ts";
 
 interface LaunchTask {
@@ -48,15 +49,9 @@ function parseTask(text: string | undefined): LaunchTask | undefined {
 /** Longest the observe command may run before it is killed. The command bounds its own distiller at 90 seconds, so only a hang reaches this. */
 const LAUNCH_DEADLINE_MS = 3 * 60_000;
 
-/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
-export type TimerPort = {
-	setTimeout(fn: () => void, ms: number): unknown;
-	clearTimeout(handle: unknown): void;
-};
-
 const platformTimers: TimerPort = {
 	setTimeout: (fn, ms) => setTimeout(fn, ms),
-	clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout | undefined),
+	clearTimeout,
 };
 
 /**

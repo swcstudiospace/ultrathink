@@ -431,7 +431,16 @@ export async function installInsightSkill(
 	mutationInFlight = true;
 	try {
 		const raw = await runTeachCommand(
-			["promote", admitted.moment.id, "--target", "omp", "--install", "--json"],
+			[
+				"promote",
+				admitted.moment.id,
+				"--target",
+				"omp",
+				"--install",
+				"--expect-fingerprint",
+				preview.fingerprint,
+				"--json",
+			],
 			depsFor(admitted.ctx, runtime),
 		);
 		return normalizeInstall(raw.text, admitted, draft.name);
