@@ -703,7 +703,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		]);
 	});
 
-	test("after Ship is recorded, open is refused unless it is the merge gate's reconcile, and resolve and recordAudit are refused and write nothing", () => {
+	test("after Ship is recorded, open is refused unless it is the merge gate's reconcile, resolve is refused unless the entry has that origin, and recordAudit is refused and writes nothing", () => {
 		const { store, saves } = countingStore(dir);
 		reachVerify("claude", store);
 		expect(confirmShip("claude", passing(), CONNECTED, store).accepted).toBe(true);
@@ -721,9 +721,14 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		]);
 		expect(saves()).toBe(before);
 		expect(storedRecord(dir, "claude")?.humanItems).toEqual([
-			{ id: "h2", owner: "alice", state: "open" },
+			{ id: "h2", owner: "alice", state: "open", afterShip: true },
 		]);
 		expect(storedRecord(dir, "claude")?.audits).toBeUndefined();
+		const cleared = resolve("claude", "h2", { state: "done", evidenceId: "e2" }, store);
+		expect(cleared.accepted).toBe(true);
+		expect(storedRecord(dir, "claude")?.humanItems).toEqual([
+			{ id: "h2", owner: "alice", state: "done", evidenceId: "e2", afterShip: true },
+		]);
 	});
 
 	test("after Ship, a failing re-record of the audit the close cites is refused and the pass stands", () => {
