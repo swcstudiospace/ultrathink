@@ -312,6 +312,26 @@ describe("readInsightSnapshot Jev scope", () => {
 		})();
 	});
 
+	test("probability rows past the per-decision cap are disclosed as a limit, not a failed read", () => {
+		return (async () => {
+			const entries = Array.from({ length: 40 }, (_, index) => [`question_${index}`, 0.5]);
+			writeSessionRecord("sess-over", [decision({ probabilities: Object.fromEntries(entries) })]);
+			writeSessionRecord("sess-exact", [
+				decision({ probabilities: Object.fromEntries(entries.slice(0, 32)) }),
+			]);
+			const over = await readInsightSnapshot(scopeFor("sess-over"), makeCtx());
+			expect(over.decisions[0]?.questions.length).toBe(32);
+			expect(Object.keys(over.decisions[0]?.probabilities ?? {}).length).toBe(32);
+			expect(over.limitations).toContain(
+				"Only the first 32 probability rows per decision are shown.",
+			);
+			expect(over.partial).toBe(false);
+			const exact = await readInsightSnapshot(scopeFor("sess-exact"), makeCtx());
+			expect(exact.decisions[0]?.questions.length).toBe(32);
+			expect(exact.limitations.some((line) => line.includes("probability rows"))).toBe(false);
+		})();
+	});
+
 	test("zero attempts, latency and p survive; recorded p is never recomputed", () => {
 		return (async () => {
 			writeSessionRecord("sess-a", [

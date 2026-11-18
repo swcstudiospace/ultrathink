@@ -6,6 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { carrierPathFor } from "../src/host/carrier.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const HOOK_SCRIPT = "hooks/muse-prompt";
@@ -76,9 +77,11 @@ describe("Muse UserPromptSubmit hook", () => {
 				expect(output.hookSpecificOutput.additionalContext).toContain(specPath);
 				expect(existsSync(specPath)).toBe(true);
 
-				const record = JSON.parse(
-					readFileSync(join(stateDir, `last-plan.${SESSION_ID}.json`), "utf8"),
-				) as { host: string; sessionId: string; specPath: string };
+				const record = JSON.parse(readFileSync(carrierPathFor(stateDir, SESSION_ID), "utf8")) as {
+					host: string;
+					sessionId: string;
+					specPath: string;
+				};
 				expect(record).toMatchObject({ host: "muse", sessionId: SESSION_ID, specPath });
 			} finally {
 				rmSync(home, { recursive: true, force: true });

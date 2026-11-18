@@ -42,6 +42,8 @@ const COLLAPSED_GRAPH_ROWS = 18;
 /** Below this width the border and padding leave no room for text, so rows render unframed. */
 const MIN_FRAME_WIDTH = 8;
 const INDENT = "  ";
+/** Grapheme segmenter shared by row wrapping, so emoji clusters and combining marks never split. */
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 /** Newlines, tabs and other non-space whitespace in free text (titles, answers, API errors) would break a one-line row. */
 const NON_SPACE_WHITESPACE = /[^\S ]+/g;
 const TRACKING_COLORS = { complete: "success", partial: "warning", failed: "error" } as const;
@@ -573,7 +575,6 @@ function decisionRow(decision: InsightCardDecision): string {
 function wrapInsightLines(lines: string[], room: number): string[] {
 	const rows: string[] = [];
 	const width = Math.max(1, room);
-	const segments = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 	for (const line of lines) {
 		let row = "";
 		let cells = 0;
@@ -588,7 +589,7 @@ function wrapInsightLines(lines: string[], room: number): string[] {
 				row += " ";
 				cells += 1;
 			}
-			for (const { segment } of segments.segment(word)) {
+			for (const { segment } of GRAPHEMES.segment(word)) {
 				const size = visibleWidth(segment);
 				if (cells + size > width && row !== "") {
 					rows.push(row);
@@ -605,79 +606,96 @@ function wrapInsightLines(lines: string[], room: number): string[] {
 	return rows;
 }
 
-function insightRows(details: unknown, expanded: boolean, p: Paint, room: number): string[] {
-	// the frame truncates every row to the room (width - 4), so the not-live marker rides on the
-	// label row: after time/scope it vanishes at common widths and the card reads as live state.
-	const label = p.fg("customMessageLabel", p.bold(`${INSIGHT_TYPE} · captured — not live`));
-	const fallback = [
-		`${label}`,
-		"Insight snapshot unavailable. Open /ultrathink-ui for the live view.",
-	];
-	const card = asInsightCard(details);
-	if (card === undefined) return fallback;
-	const scopeLine =
-		"Project: " +
-		card.project +
-		" · Session: " +
-		card.session +
-		" · Snapshot: " +
-		(insightTimestamp(card.at) ?? "unavailable");
+/** Text lines shared by the compact and expanded insight cards, built once per render from the card. */
+interface InsightCardLines {
+	scope: string;
+	latest: string;
+	lesson: string;
+	counts: string;
+	/** Autonomy counts with the partial-read warning leading when the read failed. */
+	autonomy: string;
+	/** Policy settings the compact autonomy row trails with; the expanded footer restates them as policy. */
+	settings: string;
+	policy: string;
+}
+
+function insightCardLines(card: InsightCard): InsightCardLines {
 	const latest = card.decisions[0];
-	const latestLine =
-		latest === undefined
-			? "No saved Jev decisions for this session"
-			: "Latest decision: " +
-				latest.point +
-				" · " +
-				latest.outcome +
-				" · " +
-				latest.action +
-				" · P " +
-				(latest.p === undefined ? "Not recorded" : formatP(latest.p));
 	const first = card.lessons[0];
 	const omittedLessons = Math.max(
 		0,
 		card.counts.reduce((total, entry) => total + entry.total, 0) - card.lessons.length,
 	);
-	const lessonLine =
-		first === undefined
-			? "No lessons recorded for this project"
-			: "Moments: " +
-				card.lessons.length +
-				" shown" +
-				(omittedLessons > 0 ? ` · ${omittedLessons} omitted from card` : "") +
-				" · " +
-				first.name +
-				" · " +
-				first.status;
-	const autonomyCounts = `Autonomy: ${card.eligible} eligible · ${card.promoted} promoted`;
-	const autonomySettings =
-		" · capture " +
-		card.policy.capture +
-		" · recall " +
-		(card.policy.recall ? `on (${card.policy.recallLimit}/${card.policy.recallChars})` : "off") +
-		" · auto-promote " +
-		(card.policy.autoPromote ? "on" : "off") +
-		" after " +
-		card.policy.promoteAfter;
-	// a failed read must never read as ordinary missing history: the short warning leads the row so
-	// it survives truncation, while the settings trail as optional text that narrow rows may clip
-	const autonomyLine =
-		(card.partial ? `${PARTIAL_READ_WARNING} · ` : "") + autonomyCounts + autonomySettings;
-	const countsLine =
-		card.counts.length === 0
-			? "Counts (shown): none recorded"
-			: "Counts (shown): " +
-				card.counts.map((entry) => `${entry.total} ${entry.status}`).join(" · ");
-	if (!expanded) {
-		const rows = [`${label}`, scopeLine, latestLine, lessonLine, autonomyLine];
-		// Counts lead on the final row so they survive truncation: real snapshots always carry
-		// limitation notes, so a separate counts row never fits the compact budget.
-		const note = pickLimitations(card.limitations, 1)[0];
-		rows.push(countsLine + (note === undefined ? "" : ` · ${note}`));
-		return rows.slice(0, INSIGHT_COMPACT_ROWS);
-	}
-	const rows = [`${label}`, scopeLine, latestLine, lessonLine];
+	// a failed read must never read as ordinary missing history: the short warning leads the autonomy
+	// row so it survives truncation, while the settings trail as optional text that narrow rows may clip
+	const warning = card.partial ? `${PARTIAL_READ_WARNING} · ` : "";
+	const recall = card.policy.recall
+		? `on (${card.policy.recallLimit}/${card.policy.recallChars})`
+		: "off";
+	return {
+		scope:
+			"Project: " +
+			card.project +
+			" · Session: " +
+			card.session +
+			" · Snapshot: " +
+			(insightTimestamp(card.at) ?? "unavailable"),
+		latest:
+			latest === undefined
+				? "No saved Jev decisions for this session"
+				: "Latest decision: " +
+					latest.point +
+					" · " +
+					latest.outcome +
+					" · " +
+					latest.action +
+					" · P " +
+					(latest.p === undefined ? "Not recorded" : formatP(latest.p)),
+		lesson:
+			first === undefined
+				? "No lessons recorded for this project"
+				: "Moments: " +
+					card.lessons.length +
+					" shown" +
+					(omittedLessons > 0 ? ` · ${omittedLessons} omitted from card` : "") +
+					" · " +
+					first.name +
+					" · " +
+					first.status,
+		counts:
+			card.counts.length === 0
+				? "Counts (shown): none recorded"
+				: "Counts (shown): " +
+					card.counts.map((entry) => `${entry.total} ${entry.status}`).join(" · "),
+		autonomy: `${warning}Autonomy: ${card.eligible} eligible · ${card.promoted} promoted`,
+		settings:
+			" · capture " +
+			card.policy.capture +
+			" · recall " +
+			recall +
+			" · auto-promote " +
+			(card.policy.autoPromote ? "on" : "off") +
+			" after " +
+			card.policy.promoteAfter,
+		policy:
+			"Effective policy: teaching " +
+			(card.policy.teaching ? "on" : "off") +
+			" · capture " +
+			card.policy.capture +
+			" · recall " +
+			recall +
+			" · auto-promote " +
+			(card.policy.autoPromote ? "on" : "off") +
+			" after " +
+			card.policy.promoteAfter +
+			" · Jev " +
+			(card.policy.jevEnabled ? "on" : "off"),
+	};
+}
+
+/** Detail rows: recorded Jev decisions, lessons and flagged skills, each section capped at INSIGHT_SUMMARY_CAP. */
+function buildDetailRows(card: InsightCard, room: number): string[] {
+	const rows: string[] = [];
 	const jevShown = card.decisions.slice(0, INSIGHT_SUMMARY_CAP);
 	for (const decision of jevShown) rows.push(decisionRow(decision));
 	if (card.decisions.length > jevShown.length)
@@ -711,29 +729,46 @@ function insightRows(details: unknown, expanded: boolean, p: Paint, room: number
 	if (flagged.length > skillsShown.length) {
 		rows.push(`  ${flagged.length - skillsShown.length} more skills omitted — open /ultrathink-ui`);
 	}
-	// the footer autonomy row keeps the recorded counts and the partial-read warning but drops the
-	// settings: the "Effective policy" row below already states them, and fewer fixed rows keep the
-	// footer (teaching state + limitations) inside the expanded budget at narrow widths
-	const footer = [(card.partial ? `${PARTIAL_READ_WARNING} · ` : "") + autonomyCounts, countsLine];
-	footer.push(
-		"Effective policy: teaching " +
-			(card.policy.teaching ? "on" : "off") +
-			" · capture " +
-			card.policy.capture +
-			" · recall " +
-			(card.policy.recall ? `on (${card.policy.recallLimit}/${card.policy.recallChars})` : "off") +
-			" · auto-promote " +
-			(card.policy.autoPromote ? "on" : "off") +
-			" after " +
-			card.policy.promoteAfter +
-			" · Jev " +
-			(card.policy.jevEnabled ? "on" : "off"),
-	);
+	return wrapInsightLines(rows, room);
+}
+
+/** Footer rows: autonomy counts, recorded counts, effective policy, then up to two limitations; wrapped to the room. */
+function buildFooterRows(card: InsightCard, lines: InsightCardLines, room: number): string[] {
+	const footer = [lines.autonomy, lines.counts, lines.policy];
 	for (const limitation of pickLimitations(card.limitations, 2))
 		footer.push(`Limitation: ${limitation}`);
-	const identity = [rows[0]!, ...wrapInsightLines(rows.slice(1, 4), room)];
-	const detailsRows = wrapInsightLines(rows.slice(4), room);
-	const footerRows = wrapInsightLines(footer, room);
+	return wrapInsightLines(footer, room);
+}
+
+function insightRows(details: unknown, expanded: boolean, p: Paint, room: number): string[] {
+	// the frame truncates every row to the room (width - 4), so the not-live marker rides on the
+	// label row: after time/scope it vanishes at common widths and the card reads as live state.
+	const label = p.fg("customMessageLabel", p.bold(`${INSIGHT_TYPE} · captured — not live`));
+	const fallback = [
+		`${label}`,
+		"Insight snapshot unavailable. Open /ultrathink-ui for the live view.",
+	];
+	const card = asInsightCard(details);
+	if (card === undefined) return fallback;
+	const lines = insightCardLines(card);
+	if (!expanded) {
+		const rows = [
+			`${label}`,
+			lines.scope,
+			lines.latest,
+			lines.lesson,
+			lines.autonomy + lines.settings,
+		];
+		// Counts lead on the final row so they survive truncation: real snapshots always carry
+		// limitation notes, so a separate counts row never fits the compact budget.
+		const note = pickLimitations(card.limitations, 1)[0];
+		rows.push(lines.counts + (note === undefined ? "" : ` · ${note}`));
+		return rows.slice(0, INSIGHT_COMPACT_ROWS);
+	}
+	// the label stays unwrapped; scope, latest decision and lesson lines wrap to the room
+	const identity = [label, ...wrapInsightLines([lines.scope, lines.latest, lines.lesson], room)];
+	const detailsRows = buildDetailRows(card, room);
+	const footerRows = buildFooterRows(card, lines, room);
 	// Records keep their rows; the footer (teaching state + limitations) takes bounded leftover
 	// space but always stays reachable: both bookends are capped so their sum can never overflow
 	// the 24-row budget, and when that saturation would swallow omitted details entirely, one
@@ -851,12 +886,12 @@ function wrapRow(text: string, room: number): string[] {
 			current = word;
 			continue;
 		}
-		for (const point of Array.from(word)) {
-			if (current !== "" && visibleWidth(`${current}${point}`) > width) {
+		for (const { segment } of GRAPHEMES.segment(word)) {
+			if (current !== "" && visibleWidth(`${current}${segment}`) > width) {
 				lines.push(current);
-				current = point;
+				current = segment;
 			} else {
-				current = `${current}${point}`;
+				current = `${current}${segment}`;
 			}
 		}
 	}

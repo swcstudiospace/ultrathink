@@ -4,16 +4,18 @@ import { writeSync } from "node:fs";
 import type { ModelResolution } from "./engine.ts";
 import type { ActivityNotice } from "./activity-notice.ts";
 
-export type StageName =
-	| "brief"
-	| "uplift"
-	| "think"
-	| "knowledge"
-	| "clarify"
-	| "plan"
-	| "track"
-	| "tot"
-	| "state";
+const STAGE_NAMES = [
+	"brief",
+	"uplift",
+	"think",
+	"knowledge",
+	"clarify",
+	"plan",
+	"track",
+	"tot",
+	"state",
+] as const;
+export type StageName = (typeof STAGE_NAMES)[number];
 
 /**
  * `modelResolution` on `begin` and `end` is the selection's safe record (§9 path 4), not a new event kind: begin names
@@ -96,76 +98,111 @@ const EVENT_TYPES: Record<string, true> = {
 	activity: true,
 	end: true,
 };
-/** Sink writing JSON lines to the fd named by ULTRATHINK_PROGRESS_FD (>= 3). Never touches stdout; swallows errors. */
+
+const MAX_WRITE_STALLS = 100;
+
+/** `dropped` counts the events the fd refused: closed, gone, or still full after bounded retries. */
+type FdProgressSink = ProgressSink & { readonly dropped: number };
+
+/** Writes all of `buffer` to `fd`: a partial write continues where it stopped, and EAGAIN (a full non-blocking pipe) retries. */
+function writeAll(write: typeof writeSync, fd: number, buffer: Buffer): boolean {
+	let offset = 0;
+	let stalls = 0;
+	while (offset < buffer.length) {
+		try {
+			const written = write(fd, buffer, offset, buffer.length - offset);
+			if (written > 0) {
+				offset += written;
+				stalls = 0;
+				continue;
+			}
+		} catch (error) {
+			if (!(error instanceof Error && "code" in error && error.code === "EAGAIN")) return false;
+		}
+		if (++stalls > MAX_WRITE_STALLS) return false;
+	}
+	return true;
+}
+
+/**
+ * Sink writing JSON lines to the fd named by ULTRATHINK_PROGRESS_FD (>= 3). Never touches stdout and never throws: a
+ * line the fd refuses is counted in `dropped`. `write` is the test seam for the fd write.
+ */
 export function createFdProgressSink(
 	env: Record<string, string | undefined> = process.env,
-): ProgressSink | undefined {
+	write: typeof writeSync = writeSync,
+): FdProgressSink | undefined {
 	const raw = env.ULTRATHINK_PROGRESS_FD?.trim();
 	if (!raw || !/^\d+$/.test(raw)) return undefined;
 	const fd = Number(raw);
 	if (!Number.isSafeInteger(fd) || fd < 3) return undefined;
-	return (event) => {
-		try {
-			writeSync(fd, `${JSON.stringify(event)}\n`);
-		} catch {
-			// reason: Parent gone (EPIPE) or fd closed: progress is best-effort.
-		}
+	let dropped = 0;
+	const sink = (event: ProgressEvent): void => {
+		if (!writeAll(write, fd, Buffer.from(`${JSON.stringify(event)}\n`))) dropped++;
 	};
+	return Object.defineProperty(sink, "dropped", {
+		get: () => dropped,
+		enumerable: true,
+	}) as FdProgressSink;
+}
+
+const isNumber = (value: unknown): value is number =>
+	typeof value === "number" && Number.isFinite(value);
+const isString = (value: unknown): value is string => typeof value === "string";
+const isStageName = (value: unknown): value is StageName =>
+	typeof value === "string" && (STAGE_NAMES as readonly string[]).includes(value);
+
+/** The required fields of each event type; optional fields are not checked. An event without its required fields is not progress. */
+function hasRequiredFields(type: string, value: Record<string, unknown>): boolean {
+	switch (type) {
+		case "begin":
+			return isString(value.sessionId) && isString(value.engine);
+		case "stage":
+			return isStageName(value.stage) && (value.phase === "start" || value.phase === "end");
+		case "graph":
+			return isNumber(value.total) && Array.isArray(value.nodes);
+		case "node":
+			return (
+				(value.phase === "start" || value.phase === "done") &&
+				isString(value.id) &&
+				isString(value.title) &&
+				isString(value.kind) &&
+				isNumber(value.index) &&
+				isNumber(value.total)
+			);
+		case "track":
+			return true;
+		case "issue":
+			return (
+				(value.provider === "linear" || value.provider === "notion") &&
+				isString(value.nodeId) &&
+				isString(value.url)
+			);
+		case "activity":
+			return typeof value.notice === "object" && value.notice !== null;
+		case "end":
+			return (
+				value.outcome === "planned" || value.outcome === "skipped" || value.outcome === "failed"
+			);
+		default:
+			return false;
+	}
 }
 
 export function parseProgressLine(line: string): ProgressEvent | undefined {
 	const text = line.trim();
 	if (!text.startsWith("{")) return undefined;
-	let value: unknown;
+	let parsed: unknown;
 	try {
-		value = JSON.parse(text);
+		parsed = JSON.parse(text);
 	} catch {
 		return undefined;
 	}
-	if (!value || typeof value !== "object" || !("type" in value) || !("at" in value))
-		return undefined;
+	if (typeof parsed !== "object" || parsed === null) return undefined;
+	// Untrusted JSON: each field read below is checked with typeof or a literal comparison before it is used.
+	const value = parsed as Record<string, unknown>;
 	if (typeof value.type !== "string" || EVENT_TYPES[value.type] !== true) return undefined;
-	if (typeof value.at !== "number" || !Number.isFinite(value.at)) return undefined;
-	// Trusted child-process boundary: type + timestamp validated above.
-	const event: ProgressEvent = value as ProgressEvent;
-	return event;
-}
-
-/** Longest partial line the splitter keeps; bytes past it are dropped until the next newline. */
-const MAX_LINE_CHARS = 256 * 1024;
-
-export function createLineSplitter(onLine: (line: string) => void): {
-	push(chunk: string): void;
-	end(): void;
-} {
-	let buffer = "";
-	// True while the current line has overflowed: its tail is skipped up to the next newline.
-	let dropping = false;
-	const keep = (text: string): void => {
-		buffer += text;
-		if (buffer.length > MAX_LINE_CHARS) {
-			buffer = buffer.slice(0, MAX_LINE_CHARS);
-			dropping = true;
-		}
-	};
-	return {
-		push(chunk) {
-			let rest = chunk;
-			for (let newline = rest.indexOf("\n"); newline !== -1; newline = rest.indexOf("\n")) {
-				if (!dropping) keep(rest.slice(0, newline));
-				const line = buffer.replace(/\r$/, "");
-				buffer = "";
-				dropping = false;
-				if (line) onLine(line);
-				rest = rest.slice(newline + 1);
-			}
-			if (!dropping) keep(rest);
-		},
-		end() {
-			const rest = buffer.replace(/\r$/, "");
-			buffer = "";
-			dropping = false;
-			if (rest) onLine(rest);
-		},
-	};
+	if (!isNumber(value.at) || !hasRequiredFields(value.type, value)) return undefined;
+	// Validated above: the type, the timestamp and each type's required fields. Optional fields keep the producer's shape.
+	return value as ProgressEvent;
 }

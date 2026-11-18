@@ -211,6 +211,56 @@ describe("planPrompt guards (L6-06, L12-06)", () => {
 	});
 });
 
+describe("the armed /ultrathink-skip is spent only by the first prompt that reaches decideUplift", () => {
+	let root: string;
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "ut-skip-once-"));
+	});
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	const planWith = (stateDir: string, prompt: string, env: Record<string, string>) =>
+		planPrompt({ host: "omp", session_id: "armed-session", prompt, cwd: root }, env, {
+			config: quietConfig(),
+			control: {},
+			stateDir,
+			selectEngine: () => {
+				throw new Error("selector reached");
+			},
+		});
+
+	test("a command and an already-uplifted prompt leave the skip armed; an acknowledgement spends it", async () => {
+		const env = isolatedPlanEnv(root);
+		const stateDir = join(root, "state");
+		mkdirSync(join(stateDir, "sessions"), { recursive: true });
+		armSkipOnce(stateDir, "armed-session");
+		expect((await planWith(stateDir, "/ultrathink-status", env)).skipped).toBe(
+			"ultrathink-command",
+		);
+		expect(readSkipOnce(stateDir, "armed-session")).toBe(true);
+		expect(
+			(await planWith(stateDir, "<ultrathink>already planned</ultrathink>", env)).skipped,
+		).toBe("precheck-already-uplifted");
+		expect(readSkipOnce(stateDir, "armed-session")).toBe(true);
+		expect((await planWith(stateDir, "ok", env)).skipped).toBe("precheck-skip-once");
+		expect(readSkipOnce(stateDir, "armed-session")).toBe(false);
+	});
+
+	test("the next real prompt after the spent skip plans: it reaches the engine selector", async () => {
+		const env = isolatedPlanEnv(root);
+		const stateDir = join(root, "state");
+		mkdirSync(join(stateDir, "sessions"), { recursive: true });
+		armSkipOnce(stateDir, "armed-session");
+		expect((await planWith(stateDir, "add a widget immediately", env)).skipped).toBe(
+			"precheck-skip-once",
+		);
+		expect((await planWith(stateDir, "add a widget immediately", env)).skipped).toBe(
+			"engine-error",
+		);
+	});
+});
+
 describe("wouldSkipPlanning (the Omp follow-up precheck)", () => {
 	let root: string;
 	beforeEach(() => {
@@ -272,5 +322,30 @@ describe("wouldSkipPlanning (the Omp follow-up precheck)", () => {
 			},
 		} as ControlState;
 		expect(wouldSkip("add a widget immediately", control)).toBe(false);
+	});
+
+	test("wouldSkipPlanning agrees with planPrompt for a Hermes skill with no instruction", async () => {
+		const skill =
+			'[IMPORTANT: The user has invoked the "gsd-quick" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]\n\n---\nname: gsd-quick\ndescription: Quick task\n---\nDo the quick task.';
+		const env = isolatedPlanEnv(root);
+		const stateDir = join(root, "state");
+		const request = {
+			host: "hermes" as const,
+			session_id: "hermes-preamble",
+			prompt: skill,
+			cwd: root,
+		};
+		expect(wouldSkipPlanning(request, { env, config: quietConfig(), control: {}, stateDir })).toBe(
+			true,
+		);
+		const response = await planPrompt(request, env, {
+			config: quietConfig(),
+			control: {},
+			stateDir,
+			selectEngine: () => {
+				throw new Error("selector reached");
+			},
+		});
+		expect(response.skipped).toBe("skill-preamble");
 	});
 });

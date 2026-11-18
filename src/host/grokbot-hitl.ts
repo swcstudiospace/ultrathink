@@ -8,7 +8,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
+import { type LockOptions, withFileLock, writeFileAtomic } from "../claude/atomic.ts";
 import {
 	CLI_LOCK,
 	type LastLockOptions,
@@ -46,11 +46,12 @@ export function parseAnswersInput(raw: unknown): AnswersInput {
 	return { answers, ...(response ? { response } : {}) };
 }
 
-/** `lastLock` is the clock and sleep of the wait for a busy last.json lock (tests only; production waits 3 s). */
+/** `lock` and `lastLock` are the clock and sleep seams of the waits for the session lock and a busy last.json (tests only). */
 export function recordAnswers(
 	statePath: string,
 	input: AnswersInput,
 	now = Date.now(),
+	lock?: LockOptions,
 	lastLock?: LastLockOptions,
 ): { matched: Clarification[]; unknownIds: string[]; list: Clarification[] } {
 	return withFileLock(
@@ -89,7 +90,7 @@ export function recordAnswers(
 			mirrorLast(statePath, next, lastLock);
 			return { matched, unknownIds, list };
 		},
-		CLI_LOCK,
+		{ ...CLI_LOCK, ...lock },
 	); // a CLI writer in its own process: wait up to 30 s, never write unlocked
 }
 
@@ -101,20 +102,20 @@ export function mirrorLast(
 ): void {
 	const lastPath = join(dirname(dirname(statePath)), "last.json");
 	if (!existsSync(lastPath)) return;
-	let refreshed = false;
-	try {
-		refreshed = withLastLock(
-			lastPath,
-			() => {
-				const last = JSON.parse(readFileSync(lastPath, "utf8")) as { sessionId?: string };
-				if (last.sessionId !== record.sessionId) return;
-				writeFileAtomic(lastPath, `${JSON.stringify(record, null, "\t")}\n`);
-			},
-			lastLock,
-		);
-	} catch {
-		// an unreadable last.json stays as it is
-		return;
-	}
+	const refreshed = withLastLock(
+		lastPath,
+		() => {
+			let last: { sessionId?: string } | null;
+			try {
+				last = JSON.parse(readFileSync(lastPath, "utf8")) as { sessionId?: string } | null;
+			} catch {
+				// an unreadable last.json stays as it is
+				return;
+			}
+			if (!last || last.sessionId !== record.sessionId) return;
+			writeFileAtomic(lastPath, `${JSON.stringify(record, null, "\t")}\n`);
+		},
+		lastLock,
+	);
 	if (!refreshed) throw new Error(lastRefreshMessage(lastPath));
 }

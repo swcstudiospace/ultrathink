@@ -35,7 +35,7 @@ function hookEventName(record: Record<string, unknown>): string | undefined {
 	if (typeof pascal === "string" && pascal.trim()) return pascal;
 	const grok = record.hookEventName;
 	if (typeof grok !== "string" || !grok.trim()) return undefined;
-	return GROK_EVENT_TO_PASCAL[grok] ?? grok;
+	return Object.hasOwn(GROK_EVENT_TO_PASCAL, grok) ? GROK_EVENT_TO_PASCAL[grok] : grok;
 }
 
 /** Malformed input normalises to `{}` and never throws. */
@@ -89,8 +89,9 @@ export function isSubagentEnvelope(input: Record<string, unknown>): boolean {
 /** A hook's tool response as text: a string as-is, anything else as JSON (empty when it cannot be encoded). */
 export function responseText(response: unknown): string {
 	if (typeof response === "string") return response;
+	if (response === undefined || response === null) return "";
 	try {
-		return JSON.stringify(response ?? "");
+		return JSON.stringify(response);
 	} catch {
 		return "";
 	}

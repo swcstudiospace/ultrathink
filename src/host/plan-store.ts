@@ -9,14 +9,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
 	mkdirSync,
-	readdirSync,
+	opendirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { errorCode } from "../claude/atomic.ts";
 
 export interface StoredPlan {
 	key: string;
@@ -28,6 +30,11 @@ export interface StoredPlan {
 // Keys become file names, so only url-safe characters are accepted. planKey output always matches.
 const KEY_PATTERN = /^[A-Za-z0-9_-]+$/;
 const MAX_RECORD_AGE_MS = 24 * 60 * 60 * 1000;
+const PRUNE_SCAN_LIMIT = 200;
+// A temp file savePlan writes before its rename: `<key>.json.tmp-<pid>-<16 hex>`.
+const ORPHAN_TEMP = /^.+\.json\.tmp-(\d+)-[0-9a-f]{16}$/;
+// A dead writer's temp file must also be this old (ms) before it goes, mirroring claude/atomic.ts.
+const ORPHAN_MIN_AGE_MS = 60_000;
 
 export function planKey(input: {
 	sessionId: string;
@@ -76,9 +83,7 @@ export function loadPlan(stateDir: string, key: string): StoredPlan | "absent" |
 	try {
 		raw = readFileSync(recordPath(stateDir, key), "utf8");
 	} catch (error) {
-		return error instanceof Error && "code" in error && error.code === "ENOENT"
-			? "absent"
-			: "unreadable";
+		return errorCode(error) === "ENOENT" ? "absent" : "unreadable";
 	}
 	let parsed: unknown;
 	try {
@@ -95,9 +100,7 @@ export function claimPlan(stateDir: string, key: string): "claimed" | "lost" | "
 		unlinkSync(recordPath(stateDir, key));
 		return "claimed";
 	} catch (error) {
-		return error instanceof Error && "code" in error && error.code === "ENOENT"
-			? "lost"
-			: "unwritable";
+		return errorCode(error) === "ENOENT" ? "lost" : "unwritable";
 	}
 }
 
@@ -107,29 +110,62 @@ function recordPath(stateDir: string, key: string): string {
 }
 
 // Best-effort housekeeping: removes only files named `<key>.json` whose record parses and is older than the limit.
-// Unparseable records stay. A failed listing or removal is skipped so it never blocks the save that calls this.
+// Unparseable records stay. Crashed-write temp files go once their writer is dead and they are at least a minute old.
+// At most PRUNE_SCAN_LIMIT entries are scanned per save. A failed listing or removal never blocks the save
+// that calls this.
 function pruneExpired(stateDir: string, dir: string, now: number): void {
-	let names: string[];
 	try {
-		names = readdirSync(dir);
+		const handle = opendirSync(dir);
+		try {
+			for (let scanned = 0; scanned < PRUNE_SCAN_LIMIT; scanned++) {
+				const entry = handle.readSync();
+				if (!entry) break;
+				pruneEntry(stateDir, dir, entry.name, now);
+			}
+		} finally {
+			handle.closeSync();
+		}
 	} catch {
 		// The directory cannot be listed, so nothing is pruned on this save.
+	}
+}
+
+function pruneEntry(stateDir: string, dir: string, name: string, now: number): void {
+	const orphan = ORPHAN_TEMP.exec(name);
+	if (orphan) {
+		pruneOrphanTemp(join(dir, name), Number(orphan[1]), now);
 		return;
 	}
-	for (const name of names) {
-		if (!name.endsWith(".json")) continue;
-		const key = name.slice(0, -".json".length);
-		if (!KEY_PATTERN.test(key)) continue;
-		const record = loadPlan(stateDir, key);
-		if (typeof record === "string") continue;
-		const createdMs = Date.parse(record.createdAt);
-		if (Number.isNaN(createdMs) || now - createdMs <= MAX_RECORD_AGE_MS) continue;
-		try {
-			rmSync(join(dir, name), { force: true });
-		} catch {
-			// This stale record stays until a later save can remove it; the new record is still written.
-			continue;
-		}
+	if (!name.endsWith(".json")) return;
+	const key = name.slice(0, -".json".length);
+	if (!KEY_PATTERN.test(key)) return;
+	const record = loadPlan(stateDir, key);
+	if (typeof record === "string") return;
+	const createdMs = Date.parse(record.createdAt);
+	if (Number.isNaN(createdMs) || now - createdMs <= MAX_RECORD_AGE_MS) return;
+	try {
+		rmSync(join(dir, name), { force: true });
+	} catch {
+		// This stale record stays until a later save can remove it; the new record is still written.
+	}
+}
+
+function pruneOrphanTemp(path: string, pid: number, now: number): void {
+	if (!Number.isSafeInteger(pid) || pid <= 0 || pidAlive(pid)) return;
+	try {
+		if (now - statSync(path).mtimeMs >= ORPHAN_MIN_AGE_MS) unlinkSync(path);
+	} catch {
+		// reason: a sibling writer may have removed it first
+	}
+}
+
+function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		// EPERM means the pid exists under another user: alive.
+		return errorCode(error) !== "ESRCH";
 	}
 }
 

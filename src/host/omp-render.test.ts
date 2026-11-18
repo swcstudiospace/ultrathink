@@ -1099,6 +1099,30 @@ describe("swarm card", () => {
 		);
 	});
 
+	test("expanded rows hard-break an overlong token without splitting a flag pair", () => {
+		const flag = "🇺🇸";
+		const details = {
+			omitted: 0,
+			lanes: [
+				{
+					laneId: "lane-a",
+					summary: flag.repeat(40),
+					logPath: "/tmp/swarm/aa11-1-x/run.log",
+					done: 1,
+					total: 1,
+				},
+			],
+		};
+		// width 25 leaves 21 content columns; 40 flags overflow that under either width model (one or two columns each)
+		const { plain } = swarmCard(details, true, 25);
+		const fragments = plain
+			.map((row) => row.replace(/^│/, "").replace(/│$/, "").trim())
+			.filter((row) => row.includes("🇺") || row.includes("🇸"));
+		expect(fragments.length).toBeGreaterThan(1);
+		expect(fragments.join("")).toBe(flag.repeat(40));
+		for (const row of fragments) expect(row.replaceAll(flag, "")).toBe("");
+	});
+
 	test("expanded card shows full state dirs and log paths", () => {
 		const { plain } = swarmCard(spawnDetails, true, 160);
 		const text = plain.join("\n");

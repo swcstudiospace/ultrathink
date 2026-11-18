@@ -92,6 +92,9 @@ describe("waveLayout", () => {
 		const waves = waveLayout([node("r", []), node("a", ["b"]), node("b", ["a"])]);
 		expect(waves).toEqual([["r"], ["a", "b"]]);
 	});
+	test("duplicate id is placed once", () => {
+		expect(waveLayout([node("a", []), node("a", [])])).toEqual([["a"]]);
+	});
 });
 
 describe("renderGraph", () => {

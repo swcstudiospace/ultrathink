@@ -12,13 +12,14 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readSkipOnce } from "../claude/state.ts";
 import {
-	carrierPath,
 	carrierPathFor,
 	clearPlanCarrier,
+	readJsonObject,
 	readPlanCarrier,
 	writePlanCarrier,
 } from "./carrier.ts";
@@ -89,17 +90,29 @@ describe("clearPlanCarrier", () => {
 });
 
 describe("carrierPathFor", () => {
-	test("keeps A-Za-z0-9_- and replaces every other character with _", () => {
-		expect(carrierPathFor(stateDir, "Abc_9-z")).toBe(join(stateDir, "last-plan.Abc_9-z.json"));
-		expect(carrierPathFor(stateDir, "a/../b c\\d")).toBe(
-			join(stateDir, "last-plan.a____b_c_d.json"),
+	const digest = (id: string) => createHash("sha256").update(id).digest("hex").slice(0, 12);
+
+	test("keeps A-Za-z0-9_- and replaces every other character with _, then a digest of the whole id", () => {
+		expect(carrierPathFor(stateDir, "Abc_9-z")).toBe(
+			join(stateDir, `last-plan.Abc_9-z.${digest("Abc_9-z")}.json`),
 		);
-		expect(carrierPathFor(stateDir, "s.1:é")).toBe(join(stateDir, "last-plan.s_1__.json"));
+		expect(carrierPathFor(stateDir, "a/../b c\\d")).toBe(
+			join(stateDir, `last-plan.a____b_c_d.${digest("a/../b c\\d")}.json`),
+		);
+		expect(carrierPathFor(stateDir, "s.1:é")).toBe(
+			join(stateDir, `last-plan.s_1__.${digest("s.1:é")}.json`),
+		);
 	});
 
-	test("cuts the name to 64 characters", () => {
-		const path = carrierPathFor(stateDir, `${"a".repeat(80)}`);
-		expect(path).toBe(join(stateDir, `last-plan.${"a".repeat(64)}.json`));
+	test("cuts the stem to 64 characters", () => {
+		const id = "a".repeat(80);
+		expect(carrierPathFor(stateDir, id)).toBe(
+			join(stateDir, `last-plan.${"a".repeat(64)}.${digest(id)}.json`),
+		);
+	});
+
+	test("ids that sanitize to one stem get different files", () => {
+		expect(carrierPathFor(stateDir, "a.b")).not.toBe(carrierPathFor(stateDir, "a:b"));
 	});
 
 	test("a blank id still names a harmless file inside the state dir", () => {
@@ -177,10 +190,17 @@ describe("per-session carriers", () => {
 		expect(readPlanCarrier(stateDir, "a:b")).toBeUndefined();
 	});
 
+	test("ids that sanitize to one stem each keep their own carrier", () => {
+		writePlanCarrier({ host: "grok-build", stateDir, sessionId: "a.b", context: "plan for a.b" });
+		writePlanCarrier({ host: "grok-build", stateDir, sessionId: "a:b", context: "plan for a:b" });
+		expect(readPlanCarrier(stateDir, "a.b")?.context).toBe("plan for a.b");
+		expect(readPlanCarrier(stateDir, "a:b")?.context).toBe("plan for a:b");
+	});
+
 	test("the legacy single-file carrier is never read for a plan", () => {
 		mkdirSync(stateDir, { recursive: true });
 		writeFileSync(
-			carrierPath(stateDir),
+			join(stateDir, "last-plan.json"),
 			JSON.stringify({ host: "grok-build", sessionId: "A", context: "old" }),
 		);
 		expect(readPlanCarrier(stateDir, "A")).toBeUndefined();
@@ -197,7 +217,7 @@ describe("per-session carriers", () => {
 
 	test("the next write removes a legacy single-file carrier older than 24 h and keeps a fresh one", () => {
 		mkdirSync(stateDir, { recursive: true });
-		const legacy = carrierPath(stateDir);
+		const legacy = join(stateDir, "last-plan.json");
 		writeFileSync(legacy, "{}");
 		const old = (Date.now() - 25 * 60 * 60 * 1000) / 1000;
 		utimesSync(legacy, old, old);
@@ -258,7 +278,9 @@ describe("writePlanCarrier", () => {
 			sessionId: "s1",
 			context: "second",
 		});
-		expect(readdirSync(stateDir)).toEqual(["last-plan.s1.json"]);
+		expect(readdirSync(stateDir)).toEqual([
+			expect.stringMatching(/^last-plan\.s1\.[0-9a-f]{12}\.json$/),
+		]);
 	});
 
 	test.skipIf(process.platform === "win32")(
@@ -540,4 +562,19 @@ describe("uplift hook with a Jev plan skip", () => {
 			jev.stop();
 		}
 	}, 30_000);
+});
+
+describe("readJsonObject", () => {
+	test("returns a top-level JSON object and undefined for anything else", () => {
+		mkdirSync(stateDir, { recursive: true });
+		const file = join(stateDir, "value.json");
+		const read = (text: string) => {
+			writeFileSync(file, text);
+			return readJsonObject(file);
+		};
+		expect(read("{}")).toEqual({});
+		expect(read('{"a":1}')).toEqual({ a: 1 });
+		for (const text of ["[]", "null", "1", '"x"', "{"]) expect(read(text)).toBeUndefined();
+		expect(readJsonObject(join(stateDir, "missing.json"))).toBeUndefined();
+	});
 });

@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claimPlan, loadPlan, planKey, savePlan, type StoredPlan } from "./plan-store.ts";
@@ -49,6 +57,11 @@ function writeRaw(key: string, content: string): void {
 function writeNamed(fileName: string, content: string): void {
 	mkdirSync(join(dir, "plans"), { recursive: true });
 	writeFileSync(join(dir, "plans", fileName), content);
+}
+
+function setMtime(fileName: string, ms: number): void {
+	const time = new Date(ms);
+	utimesSync(join(dir, "plans", fileName), time, time);
 }
 
 describe("planKey", () => {
@@ -160,6 +173,45 @@ describe("savePlan and loadPlan", () => {
 		expect(readdirSync(join(dir, "plans")).sort()).toEqual(
 			["corrupt.json", "notes.txt", `${plan.key}.json`].sort(),
 		);
+	});
+
+	test("savePlan removes an orphaned temp file whose writer is dead and is at least a minute old", () => {
+		// No process has this pid, so its writer is dead.
+		const orphan = `${planKey(input)}.json.tmp-2000000000-0123456789abcdef`;
+		writeNamed(orphan, "partial");
+		setMtime(orphan, Date.now() - 2 * 60_000);
+		const plan = samplePlan();
+		savePlan(dir, plan);
+		expect(readdirSync(join(dir, "plans"))).not.toContain(orphan);
+		expect(loadPlan(dir, plan.key)).toEqual(plan);
+	});
+
+	test("savePlan keeps a temp file whose writer is still running, however old", () => {
+		const live = `${planKey(input)}.json.tmp-${process.pid}-0123456789abcdef`;
+		writeNamed(live, "partial");
+		setMtime(live, Date.now() - 2 * 60_000);
+		savePlan(dir, samplePlan());
+		expect(readdirSync(join(dir, "plans"))).toContain(live);
+	});
+
+	test("savePlan keeps a temp file younger than a minute even when its writer is dead", () => {
+		const fresh = `${planKey(input)}.json.tmp-2000000000-0123456789abcdef`;
+		writeNamed(fresh, "partial");
+		savePlan(dir, samplePlan());
+		expect(readdirSync(join(dir, "plans"))).toContain(fresh);
+	});
+
+	test("savePlan scans at most 200 directory entries per save", () => {
+		const stale = new Date(Date.now() - 25 * HOUR_MS).toISOString();
+		for (let i = 0; i < 250; i++) {
+			const key = planKey({ ...input, prompt: `stale ${i}` });
+			writeRaw(key, JSON.stringify({ key, text: "t", view: null, createdAt: stale }));
+		}
+		savePlan(dir, samplePlan());
+		const records = readdirSync(join(dir, "plans")).filter((name) => name.endsWith(".json"));
+		// 250 stale records plus the new one. At most 200 entries are scanned, so at most 200 go.
+		expect(records.length).toBeGreaterThanOrEqual(51);
+		expect(records.length).toBeLessThan(251);
 	});
 });
 

@@ -167,8 +167,36 @@ describe("validateArtifacts", () => {
 		expect(partial.problems.map((problem) => problem.code)).toEqual(["prds_short", "prds_failed"]);
 	});
 
-	test("plain text with no spec structure has nothing to count and is ready", () => {
-		expect(validateArtifacts({ text: "PLAN", expected: FULL }).state).toBe("ready");
+	test("plain text with no counts expected has nothing to count and is ready", () => {
+		expect(validateArtifacts({ text: "PLAN" }).state).toBe("ready");
+	});
+
+	test("a plain-text plan fails the node and issue counts it was expected to reach", () => {
+		const verdict = validateArtifacts({ text: "PLAN", expected: FULL });
+		expect(verdict.state).toBe("partial_failure");
+		expect(verdict.problems.map((problem) => problem.code)).toEqual([
+			"nodes_short",
+			"issues_short",
+			"subIssues_short",
+		]);
+	});
+
+	test("root-less text with an unclosed graph block is fatal and truncated", () => {
+		const verdict = validateArtifacts({
+			text: 'PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="t">',
+		});
+		expect(verdict.state).toBe("failed_or_cancelled");
+		expect(verdict.problems).toContainEqual(
+			expect.objectContaining({ severity: "fatal", code: "truncated" }),
+		);
+	});
+
+	test("a node example outside the uplift root is not counted", () => {
+		const text = `Example: <NODE id="x" kind="task" title="t" />\n${plan({ nodes: 1, steps: 1 })}`;
+		expect(validateArtifacts({ text, expected: { nodes: 1 } })).toMatchObject({
+			state: "ready",
+			observed: { nodes: 1 },
+		});
 	});
 
 	test("requireXml refuses plain text", () => {

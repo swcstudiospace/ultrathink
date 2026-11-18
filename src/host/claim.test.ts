@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { claimTurn } from "./claim.ts";
@@ -121,6 +129,19 @@ describe("claimTurn", () => {
 		expect(claimTurn(stateDir, "s1:p1")).toBe(false);
 	}, 60_000);
 
+	test("a stale takeover mutex left by a dead hook is cleared, and the dead claim is taken over in the same call", () => {
+		const stateDir = tempDir();
+		const child = claimInChild(stateDir, 'process.kill(process.pid, "SIGKILL");');
+		expect(child.exitCode).not.toBe(0);
+		const mutex = `${claimFile(stateDir, "s1:p1")}.takeover`;
+		writeFileSync(mutex, "");
+		const old = new Date(Date.now() - 60_000);
+		utimesSync(mutex, old, old);
+		expect(claimTurn(stateDir, "s1:p1")).toBe(true);
+		expect(existsSync(mutex)).toBe(false);
+		expect(claimTurn(stateDir, "s1:p1")).toBe(false);
+	}, 60_000);
+
 	test("a hook that exits without finishing its work leaves the claim not done", () => {
 		const stateDir = tempDir();
 		const child = claimInChild(stateDir, "process.exit(won ? 0 : 3);");
@@ -171,5 +192,16 @@ describe("claimTurn", () => {
 		expect(claimTurn(stateDir, "s1:p1")).toBe(true);
 		writeFileSync(claimFile(stateDir, "s1:p1"), "");
 		expect(claimTurn(stateDir, "s1:p1")).toBe(false);
+	});
+
+	test("a claim is published whole: its record is complete and no temp file is left beside it", () => {
+		const stateDir = tempDir();
+		expect(claimTurn(stateDir, "s1:p1")).toBe(true);
+		expect(readdirSync(join(stateDir, "claims"))).toEqual([
+			createHash("sha256").update("s1:p1").digest("hex").slice(0, 32),
+		]);
+		const body = JSON.parse(readFileSync(claimFile(stateDir, "s1:p1"), "utf8"));
+		expect(body.pid).toBe(process.pid);
+		expect(typeof body.startTime).toBe("string");
 	});
 });

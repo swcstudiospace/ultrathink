@@ -63,7 +63,8 @@ export function assertMemoryChain(entries: readonly { vendor: string; model: str
 		);
 	const expected = [MEMORY_CHAIN.primary, MEMORY_CHAIN.fallback];
 	entries.forEach((entry, index) => {
-		const want = expected[index] as MemoryChainEntry;
+		// The length check above admits only indices 0 and 1, so the slot is always the primary or the fallback.
+		const want = index === 0 ? MEMORY_CHAIN.primary : MEMORY_CHAIN.fallback;
 		if (same(entry, want)) return;
 		if (entries.slice(0, index).some((earlier) => same(earlier, entry)))
 			throw new MemoryChainError(

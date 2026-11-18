@@ -138,11 +138,13 @@ function requestKey(system: string, user: string): string {
 		.slice(0, 32);
 }
 
+/** The journal's meta: undefined only when there is none. A meta that exists but cannot be read or parsed throws. */
 export function readMeta(dir: string): JournalMeta | undefined {
 	try {
 		return JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")) as JournalMeta;
-	} catch {
-		return undefined;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
 	}
 }
 
@@ -214,12 +216,26 @@ function readAnswer(dir: string, key: string): string | undefined {
 	return existsSync(path) ? readFileSync(path, "utf8") : undefined;
 }
 
+/** The request a pending or replaced file holds; undefined when the file is unreadable or holds no JSON object. */
+function readRequestFile(path: string): PendingRequest | undefined {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+			? (parsed as PendingRequest)
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export interface JournalCompleter {
 	complete: (system: string, user: string, signal?: AbortSignal) => Promise<string>;
 	/** Requests that were missing an answer in this run. */
 	missed: () => PendingRequest[];
 	/** Requests answered from the journal in this run. */
 	replayed: () => number;
+	/** Clears the debounce timer, if one is pending; call when the run that owns the completer ends. */
+	dispose: () => void;
 }
 
 function abortError(): Error {
@@ -250,9 +266,9 @@ export function createJournalCompleter(opts: {
 	owner?: PendingOwner;
 }): JournalCompleter {
 	const missed: PendingRequest[] = [];
-	const timers = opts.timers ?? { setTimeout, clearTimeout };
+	const timers: TimerPort = opts.timers ?? { setTimeout, clearTimeout };
 	let replayed = 0;
-	let scheduled = false;
+	let timer: { handle: unknown } | undefined;
 	const complete = async (system: string, user: string, signal?: AbortSignal): Promise<string> => {
 		const key = requestKey(system, user);
 		// A stored answer is replayed only for a stage with a known shape, never for an unrecognised request.
@@ -270,9 +286,8 @@ export function createJournalCompleter(opts: {
 		missed.push(request);
 		const controller = opts.controller;
 		if (!controller) throw abortError();
-		if (!scheduled) {
-			scheduled = true;
-			timers.setTimeout(() => controller.abort(), opts.debounceMs ?? 250);
+		if (!timer) {
+			timer = { handle: timers.setTimeout(() => controller.abort(), opts.debounceMs ?? 250) };
 		}
 		const lifetime = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
 		if (lifetime.aborted) throw abortError();
@@ -281,7 +296,11 @@ export function createJournalCompleter(opts: {
 		);
 		throw abortError();
 	};
-	return { complete, missed: () => [...missed], replayed: () => replayed };
+	const dispose = (): void => {
+		if (timer) timers.clearTimeout(timer.handle);
+		timer = undefined;
+	};
+	return { complete, missed: () => [...missed], replayed: () => replayed, dispose };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -551,15 +570,16 @@ export function storeAnswer(
 		sessionRecordPath(stateDir, sessionId),
 		(): Validation => {
 			const pendingPath = join(dir, "pending", `${key}.json`);
+			const requestPath = join(dir, "requests", `${key}.json`);
 			const answerPath = join(dir, "answers", `${key}.txt`);
-			let request: PendingRequest | undefined;
-			if (existsSync(pendingPath))
-				request = JSON.parse(readFileSync(pendingPath, "utf8")) as PendingRequest;
-			else if (options.replace && existsSync(join(dir, "requests", `${key}.json`)))
-				request = JSON.parse(
-					readFileSync(join(dir, "requests", `${key}.json`), "utf8"),
-				) as PendingRequest;
-			if (!request) return { ok: false, errors: [`no pending request ${key}`] };
+			const source = existsSync(pendingPath)
+				? pendingPath
+				: options.replace && existsSync(requestPath)
+					? requestPath
+					: undefined;
+			if (!source) return { ok: false, errors: [`no pending request ${key}`] };
+			const request = readRequestFile(source);
+			if (!request) return { ok: false, errors: [`pending request ${key} is unreadable`] };
 			if (existsSync(answerPath) && !options.replace)
 				return { ok: false, errors: [`request ${key} is already answered (use --replace)`] };
 			const result = validateAnswer(request, raw, readMeta(dir)?.original);
@@ -640,19 +660,27 @@ export function checkRecord(
 	};
 }
 
+export interface TranscriptCopy {
+	path: string;
+	/** The file exists but could not be read; the copy is then empty. */
+	unreadable: boolean;
+}
+
 /**
  * Grok Bot keeps recent turns as simple `{"role":"user"|"assistant","content":"..."}` lines; the plugin's transcript
  * reader only takes Claude Code entries (`{"type":"user","message":{"role","content"}}`) and silently ignores anything
  * else. Writes a Claude-shaped copy into the session journal and returns its path; Claude-shaped lines pass through.
- * An unreadable file yields an empty copy (no conversation context, as the plugin does).
+ * A missing file yields an empty copy (no conversation context, as the plugin does). A file that exists but cannot be
+ * read also yields an empty copy, with `unreadable` set so the caller can report it.
  */
-export function normalizeTranscript(source: string, dir: string): string {
+export function normalizeTranscript(source: string, dir: string): TranscriptCopy {
 	let text = "";
+	let unreadable = false;
 	try {
 		text = readFileSync(source, "utf8");
-	} catch {
-		// reason: an unreadable transcript normalizes to empty text; the caller reports no content
-		text = "";
+	} catch (error) {
+		// a missing transcript is no conversation; any other read failure is reported as unreadable
+		unreadable = (error as NodeJS.ErrnoException).code !== "ENOENT";
 	}
 	const out: string[] = [];
 	for (const line of text.split(/\r?\n/)) {
@@ -687,7 +715,7 @@ export function normalizeTranscript(source: string, dir: string): string {
 	mkdirSync(dir, { recursive: true });
 	const path = join(dir, "transcript.claude.jsonl");
 	writeFileSync(path, out.length ? `${out.join("\n")}\n` : "");
-	return path;
+	return { path, unreadable };
 }
 
 export interface GrokbotPlanInput {
@@ -717,6 +745,8 @@ export interface GrokbotPlanResult {
 	skipped?: string;
 	response?: PlanResponse;
 	check?: PlanCheck;
+	/** "unreadable" when the transcript file exists but cannot be read; the plan then ran without a conversation. */
+	transcript?: "unreadable";
 }
 
 /** This process as the owner of the pending requests a run writes: its pid, start identity and the run's own token. */
@@ -824,17 +854,17 @@ export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPl
 	const restore = installDecisionsJournal(dir);
 	const resolution = hostResolution();
 	let response: PlanResponse;
+	let transcript: TranscriptCopy | undefined;
 	runsInProgress.add(owner.run);
 	try {
+		transcript = input.transcriptPath ? normalizeTranscript(input.transcriptPath, dir) : undefined;
 		response = await (input.plan ?? planPrompt)(
 			{
 				host: GROKBOT_ENGINE_HOST,
 				session_id: input.sessionId,
 				prompt: input.prompt,
 				cwd: input.cwd,
-				...(input.transcriptPath
-					? { transcript_path: normalizeTranscript(input.transcriptPath, dir) }
-					: {}),
+				...(transcript ? { transcript_path: transcript.path } : {}),
 			},
 			env,
 			{
@@ -850,6 +880,7 @@ export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPl
 			},
 		);
 	} finally {
+		journal.dispose();
 		runsInProgress.delete(owner.run);
 		restore();
 	}
@@ -865,6 +896,7 @@ export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPl
 			nodeKind,
 			nodeTitle,
 		})),
+		...(transcript?.unreadable ? { transcript: "unreadable" as const } : {}),
 	};
 	if (missed.length > 0) {
 		writeMeta(dir, { ...readMeta(dir), sessionId: input.sessionId, status: "needs-model" });

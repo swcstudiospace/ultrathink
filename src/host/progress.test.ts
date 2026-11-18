@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, type writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelResolution } from "./engine.ts";
-import {
-	createFdProgressSink,
-	createLineSplitter,
-	type ProgressEvent,
-	parseProgressLine,
-} from "./progress.ts";
+import { createFdProgressSink, type ProgressEvent, parseProgressLine } from "./progress.ts";
 
 const detected: ModelResolution = {
 	version: "1.0.0",
@@ -125,7 +120,7 @@ describe("createFdProgressSink", () => {
 		expect(createFdProgressSink({ ULTRATHINK_PROGRESS_FD: "abc" })).toBeUndefined();
 	});
 
-	test("writes one JSON line per event and swallows write errors on a closed fd", () => {
+	test("writes one JSON line per event and counts the events a closed fd refuses, without throwing", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ut-progress-"));
 		try {
 			const path = join(dir, "events.jsonl");
@@ -137,10 +132,38 @@ describe("createFdProgressSink", () => {
 			const lines = readFileSync(path, "utf8").split("\n");
 			expect(lines.at(-1)).toBe("");
 			expect(lines.slice(0, -1).map((line) => JSON.parse(line))).toEqual(events);
+			expect(sink?.dropped).toBe(0);
 			expect(() => sink?.(events[0]!)).not.toThrow();
+			expect(sink?.dropped).toBe(1);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+
+	test("a partial write continues until the whole line is written", () => {
+		const written: Buffer[] = [];
+		const partial = ((_fd: number, buffer: Buffer, offset = 0, length = buffer.length - offset) => {
+			const count = Math.min(length, 5);
+			written.push(Buffer.from(buffer.subarray(offset, offset + count)));
+			return count;
+		}) as unknown as typeof writeSync;
+		const sink = createFdProgressSink({ ULTRATHINK_PROGRESS_FD: "3" }, partial);
+		sink?.(events[0]!);
+		expect(Buffer.concat(written).toString("utf8")).toBe(`${JSON.stringify(events[0])}\n`);
+		expect(sink?.dropped).toBe(0);
+	});
+
+	test("a fd that keeps refusing with EAGAIN counts each dropped event and never throws", () => {
+		let calls = 0;
+		const refusing = (() => {
+			calls++;
+			throw Object.assign(new Error("resource temporarily unavailable"), { code: "EAGAIN" });
+		}) as unknown as typeof writeSync;
+		const sink = createFdProgressSink({ ULTRATHINK_PROGRESS_FD: "3" }, refusing);
+		expect(() => sink?.(events[0]!)).not.toThrow();
+		expect(() => sink?.(events[1]!)).not.toThrow();
+		expect(sink?.dropped).toBe(2);
+		expect(calls).toBeGreaterThan(2);
 	});
 });
 
@@ -162,6 +185,26 @@ describe("parseProgressLine", () => {
 		expect(parseProgressLine(JSON.stringify({ type: "toString", at: 1 }))).toBeUndefined();
 		expect(parseProgressLine(JSON.stringify({ type: "end", outcome: "planned" }))).toBeUndefined();
 		expect(parseProgressLine(JSON.stringify({ type: "end", at: "1" }))).toBeUndefined();
+	});
+
+	test("rejects an event whose per-type required fields are malformed", () => {
+		expect(
+			parseProgressLine(JSON.stringify({ type: "end", at: 1, outcome: "bogus" })),
+		).toBeUndefined();
+		expect(
+			parseProgressLine(JSON.stringify({ type: "stage", at: 1, stage: "nope", phase: "start" })),
+		).toBeUndefined();
+		expect(
+			parseProgressLine(JSON.stringify({ type: "begin", at: 1, sessionId: "s" })),
+		).toBeUndefined();
+		expect(
+			parseProgressLine(
+				JSON.stringify({ type: "issue", at: 1, provider: "jira", nodeId: "n1", url: "u" }),
+			),
+		).toBeUndefined();
+		expect(
+			parseProgressLine(JSON.stringify({ type: "activity", at: 1, notice: "text" })),
+		).toBeUndefined();
 	});
 
 	test("the safe record rides on begin and end only: no new event kind, and an unresolved end needs no begin", () => {
@@ -199,33 +242,5 @@ describe("parseProgressLine", () => {
 				parseProgressLine(JSON.stringify({ type, at: 1, modelResolution: detected })),
 			).toBeUndefined();
 		}
-	});
-});
-
-describe("createLineSplitter", () => {
-	test("joins chunks split mid-line and flushes a trailing partial line on end", () => {
-		const lines: string[] = [];
-		const splitter = createLineSplitter((line) => lines.push(line));
-		splitter.push('{"a":');
-		splitter.push('1}\n{"b"');
-		expect(lines).toEqual(['{"a":1}']);
-		splitter.push(":2}\r\n\npartial");
-		expect(lines).toEqual(['{"a":1}', '{"b":2}']);
-		splitter.end();
-		expect(lines).toEqual(['{"a":1}', '{"b":2}', "partial"]);
-		splitter.end();
-		expect(lines).toHaveLength(3);
-	});
-
-	test("a newline-less flood stays bounded at 256 KiB and the next normal lines still split", () => {
-		const lines: string[] = [];
-		const splitter = createLineSplitter((line) => lines.push(line));
-		splitter.push("x".repeat(1024 * 1024));
-		for (let i = 0; i < 8; i++) splitter.push("y".repeat(128 * 1024));
-		splitter.push('\n{"a":1}\n{"b":2}');
-		splitter.end();
-		expect(lines).toHaveLength(3);
-		expect(lines[0]?.length).toBeLessThanOrEqual(256 * 1024);
-		expect(lines.slice(1)).toEqual(['{"a":1}', '{"b":2}']);
 	});
 });

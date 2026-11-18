@@ -92,6 +92,18 @@ function count(re: RegExp, text: string): number {
 	return text.match(re)?.length ?? 0;
 }
 
+/** The span from the last `open` tag through the first `close` after it (close tag excluded), or undefined. */
+function blockBetween(
+	scope: string,
+	open: string,
+	close: string,
+): { start: number; end: number } | undefined {
+	const start = scope.lastIndexOf(open);
+	if (start < 0) return undefined;
+	const end = scope.indexOf(close, start);
+	return end < 0 ? undefined : { start, end };
+}
+
 /**
  * Validates staged artifacts: the XML must be well formed and closed (`checkUpliftXml`), the graph and issue blocks
  * must be closed, and the counts must match the manifest. A broken structure is fatal; a short count, a pending
@@ -111,42 +123,40 @@ export function validateArtifacts(
 		};
 	}
 	const checked = checkUpliftXml(text, "");
-	if (checked.ok) {
-		// The spec carries a root: its graph and issue blocks must be closed too, or the plan was cut off mid-way.
-		for (const [open, close, name] of [
-			[GRAPH_OPEN, GRAPH_CLOSE, "GRAPH_OF_THOUGHT"],
-			[ISSUES_OPEN, ISSUES_CLOSE, "ISSUES"],
-		] as const) {
-			const at = checked.xml.lastIndexOf(open);
-			if (at >= 0 && checked.xml.indexOf(close, at) === -1)
-				problems.push({
-					severity: "fatal",
-					code: "truncated",
-					detail: `<${name}> is never closed`,
-				});
-		}
-	} else if (checked.reason === "unclosed_root") {
-		problems.push({
-			severity: "fatal",
-			code: "truncated",
-			detail: "the uplift XML root is never closed",
-		});
-	} else if (checked.reason === "missing_child") {
-		problems.push({
-			severity: "fatal",
-			code: "missing_child",
-			detail: `the uplift XML lacks ${checked.missing.join(", ")}`,
-		});
-	} else if (options.requireXml) {
-		problems.push({ severity: "fatal", code: "no_xml", detail: "the plan carries no uplift XML" });
+	// The uplift root when it parses, else the raw text: one scope for the closure check and for every count.
+	const scope = checked.ok ? checked.xml : text;
+	const graphBlock = blockBetween(scope, GRAPH_OPEN, GRAPH_CLOSE);
+	const issuesBlock = blockBetween(scope, ISSUES_OPEN, ISSUES_CLOSE);
+	// A block that opens and never closes means the plan was cut off mid-way.
+	for (const [name, open, block] of [
+		["GRAPH_OF_THOUGHT", GRAPH_OPEN, graphBlock],
+		["ISSUES", ISSUES_OPEN, issuesBlock],
+	] as const) {
+		if (block === undefined && scope.includes(open))
+			problems.push({ severity: "fatal", code: "truncated", detail: `<${name}> is never closed` });
 	}
-	const xml = checked.ok ? checked.xml : text;
-	const graphAt = xml.lastIndexOf(GRAPH_OPEN);
-	const graphEnd = xml.indexOf(GRAPH_CLOSE, Math.max(graphAt, 0));
-	const graph = graphAt >= 0 && graphEnd > graphAt ? xml.slice(graphAt, graphEnd) : "";
-	const issuesAt = xml.lastIndexOf(ISSUES_OPEN);
-	const issuesEnd = xml.indexOf(ISSUES_CLOSE, Math.max(issuesAt, 0));
-	const issues = issuesAt >= 0 && issuesEnd > issuesAt ? xml.slice(issuesAt, issuesEnd) : "";
+	if (!checked.ok) {
+		if (checked.reason === "unclosed_root")
+			problems.push({
+				severity: "fatal",
+				code: "truncated",
+				detail: "the uplift XML root is never closed",
+			});
+		else if (checked.reason === "missing_child")
+			problems.push({
+				severity: "fatal",
+				code: "missing_child",
+				detail: `the uplift XML lacks ${checked.missing.join(", ")}`,
+			});
+		else if (options.requireXml)
+			problems.push({
+				severity: "fatal",
+				code: "no_xml",
+				detail: "the plan carries no uplift XML",
+			});
+	}
+	const graph = graphBlock ? scope.slice(graphBlock.start, graphBlock.end) : "";
+	const issues = issuesBlock ? scope.slice(issuesBlock.start, issuesBlock.end) : "";
 	const prd = artifacts.prd;
 	const observed: GateObserved = {
 		nodes: count(NODE_RE, graph),
@@ -165,13 +175,10 @@ export function validateArtifacts(
 				detail: `${have} of ${want} ${name}`,
 			});
 	};
-	// A plan with no graph or issue block at all is plain text: there is no structure to count, so only the PRDs are.
-	const structured = checked.ok || graphAt >= 0 || issuesAt >= 0;
-	if (structured) {
-		short("nodes", expected?.nodes, observed.nodes);
-		short("issues", expected?.issues, observed.issues);
-		short("subIssues", expected?.subIssues, observed.subIssues);
-	}
+	// A plain-text plan has no graph or issue block, so it counts zero: an expected node or issue count reads as short.
+	short("nodes", expected?.nodes, observed.nodes);
+	short("issues", expected?.issues, observed.issues);
+	short("subIssues", expected?.subIssues, observed.subIssues);
 	short("prds", expected?.prds, observed.prds);
 	if (observed.pendingRows > 0)
 		problems.push({
@@ -418,19 +425,20 @@ export class CompletionGate {
 	}
 
 	#current(): GateOutcome {
-		if (this.#state === "ready" || this.#state === "partial_failure") {
-			return { state: this.#state, verdict: this.#verdict as GateVerdict };
+		const verdict = this.#verdict;
+		if (verdict && (this.#state === "ready" || this.#state === "partial_failure")) {
+			return { state: this.#state, verdict };
 		}
 		return {
 			state: "failed_or_cancelled",
 			reason: this.#reason,
-			...(this.#verdict ? { verdict: this.#verdict } : {}),
+			...(verdict ? { verdict } : {}),
 		};
 	}
 
 	#end(reason: string): GateOutcome {
-		if (this.#state === "ready" || this.#state === "partial_failure") return this.#current();
-		if (this.#state === "failed_or_cancelled") return this.#current();
+		// Terminal gates keep their outcome. A validating gate still settles, so `fail()` during validation works.
+		if (this.#state !== "generating" && this.#state !== "validating") return this.#current();
 		this.#state = "failed_or_cancelled";
 		this.#reason = reason;
 		this.#staged = undefined;

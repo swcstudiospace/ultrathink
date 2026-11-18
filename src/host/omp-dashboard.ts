@@ -100,14 +100,6 @@ function asFiniteNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function utf8Bytes(text: string): number {
-	try {
-		return ENCODER.encode(text).length;
-	} catch {
-		return text.length;
-	}
-}
-
 /** Guarded dashboard probability wrapper: non-finite intake stays unrecorded; finite values reuse the canonical domain helper. */
 function formatP(value: unknown): string | undefined {
 	if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
@@ -919,9 +911,10 @@ export function createInsightDashboard(
 		// Unsupported payloads are withheld before text processing, just as
 		// oversized persisted records are refused before reading their bodies.
 		const overBound =
-			preview.content.length > PREVIEW_MAX_BYTES || utf8Bytes(preview.content) > PREVIEW_MAX_BYTES;
+			preview.content.length > PREVIEW_MAX_BYTES ||
+			ENCODER.encode(preview.content).length > PREVIEW_MAX_BYTES;
 		const text = overBound ? "" : cleanText(preview.content, PREVIEW_MAX_CHARS);
-		const clipped = overBound || utf8Bytes(text) > PREVIEW_MAX_BYTES;
+		const clipped = overBound || ENCODER.encode(text).length > PREVIEW_MAX_BYTES;
 		const contentLines = text.split("\n");
 		const header: RichLine[] = [
 			{

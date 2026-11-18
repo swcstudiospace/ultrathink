@@ -325,19 +325,22 @@ function isFiniteInRange(value: unknown, min: number, max: number): value is num
 function cleanProbabilities(raw: unknown): {
 	probabilities: Record<string, number>;
 	questions: InsightQuestionProbability[];
+	truncated: boolean;
 } {
 	const probabilities: Record<string, number> = {};
 	const questions: InsightQuestionProbability[] = [];
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-		return { probabilities, questions };
+		return { probabilities, questions, truncated: false };
 	for (const [key, p] of Object.entries(raw)) {
-		if (questions.length >= INSIGHT_MAX_QUESTIONS) break;
 		if (key.length === 0 || key.length > 80) continue;
 		if (!isFiniteInRange(p, 0, 1)) continue;
+		// only a valid row past the cap counts as truncated; invalid rows are never kept or disclosed
+		if (questions.length >= INSIGHT_MAX_QUESTIONS)
+			return { probabilities, questions, truncated: true };
 		probabilities[key] = p;
 		questions.push({ key, p });
 	}
-	return { probabilities, questions };
+	return { probabilities, questions, truncated: false };
 }
 
 interface SanitizeContext {
@@ -345,8 +348,14 @@ interface SanitizeContext {
 	repoRoot?: string;
 }
 
+/** Projected Jev row plus whether its probability rows exceeded the per-decision cap. */
+interface ProjectedDecision {
+	decision: InsightDecision;
+	probabilitiesTruncated: boolean;
+}
+
 /** Allowlisted Jev row; undefined for unknown/out-of-range rows (rejected, never clamped). */
-function projectDecision(raw: unknown, redact: SanitizeContext): InsightDecision | undefined {
+function projectDecision(raw: unknown, redact: SanitizeContext): ProjectedDecision | undefined {
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
 	const record = raw as Record<string, unknown>;
 	if (!(DECISION_POINTS as readonly unknown[]).includes(record.point)) return undefined;
@@ -379,8 +388,8 @@ function projectDecision(raw: unknown, redact: SanitizeContext): InsightDecision
 		error = record.error as DecisionsErrorKind;
 	}
 	if (record.outcome === "ok" && error !== undefined) return undefined;
-	const { probabilities, questions } = cleanProbabilities(record.probabilities);
-	return {
+	const cleaned = cleanProbabilities(record.probabilities);
+	const decision: InsightDecision = {
 		point: record.point as DecisionPoint,
 		outcome: record.outcome,
 		model: sanitizeInsightText(record.model, { ...redact, maxChars: 200 }),
@@ -392,9 +401,10 @@ function projectDecision(raw: unknown, redact: SanitizeContext): InsightDecision
 		...(p === undefined ? {} : { p }),
 		...(cost === undefined ? {} : { cost }),
 		...(error === undefined ? {} : { error }),
-		probabilities,
-		questions,
+		probabilities: cleaned.probabilities,
+		questions: cleaned.questions,
 	};
+	return { decision, probabilitiesTruncated: cleaned.truncated };
 }
 
 function cleanStringList(raw: unknown, maxChars: number, redact: SanitizeContext): string[] {
@@ -485,6 +495,8 @@ const SCAN_LIMIT_NOTE = "Showing up to 100 local records; this is not a complete
 /** Neutral display-cap disclosure: a complete read capped for display is healthy, never a failed read. */
 export const RECORD_LIMIT_NOTE = `Only the newest ${INSIGHT_MAX_ROWS} records are shown.`;
 const CANCEL_NOTE = "Snapshot refresh was cancelled; showing available records.";
+/** Probability rows kept per decision; rows past this cap are disclosed as a limit, not counted as a failed read. */
+const PROBABILITY_LIMIT_NOTE = `Only the first ${INSIGHT_MAX_QUESTIONS} probability rows per decision are shown.`;
 
 /**
  * Scoped read-model snapshot. Reads the current session envelope only (never
@@ -544,14 +556,17 @@ export async function readInsightSnapshot(
 			} else {
 				const valid: InsightDecision[] = [];
 				let rejected = 0;
+				let probabilitiesTruncated = false;
 				for (const raw of record.decisions) {
 					if (cancelled()) {
 						markPartial(CANCEL_NOTE);
 						break;
 					}
 					const projected = projectDecision(raw, redact);
-					if (projected) valid.push(projected);
-					else rejected += 1;
+					if (projected) {
+						valid.push(projected.decision);
+						if (projected.probabilitiesTruncated) probabilitiesTruncated = true;
+					} else rejected += 1;
 				}
 				// Newest settled first; stored call order survives ties (stable sort), never deduplicated.
 				valid.sort((a, b) => b.at - a.at);
@@ -565,6 +580,7 @@ export async function readInsightSnapshot(
 					markPartial(
 						`${rejected} saved decision row${rejected === 1 ? " was" : "s were"} excluded (unknown or out-of-range values are never clamped into verdicts).`,
 					);
+				if (probabilitiesTruncated) noteLimit(PROBABILITY_LIMIT_NOTE);
 			}
 		}
 	} catch {
