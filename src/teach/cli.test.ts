@@ -59,17 +59,16 @@ interface FakeHindsight {
 const NETWORK_ERROR: HindsightError = { kind: "network", message: "connection refused" };
 
 function fakeHindsight(): FakeHindsight {
-	const fake: FakeHindsight = {
+	const fake: Omit<FakeHindsight, "client"> = {
 		retained: [],
 		deleted: [],
 		queries: [],
 		hits: [],
 		failRetain: false,
 		failDelete: false,
-		client: undefined as unknown as HindsightClient,
 	};
 	const ok = <T>(value: T): HindsightResult<T> => ({ ok: true, value });
-	fake.client = {
+	const client: HindsightClient = {
 		bank: "ultrathink",
 		health: async () =>
 			ok({ ok: true, apiVersion: "0.9.1", databaseConnected: true, features: {} }),
@@ -92,7 +91,7 @@ function fakeHindsight(): FakeHindsight {
 		setDocumentTags: async () => ok(true as const),
 		deleteBank: async () => ok(true as const),
 	};
-	return fake;
+	return Object.assign(fake, { client });
 }
 
 function config(teach: Partial<TeachConfig> = {}, hindsightEnabled = true) {
@@ -157,9 +156,16 @@ function decisionsOn(over: Partial<DecisionsConfig> = {}): DecisionsConfig {
 	return { ...DEFAULT_DECISIONS_CONFIG, enabled: true, points: ["skillworthy"], ...over };
 }
 
+/** Bun's `typeof fetch` includes `preconnect`; the double supplies a no-op for it instead of casting the function. */
+function fakeFetch(
+	handler: (url: string | URL | Request, init?: RequestInit) => Promise<Response>,
+): typeof fetch {
+	return Object.assign(handler, { preconnect: () => undefined });
+}
+
 /** Same Decisions response shape as observe.test.ts, answering skillworthy. */
 function jevFetch(p: number, calls: { n: number }): typeof fetch {
-	return (async (_url: string | URL | Request, init?: RequestInit) => {
+	return fakeFetch(async (_url, init) => {
 		calls.n += 1;
 		void init;
 		return Response.json({
@@ -167,7 +173,7 @@ function jevFetch(p: number, calls: { n: number }): typeof fetch {
 			answers: { skillworthy: { type: "noul", noul: p } },
 			usage: { input_tokens: 10, output_tokens: 0 },
 		});
-	}) as typeof fetch;
+	});
 }
 
 function json(result: CliResult): Json {
@@ -1485,7 +1491,7 @@ describe("observe run log and outbox drain", () => {
 			env: { ...baseEnv(), ULTRATHINK_OPENROUTER_KEY: JEV_KEY },
 			config: { ...config(), decisions: decisionsOn({ points: ["teachable"] }) },
 			// The Decisions call runs once per lesson, just before its capture: break the store after the first one.
-			fetch: (async () => {
+			fetch: fakeFetch(async () => {
 				asked += 1;
 				if (asked === 2) {
 					const moments = join(storeDir(stateDir), "moments");
@@ -1497,7 +1503,7 @@ describe("observe run log and outbox drain", () => {
 					answers: { teachable: { type: "noul", noul: 0.31 } },
 					usage: { input_tokens: 10, output_tokens: 0 },
 				});
-			}) as unknown as typeof fetch,
+			}),
 		});
 		expect(result.code).toBe(0);
 		expect((json(result).captured as Json[]).length).toBe(2);

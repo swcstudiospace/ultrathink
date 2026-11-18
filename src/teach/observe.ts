@@ -23,7 +23,7 @@ import {
 } from "./context.ts";
 import { clip } from "./digest.ts";
 import { promoteDue } from "./promote.ts";
-import { redactLine, redactText } from "./redact.ts";
+import { type RedactOptions, redactLine, redactText } from "./redact.ts";
 import {
 	type CaptureFn,
 	type CaptureInput,
@@ -216,17 +216,24 @@ function normalizeKind(value: string): MomentKind | undefined {
 /**
  * Strict, defensive parse of the distiller reply: invalid items are dropped, lengths clipped, confidence clamped, at
  * most 3 kept. Each dropped item pushes its reason onto `rejections` so the caller can report it; nothing is lost
- * silently.
+ * silently. Name, description and body are redacted before they are clipped, so a secret cut at a limit never survives.
  */
-export function parseLessons(text: string, rejections?: string[]): Lesson[] {
+export function parseLessons(
+	text: string,
+	rejections?: string[],
+	redact?: RedactOptions,
+): Lesson[] {
 	const parsed = firstJsonObject(text);
 	if (
 		!parsed ||
 		typeof parsed !== "object" ||
 		!("lessons" in parsed) ||
 		!Array.isArray(parsed.lessons)
-	)
+	) {
+		rejections?.push("reply is not a lessons object");
 		return [];
+	}
+	const clean = (value: string): string => redactText(value, redact);
 	const lessons: Lesson[] = [];
 	const reject = (reason: string): void => {
 		rejections?.push(reason);
@@ -263,15 +270,16 @@ export function parseLessons(text: string, rejections?: string[]): Lesson[] {
 			reject("confidence is not a number");
 			continue;
 		}
-		const name = rawName.trim();
-		const body = rawBody.trim();
+		const name = clean(rawName.trim());
+		const body = clean(rawBody.trim());
 		if (!name || !body) {
 			reject("name or body is empty");
 			continue;
 		}
+		const summary = description?.trim() ? clean(description.trim()) : body;
 		lessons.push({
 			name: clip(name, NAME_CHARS),
-			description: clip(description?.trim() || body, DESCRIPTION_CHARS),
+			description: clip(summary, DESCRIPTION_CHARS),
 			body: clip(body, BODY_CHARS),
 			kind: lessonKind,
 			confidence: Math.min(1, Math.max(0, confidence ?? DEFAULT_CONFIDENCE)),
@@ -367,14 +375,14 @@ export async function observeDigest(
 		const jev = lessonDecisions(ctx);
 		const decisionsConfig = ctx.config.decisions ?? DEFAULT_DECISIONS_CONFIG;
 		const rejected: string[] = [];
-		const lessons = parseLessons(reply, rejected);
+		const lessons = parseLessons(reply, rejected, redactOptions);
 		if (rejected.length > 0)
 			detail = redactLine(`${rejected.length} lesson(s) rejected: ${rejected[0]}`, 160);
 		for (const lesson of lessons) {
 			const text = {
-				name: redactText(lesson.name, redactOptions),
-				description: redactText(lesson.description, redactOptions),
-				body: redactText(lesson.body, redactOptions),
+				name: lesson.name,
+				description: lesson.description,
+				body: lesson.body,
 			};
 			const input: CaptureInput = {
 				...text,

@@ -6,12 +6,12 @@
  * A missing plugin or an unknown skill is a warning only while the bridge is enabled; disabled is info, so a
  * machine that never opted in stays free of warnings.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_MAPPING, resolvePstack, skillPath, type PstackStage } from "../cursor/pstack.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
-import { isRecord } from "../shared.ts";
+import { isRecord, readJson } from "../shared.ts";
 
 type StageKey = Exclude<PstackStage, "orchestrate">;
 
@@ -28,25 +28,8 @@ interface Decision {
 	forcedOff: boolean;
 	cursorDir?: string | undefined;
 	mapping?: Partial<Record<StageKey, string[]>> | undefined;
-}
-
-function readObject(file: string): Record<string, unknown> | undefined {
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
-		return isRecord(parsed) ? parsed : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/** Missing, unreadable, or invalid JSON is skipped. A successful parse — even `null` or `[]` — is kept. */
-function readConfigValue(file: string): { status: "skip" } | { status: "parsed"; value: unknown } {
-	if (!existsSync(file)) return { status: "skip" };
-	try {
-		return { status: "parsed", value: JSON.parse(readFileSync(file, "utf8")) };
-	} catch {
-		return { status: "skip" };
-	}
+	/** Set when `ULTRATHINK_CONFIG_DIR` names a file that exists but is not valid JSON. config-check reports the standard files. */
+	invalidOverride?: string | undefined;
 }
 
 /** The hook's search order. `ULTRATHINK_CONFIG_DIR` replaces it; a project file is never a candidate. */
@@ -78,11 +61,17 @@ function mappingOverride(value: unknown): Partial<Record<StageKey, string[]>> | 
 /** First successfully parsed user file wins, matching the hook. `null` or `[]` stops the search; invalid JSON does not. */
 function readDecision(env: Env): Decision {
 	const forcedOff = env.ULTRATHINK_PSTACK === "0";
+	const override = env.ULTRATHINK_CONFIG_DIR?.trim();
+	let invalidOverride: string | undefined;
 	for (const file of hookConfigCandidates(env)) {
-		const read = readConfigValue(file);
-		if (read.status !== "parsed") continue;
-		if (!isRecord(read.value)) return { source: file, enabled: false, forcedOff };
-		const pstack = read.value.pstack;
+		const value = readJson(file);
+		if (value === undefined) {
+			// reason: config-check reads only the standard files, so an invalid override is reported here
+			if (override && existsSync(file)) invalidOverride ??= file;
+			continue;
+		}
+		if (!isRecord(value)) return { source: file, enabled: false, forcedOff };
+		const pstack = value.pstack;
 		if (!isRecord(pstack)) return { source: file, enabled: false, forcedOff };
 		const cursorDir =
 			typeof pstack.cursorDir === "string" && pstack.cursorDir.startsWith("/")
@@ -96,7 +85,7 @@ function readDecision(env: Env): Decision {
 			mapping: mappingOverride(pstack.mapping),
 		};
 	}
-	return { source: "default", enabled: false, forcedOff };
+	return { source: "default", enabled: false, forcedOff, invalidOverride };
 }
 
 function namesFor(stage: StageKey, override: Decision["mapping"]): readonly string[] {
@@ -116,31 +105,24 @@ function hookState(cursorDir: string): { installed: boolean; detail: string } {
 	const staged = join(cursorDir, "hooks", HOOK_FILE);
 	const hooksFile = join(cursorDir, "hooks.json");
 	const stagedOk = existsSync(staged);
-	let entry = false;
-	let unreadable = false;
 	if (!existsSync(hooksFile)) {
 		return {
 			installed: false,
 			detail: `hooks.json not found in ${cursorDir}${stagedOk ? `; staged file present at ${staged}` : ""}`,
 		};
 	}
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(hooksFile, "utf8"));
-		const hooks = isRecord(parsed) ? parsed.hooks : undefined;
-		const list = isRecord(hooks) ? hooks.beforeSubmitPrompt : undefined;
-		if (Array.isArray(list)) {
-			entry = list.some(
-				(item) =>
-					isRecord(item) &&
-					(item["ultrathink-managed"] === true ||
-						(typeof item.command === "string" && item.command.includes(HOOK_FILE))),
-			);
-		}
-	} catch {
-		// reason: an unparseable hooks file is reported as not installed, with its path in the detail
-		unreadable = true;
-	}
-	if (unreadable) return { installed: false, detail: `${hooksFile} is not valid JSON` };
+	const parsed = readJson(hooksFile);
+	if (parsed === undefined) return { installed: false, detail: `${hooksFile} is not valid JSON` };
+	const hooks = isRecord(parsed) ? parsed.hooks : undefined;
+	const list = isRecord(hooks) ? hooks.beforeSubmitPrompt : undefined;
+	const entry =
+		Array.isArray(list) &&
+		list.some(
+			(item) =>
+				isRecord(item) &&
+				(item["ultrathink-managed"] === true ||
+					(typeof item.command === "string" && item.command.includes(HOOK_FILE))),
+		);
 	if (entry && stagedOk)
 		return {
 			installed: true,
@@ -169,10 +151,20 @@ export function checkPstack(deps: DoctorDeps): Finding[] {
 				? "Deciding source: default (no user config the Cursor hook can read). A project file cannot enable it."
 				: `Deciding source: ${decision.source}`,
 	});
+	if (decision.invalidOverride) {
+		findings.push({
+			id: "pstack.config-invalid",
+			section: "pstack",
+			level: "info",
+			title: "ULTRATHINK_CONFIG_DIR names a config file that is not valid JSON",
+			detail: `File: ${decision.invalidOverride}`,
+			fix: "Fix the JSON in that file, or unset ULTRATHINK_CONFIG_DIR to use the standard config files.",
+		});
+	}
 
 	const projectFile = join(deps.cwd, ".claude", "ultrathink.json");
-	const project = readObject(projectFile);
-	const projectPstack = project && isRecord(project.pstack) ? project.pstack : undefined;
+	const project = readJson(projectFile);
+	const projectPstack = isRecord(project) && isRecord(project.pstack) ? project.pstack : undefined;
 	if (projectPstack?.enabled === true && !decision.enabled && !decision.forcedOff) {
 		findings.push({
 			id: "pstack.project-ignored",

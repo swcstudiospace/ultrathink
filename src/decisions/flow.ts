@@ -9,7 +9,16 @@
  * every real call here also feeds, and obeys, the same health breaker and usage ledger as the six gates.
  */
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import {
+	appendFileSync,
+	closeSync,
+	fstatSync,
+	mkdirSync,
+	openSync,
+	readSync,
+	renameSync,
+	statSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { storePath as defaultStorePath } from "../mcp/store.ts";
 import { redactSecrets } from "../redact.ts";
@@ -25,6 +34,8 @@ import {
 } from "./types.ts";
 
 export const FLOW_OUTPUT_MAX = 12_000;
+/** One generation of history: the ledger rolls to `${path}.1` past this size, and a lookup reads at most this many bytes from its end. */
+export const FLOW_LEDGER_MAX_BYTES = 1_048_576;
 const FLOW_DECISIONS = ["approve", "reject", "needs-human"] as const;
 type FlowDecision = (typeof FLOW_DECISIONS)[number];
 /** `inactive`: nothing could decide (no Jev key, or ULTRATHINK_DECISIONS=0). Never stored, never printed. */
@@ -106,18 +117,20 @@ export function isGsdFlowCommand(
 	);
 }
 
+/** Breaks any `<output` or `</output` in the judged text, so model-controlled text cannot close the wrapper the instructions rely on. */
+function neutraliseOutputTag(text: string): string {
+	return text.replace(/<(\s*\/?\s*output)/gi, "&lt;$1");
+}
+
 function requestFor(input: FlowEvalInput, repair: boolean, zdr: boolean): DecisionsRequest {
-	const body =
-		input.output.length > FLOW_OUTPUT_MAX ? input.output.slice(0, FLOW_OUTPUT_MAX) : input.output;
 	return {
 		model: input.model?.trim() || DEFAULT_DECISIONS_MODEL,
 		state: {
 			subject: input.subject,
 			command: redactSecrets(input.command ?? ""),
 			phase: input.phase ?? "",
-			truncated: input.output.length > FLOW_OUTPUT_MAX,
 			repair,
-			output: `<output>\n${redactSecrets(body)}\n</output>`,
+			output: `<output>\n${neutraliseOutputTag(redactSecrets(input.output))}\n</output>`,
 		},
 		questions: QUESTION,
 		// zdr false: no provider key at all, as buildDecisionsRequest does.
@@ -332,20 +345,17 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 	};
 }
 
-/** Per lookup: scans newest to oldest and returns the first success row with this hash. A row that fails to parse is skipped on its own and the scan keeps going, so it cannot hide older valid rows. If rows were skipped before the hit or the start of the file, one event per lookup names the skipped count, never row content. */
+/** Per lookup: scans newest to oldest, within the last FLOW_LEDGER_MAX_BYTES of the ledger, and returns the first success row with this hash. A row that fails to parse or is not a well-formed success row is skipped on its own and the scan keeps going, so it cannot hide older valid rows. If rows were skipped before the hit or the start of the scanned tail, one event per lookup names the skipped count, never row content. */
 export function lookupFlowScore(path: string, hash: string): FlowRecord | undefined {
-	let lines: string[];
-	try {
-		lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
-	} catch {
-		return undefined;
-	}
+	const tail = readLedgerTail(path);
+	if (tail === undefined) return undefined;
+	const lines = tail.split("\n").filter(Boolean);
 	let found: FlowRecord | undefined;
 	let skipped = 0;
 	for (let i = lines.length - 1; i >= 0; i--) {
-		let row: FlowRecord | null;
+		let row: Partial<FlowRecord> | null;
 		try {
-			row = JSON.parse(lines[i]!) as FlowRecord | null;
+			row = JSON.parse(lines[i]!) as Partial<FlowRecord> | null;
 		} catch {
 			skipped += 1;
 			continue;
@@ -354,16 +364,69 @@ export function lookupFlowScore(path: string, hash: string): FlowRecord | undefi
 			skipped += 1;
 			continue;
 		}
-		if (row.hash === hash && row.state === "success" && typeof row.confidence === "number") {
+		if (row.hash !== hash || row.state !== "success") continue;
+		if (isSuccessRecord(row)) {
 			found = row;
 			break;
 		}
+		skipped += 1;
 	}
 	if (skipped > 0) console.warn(`[ultrathink] event=flow_score_rows_skipped count=${skipped}`);
 	return found;
 }
 
+/** The success shape `evaluateFlowOutput` writes: a known decision and a confidence on the unit interval. Anything else with this hash is corrupt and must not reach callers. */
+function isSuccessRecord(row: Partial<FlowRecord>): row is FlowRecord {
+	return (
+		typeof row.hash === "string" &&
+		FLOW_DECISIONS.includes(row.decision as FlowDecision) &&
+		typeof row.confidence === "number" &&
+		Number.isFinite(row.confidence) &&
+		row.confidence >= 0 &&
+		row.confidence <= 1
+	);
+}
+
+/** The last FLOW_LEDGER_MAX_BYTES of the ledger, cut at a line boundary, so a lookup never reads an unbounded file. Undefined when the file cannot be read. */
+function readLedgerTail(path: string): string | undefined {
+	let fd: number | undefined;
+	try {
+		fd = openSync(path, "r");
+		const size = fstatSync(fd).size;
+		const start = Math.max(0, size - FLOW_LEDGER_MAX_BYTES);
+		const buf = Buffer.alloc(size - start);
+		let got = 0;
+		while (got < buf.length) {
+			const n = readSync(fd, buf, got, buf.length - got, start + got);
+			if (n === 0) break;
+			got += n;
+		}
+		let text = buf.subarray(0, got).toString("utf8");
+		// Only when the read did not start at byte 0: the first line may be cut, so it is dropped, and the rows before it are out of reach.
+		if (start > 0) {
+			const newline = text.indexOf("\n");
+			text = newline === -1 ? "" : text.slice(newline + 1);
+		}
+		return text;
+	} catch {
+		return undefined;
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+}
+
+/** Appends one record, rolling the ledger to `${path}.1` first when it has reached FLOW_LEDGER_MAX_BYTES. */
 export function appendFlowScore(path: string, record: FlowRecord): void {
 	mkdirSync(dirname(path), { recursive: true });
+	rotateIfFull(path);
 	appendFileSync(path, `${JSON.stringify(record)}\n`);
+}
+
+/** Never throws: a missing ledger or a failed rename leaves the file in place, and the append goes on to it. */
+function rotateIfFull(path: string): void {
+	try {
+		if (statSync(path).size >= FLOW_LEDGER_MAX_BYTES) renameSync(path, `${path}.1`);
+	} catch {
+		// reason: no ledger yet, or the rename failed; the append lands in the existing file
+	}
 }

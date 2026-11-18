@@ -192,6 +192,16 @@ describe("redactText: paths", () => {
 		expect(redactText("/home/dev/.ssh/id_rsa", { home, repoRoot: "/home/" })).toBe("~/.ssh/id_rsa");
 	});
 
+	test("a .. segment that climbs out of the repo root is redacted; one that stays inside is not", () => {
+		const repoRoot = "/home/dev/src/proj";
+		expect(redactText("/home/dev/src/proj/../../.ssh/id_rsa", { home, repoRoot })).toBe(
+			"~/.ssh/id_rsa",
+		);
+		expect(redactText("/home/dev/src/proj/a/../b.ts", { home, repoRoot })).toBe(
+			"/home/dev/src/proj/a/../b.ts",
+		);
+	});
+
 	test("home defaults to HOME and an empty or root home hides nothing", () => {
 		const saved = process.env.HOME;
 		process.env.HOME = "/home/dev";

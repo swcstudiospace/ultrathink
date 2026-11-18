@@ -120,6 +120,7 @@ export const probeDecisions: StackProbe = async (
 		return connection(ctx, startedAt, {
 			status: "unavailable",
 			reason: "Decisions probe failed unexpectedly",
+			affects: AFFECTS,
 			via: "none",
 		});
 	}

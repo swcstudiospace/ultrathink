@@ -15,6 +15,9 @@ export const CLAUDE_REVIEW_MODEL = "claude-haiku-5-5";
 /** A diff review can take minutes; the merge wait budget (`waitMs`) is for polling, not for this call. */
 export const CLAUDE_REVIEW_TIMEOUT_MS = 600_000;
 
+/** Largest PR diff sent to the model; a bigger diff fails the review instead of being buffered and sent whole. */
+export const MAX_DIFF_BYTES = 512 * 1024;
+
 /** Delimiter word for the PR diff fence; each call adds its own nonce to the BEGIN and END lines. */
 const DIFF_FENCE = "UNTRUSTED_PR_DIFF";
 
@@ -133,7 +136,7 @@ export async function reviewWithClaude(input: {
 	if (view.exitCode !== 0) return failed(`gh pr view failed: ${view.stderr}`);
 	const base = baseBranch(view.stdout);
 	if (!base) return failed("gh pr view returned no usable base branch");
-	const fetched = run(["git", "fetch", "--quiet", "origin", base], {
+	const fetched = run(["git", "fetch", "--quiet", "origin", "--", base], {
 		cwd: input.cwd,
 		timeoutMs: input.timeoutMs,
 	});
@@ -145,6 +148,10 @@ export async function reviewWithClaude(input: {
 	});
 	if (diff.exitCode !== 0) return failed(`git diff failed: ${diff.stderr}`);
 	if (!diff.stdout.trim()) return failed("git diff returned an empty diff");
+	const diffBytes = Buffer.byteLength(diff.stdout);
+	if (diffBytes > MAX_DIFF_BYTES) {
+		return failed(`diff is ${diffBytes} bytes, over ${MAX_DIFF_BYTES}`);
+	}
 	// Isolated child: --tools "" and --setting-sources "" load no tools or settings, so user hooks do not run. `env`
 	// sets MAX_THINKING_TOKENS=0 and unsets ANTHROPIC_API_KEY, so the review uses the claude.ai login rather than an
 	// API key with no credit (--bare would require the key, so it is not used).

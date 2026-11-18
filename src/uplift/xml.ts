@@ -81,9 +81,9 @@ function findLastClose(text: string, name: string, min: number): number {
 
 function hasElement(lowerInner: string, name: string): boolean {
 	const tag = name.toLowerCase();
-	const open = lowerInner.indexOf(`<${tag}`);
-	if (open === -1) return false;
-	return lowerInner.lastIndexOf(`</${tag}>`) > open;
+	const open = new RegExp(`<${tag}(?=[\\s/>])`).exec(lowerInner);
+	if (!open) return false;
+	return lowerInner.lastIndexOf(`</${tag}>`) > open.index;
 }
 
 /** Every model-written ORIGINAL block (or lone tag) is removed; the code, not the model, owns that text. */

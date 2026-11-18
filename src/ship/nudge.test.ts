@@ -87,4 +87,12 @@ describe("shipNudge", () => {
 		};
 		expect(shipNudge(input)?.decision).toBe("block");
 	});
+
+	test("shell-quotes a state path and branch that would otherwise split the instruction", () => {
+		const spaced = shipNudge({ ...base, statePath: "/s/my state.json" });
+		expect(spaced?.reason).toContain("stateFile='/s/my state.json'");
+		const odd = shipNudge({ ...base, precheck: { ...precheck, branch: "feat/x;rm" } });
+		expect(odd?.reason).toContain("on branch 'feat/x;rm'");
+		expect(odd?.reason).not.toContain("on branch feat/x;rm");
+	});
 });

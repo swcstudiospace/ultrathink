@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { resolvePstack } from "../cursor/pstack.ts";
@@ -215,10 +215,24 @@ export function grokUserQuery(prompt: string): string | undefined {
 	return close === -1 ? undefined : text.slice(open.length, close).trim();
 }
 
+/** Frontmatter and the summary fallbacks read only this prefix of a skill or command file, on the prompt-hook path. */
+const SKILL_READ_MAX = 64 * 1024;
+
+function readPrefix(path: string): string {
+	const fd = openSync(path, "r");
+	try {
+		const buffer = Buffer.alloc(SKILL_READ_MAX);
+		const bytes = readSync(fd, buffer, 0, SKILL_READ_MAX, 0);
+		return buffer.toString("utf8", 0, bytes);
+	} finally {
+		closeSync(fd);
+	}
+}
+
 function readSkill(path: string): { path: string; summary?: string } | undefined {
 	try {
 		if (!statSync(path).isFile()) return undefined;
-		const { frontmatter, body } = splitFrontmatter(readFileSync(path, "utf8"));
+		const { frontmatter, body } = splitFrontmatter(readPrefix(path));
 		return {
 			path,
 			summary: (frontmatter ? frontmatterDescription(frontmatter) : undefined) ?? bodySummary(body),

@@ -64,7 +64,8 @@ const USAGE =
 const NO_KEY =
 	"no Jev key (bin/ultrathink-mcp auth set-key openrouter --stdin or ULTRATHINK_OPENROUTER_KEY)";
 const KILLED = "off (ULTRATHINK_DECISIONS=0)";
-const CHECK_MESSAGE = "Add a --verbose flag to the export command";
+// Fixed and neutral: the check measures key, model and transport, so the text must not vary between runs.
+const CHECK_PLAN_MESSAGE = "Add a --verbose flag to the export command";
 const MAX_CASES = 200;
 
 interface Runtime {
@@ -125,7 +126,7 @@ function footer(rt: Runtime, source: KeySource): string {
 function checkRequest(rt: Runtime): DecisionsRequest {
 	return buildDecisionsRequest(
 		"plan",
-		buildPlanState({ message: CHECK_MESSAGE, recentConversation: "" }),
+		buildPlanState({ message: CHECK_PLAN_MESSAGE, recentConversation: "" }),
 		{
 			model: rt.config.model,
 			zdr: rt.config.zdr,

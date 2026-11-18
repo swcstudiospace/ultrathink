@@ -532,6 +532,49 @@ describe("realm probe refusals, timeouts, identity and secrecy", () => {
 		expect(Date.now() - started).toBeLessThan(2500);
 	});
 
+	test("unavailable outcomes name what they affect and the seam they came from", async () => {
+		const down = await startFake({ noListen: true });
+		const downConn = await probeRealm(ctx(homeEnv({ stateDir: down.stateDir })));
+		expect(downConn).toMatchObject({
+			status: "unavailable",
+			affects: ["containment"],
+			via: "socket",
+		});
+		const unbound = await startFake({ reply: statusReply("unbound", "fail-closed") });
+		const unboundConn = await probeRealm(ctx(homeEnv({ stateDir: unbound.stateDir })));
+		expect(unboundConn).toMatchObject({
+			status: "unavailable",
+			affects: ["containment"],
+			via: "socket",
+		});
+	});
+
+	test("the budget countdown reads the injected clock, not the wall clock", async () => {
+		let tick = T0;
+		const now = (): number => {
+			const value = tick;
+			tick += 400;
+			return value;
+		};
+		let budgetSeen: number | undefined;
+		await raw(
+			{},
+			{
+				now,
+				timeoutMs: 1500,
+				deps: {
+					lookupOnPath: () => "/usr/bin/realm",
+					runCli: async (_file, _args, _env, timeoutMs) => {
+						budgetSeen = timeoutMs;
+						return { kind: "io" };
+					},
+				},
+			},
+		);
+		// Clock reads: startedAt, probedAt, then remaining(): 800 ms of the 1500 ms budget have elapsed.
+		expect(budgetSeen).toBe(700);
+	});
+
 	test("a socket with permission bits wider than 0600 is refused with nothing sent", async () => {
 		const fake = await startFake({ reply: statusReply("active", "fail-closed"), sockMode: 0o666 });
 		const env = homeEnv({ stateDir: fake.stateDir });

@@ -382,6 +382,38 @@ describe("installSkill", () => {
 		expect(readdirSync(dir)).toEqual([]);
 	});
 
+	test("a marked skill another writer replaces before the rename is refused and the foreign file kept", () => {
+		const f = fixture();
+		const draft = draftOf(f, "Race target");
+		const dir = join(f.piDir, "managed-skills", draft.name);
+		const path = join(dir, "SKILL.md");
+		expect(installSkill(draft, "omp", f.ctx()).action).toBe("created");
+		const foreign = "# Written by someone else\n";
+		const next: SkillDraft = { ...draft, content: `${draft.content}\nmore\n` };
+		const original = fs.chmodSync;
+		// stage() chmods its temp file after the slot check and before the rename: another writer lands in that gap.
+		const raced = spyOn(fs, "chmodSync").mockImplementation(((
+			...args: Parameters<typeof original>
+		) => {
+			if (String(args[0]).endsWith(".tmp")) writeFileSync(path, foreign);
+			return (original as (...rest: unknown[]) => unknown)(...args);
+		}) as typeof fs.chmodSync);
+		let outcome: InstallOutcome;
+		try {
+			outcome = installSkill(next, "omp", f.ctx());
+		} finally {
+			raced.mockRestore();
+		}
+		expect(outcome).toEqual({
+			target: "omp",
+			path,
+			action: "refused",
+			reason: "a skill with this name changed meanwhile",
+		});
+		expect(readFileSync(path, "utf8")).toBe(foreign);
+		expect(readdirSync(dir)).toEqual(["SKILL.md"]);
+	});
+
 	test("drafts land under the state directory with private modes and no leftovers", () => {
 		const f = fixture();
 		const draft = draftOf(f);

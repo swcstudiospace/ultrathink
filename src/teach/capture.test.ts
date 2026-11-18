@@ -763,6 +763,23 @@ describe("forgetMoment", () => {
 		expect(calls.deleteDocument).toEqual([]);
 		expect(store.outbox()).toHaveLength(1);
 	});
+
+	test("a failure after the local removal still reports a retained remote copy", async () => {
+		const { client } = fakeClient();
+		const { ctx, store } = setup({ hindsight: client });
+		const retained = await captureMoment(lesson(), ctx);
+		// The kill switch is read after the local removal, so an unreadable env fails the forget midway.
+		Object.defineProperty(ctx.env, "ULTRATHINK_TEACH", {
+			get: () => {
+				throw new Error("env unreadable");
+			},
+		});
+		expect(await forgetMoment(retained.moment.id, ctx)).toEqual({
+			removed: true,
+			remote: "retained",
+		});
+		expect(store.get(retained.moment.id)).toBeUndefined();
+	});
 });
 
 describe("syncOutbox", () => {

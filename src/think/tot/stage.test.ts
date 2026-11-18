@@ -398,4 +398,15 @@ describe("runTotStage", () => {
 			expect(record.markdown).toMatch(/^Blocked until /m);
 		}
 	});
+
+	test("a graph id made only of dots never resolves the checkpoint dir to the state dir's parent", async () => {
+		const dir = makeDir("ut-tot-stage-");
+		const linear = fakeLinear();
+		const outcome = await runTotStage(
+			input(2, seams(linear), dir, { plan: { ...plan(2), graphId: ".." } }),
+		);
+		expect(outcome.manifest.generated).toBe(2);
+		expect(readdirSync(join(dir, "tot"))).toEqual(["graph"]);
+		expect(readdirSync(join(dir, "tot", "graph")).length).toBeGreaterThan(0);
+	});
 });

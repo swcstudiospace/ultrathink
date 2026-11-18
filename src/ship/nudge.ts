@@ -41,7 +41,7 @@ export function shipNudge(input: {
 		: "leaves the PR for a manual merge (ship.autoMerge is off)";
 	return {
 		decision: "block",
-		reason: `Ultrathink: the ${skill} run looks finished on branch ${precheck.branch} (${precheck.ahead} ${precheck.ahead === 1 ? "commit" : "commits"} ahead of ${precheck.base}). Invoke the ultrathink-ship skill now with stateFile=${input.statePath} (CLI: ${shellArg(SHIP_CLI)}): it checks whether the task is done, opens a PR into ${precheck.base}, runs the Greptile review until 5/5 and ${merge}.`,
+		reason: `Ultrathink: the ${skill} run looks finished on branch ${shellArg(precheck.branch)} (${precheck.ahead} ${precheck.ahead === 1 ? "commit" : "commits"} ahead of ${precheck.base}). Invoke the ultrathink-ship skill now with stateFile=${shellArg(input.statePath)} (CLI: ${shellArg(SHIP_CLI)}): it checks whether the task is done, opens a PR into ${precheck.base}, runs the Greptile review until 5/5 and ${merge}.`,
 		systemMessage: `Ultrathink · ${skill} finished on ${precheck.branch}; running ultrathink-ship (PR into ${precheck.base}, Greptile review, ${autoMerge ? "merge" : "manual merge"}).`,
 	};
 }

@@ -171,7 +171,6 @@ describe("guarded writer", () => {
 
 	test("a nested withGuardedLock on a path this process holds runs without waiting", () => {
 		const lock = `${path}.lock`;
-		const started = Date.now();
 		let inner = false;
 		withGuardedLock(path, () => {
 			withGuardedLock(
@@ -185,8 +184,14 @@ describe("guarded writer", () => {
 		});
 
 		expect(inner).toBe(true);
-		expect(Date.now() - started).toBeLessThan(1_000);
 		expect(existsSync(lock)).toBe(false);
+	});
+
+	test("release does not delete a lock now held by another pid", () => {
+		withGuardedLock(path, () => {
+			writeFileSync(`${path}.lock`, "99999999");
+		});
+		expect(readFileSync(`${path}.lock`, "utf8")).toBe("99999999");
 	});
 
 	test("a missing file reads as ABSENT; creating it succeeds once and a second create fails", () => {

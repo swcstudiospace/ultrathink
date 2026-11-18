@@ -58,6 +58,11 @@ describe("buildMuseArgs", () => {
 		expect(args[args.indexOf("--model") + 1]).toBe("muse-spark-1.3-contributor");
 	});
 
+	test("the default reasoning effort is DEFAULT_MUSE_CONFIG.reasoningEffort", () => {
+		const args = buildMuseArgs("/tmp/p.txt");
+		expect(args[args.indexOf("--reasoning-effort") + 1]).toBe(DEFAULT_MUSE_CONFIG.reasoningEffort);
+	});
+
 	test("blank model omits --model (CLI session default answers)", () => {
 		for (const model of [undefined, "", "   "]) {
 			const args = buildMuseArgs("/tmp/p.txt", { model });

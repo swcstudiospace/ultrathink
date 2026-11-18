@@ -5,6 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
 	closeSync,
 	fsyncSync,
+	linkSync,
 	openSync,
 	readFileSync,
 	renameSync,
@@ -126,7 +127,7 @@ export function withGuardedLock<T>(
 		return fn();
 	} finally {
 		heldLocks.delete(lockPath);
-		rmSync(lockPath, { force: true });
+		removeLockIfBody(lockPath, String(process.pid));
 	}
 }
 
@@ -143,7 +144,7 @@ function acquireLock(lockPath: string, waitMs: number): void {
 		if (
 			heldBody !== undefined &&
 			(isDeadHolder(heldBody) || isExpired(lockPath)) &&
-			removeStaleLock(lockPath, heldBody)
+			removeLockIfBody(lockPath, heldBody)
 		) {
 			continue;
 		}
@@ -200,15 +201,31 @@ function isDeadHolder(body: string): boolean {
 }
 
 /**
- * Removes a dead holder's lock only while its body still equals `staleBody`, the content read
- * before the pid was checked. Returns false when the body changed: a live writer replaced it.
+ * Removes `<path>.lock` only while its body still equals `expectedBody`. The lock is first renamed
+ * to a unique name, so its body is checked on a file no other writer can reach. A body that changed
+ * is linked back under the lock name, which never replaces a lock created in the meantime; if one
+ * was created there, the parked body is dropped. A missing lock counts as removed. Returns false
+ * when the body changed.
  */
-function removeStaleLock(lockPath: string, staleBody: string): boolean {
-	const current = readLockBody(lockPath);
-	if (current === undefined) return true;
-	if (current !== staleBody) return false;
-	rmSync(lockPath, { force: true });
-	return true;
+function removeLockIfBody(lockPath: string, expectedBody: string): boolean {
+	const parked = `${lockPath}.${process.pid}.${randomBytes(8).toString("hex")}.reap`;
+	try {
+		renameSync(lockPath, parked);
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return true;
+		throw error;
+	}
+	try {
+		if (readFileSync(parked, "utf8") === expectedBody) return true;
+		try {
+			linkSync(parked, lockPath);
+		} catch (error) {
+			if (errorCode(error) !== "EEXIST") throw error;
+		}
+		return false;
+	} finally {
+		rmSync(parked, { force: true });
+	}
 }
 
 /**
@@ -257,7 +274,7 @@ function fsyncDirectory(dir: string): void {
 	}
 }
 
-function errorCode(error: unknown): string | undefined {
+export function errorCode(error: unknown): string | undefined {
 	return error instanceof Error && "code" in error && typeof error.code === "string"
 		? error.code
 		: undefined;

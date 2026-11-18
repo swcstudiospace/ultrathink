@@ -191,6 +191,11 @@ function isBlank(value: string | undefined): boolean {
 	return value === undefined || value.trim() === "";
 }
 
+/** Once Ship is recorded the loop is closed: it takes no further HTIL or audit writes. */
+function isClosed(row: PhaseLoopState): boolean {
+	return row.phaseOrder[row.phaseOrder.length - 1] === "Ship";
+}
+
 /** A complete override has every field set. */
 function overrideComplete(override: OverrideDecision): boolean {
 	return ![override.decisionId, override.owner, override.decidedAt, override.reason].some(isBlank);
@@ -327,7 +332,7 @@ export function confirmShip(
 
 /**
  * Record an open HTIL entry (LIFE-05). The entry starts in state open and blocks close until it
- * is resolved. A missing id or owner, or a duplicate id, is refused.
+ * is resolved. A missing id or owner, or a duplicate id, is refused, and so is any entry once Ship is recorded.
  */
 export function open(
 	runtimeId: string,
@@ -335,6 +340,7 @@ export function open(
 	store?: PhaseLoopStore,
 ): GateOutcome {
 	return transition(runtimeId, store, (row) => {
+		if (isClosed(row)) return [`loop is closed by Ship; HTIL entry ${entry.id} is not recorded`];
 		const refusals: string[] = [];
 		if (isBlank(entry.id)) refusals.push("HTIL entry needs an id");
 		if (isBlank(entry.owner)) refusals.push(`HTIL entry ${entry.id} needs an owner`);
@@ -350,7 +356,7 @@ export function open(
 /**
  * Resolve an open HTIL entry (LIFE-05). `done` needs the evidence it was resolved by; `deferred`
  * needs the recorded owner decision that defers it. A missing record is refused and the entry
- * stays open.
+ * stays open. Refused once Ship is recorded.
  */
 export function resolve(
 	runtimeId: string,
@@ -359,6 +365,7 @@ export function resolve(
 	store?: PhaseLoopStore,
 ): GateOutcome {
 	return transition(runtimeId, store, (row) => {
+		if (isClosed(row)) return [`loop is closed by Ship; HTIL entry ${entryId} is not resolved`];
 		const entry = row.humanItems.find((item) => item.id === entryId);
 		if (entry === undefined) return [`HTIL entry ${entryId} does not exist`];
 		if (entry.state !== "open") return [`HTIL entry ${entryId} is already ${entry.state}`];
@@ -382,7 +389,7 @@ export function resolve(
 
 /**
  * LIFE-02: records one audit or validation result, so a later close can cite it by id. A record with the same id is
- * replaced, so the latest result for an id is the one a close reads. A blank id is refused.
+ * replaced, so the latest result for an id is the one a close reads. A blank id is refused, and so is any audit once Ship is recorded.
  */
 export function recordAudit(
 	runtimeId: string,
@@ -390,6 +397,7 @@ export function recordAudit(
 	store?: PhaseLoopStore,
 ): GateOutcome {
 	return transition(runtimeId, store, (row) => {
+		if (isClosed(row)) return [`loop is closed by Ship; audit ${audit.id} is not recorded`];
 		if (isBlank(audit.id)) return ["audit record needs an id"];
 		row.audits = [...(row.audits ?? []).filter((item) => item.id !== audit.id), { ...audit }];
 		return [];

@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	CLAUDE_REVIEW_MODEL,
+	MAX_DIFF_BYTES,
 	claudeReviewPrompt,
 	parseReview,
 	reviewWithClaude,
@@ -113,7 +114,7 @@ describe("reviewWithClaude", () => {
 			"--json",
 			"baseRefName",
 		]);
-		expect(calls[1]?.argv).toEqual(["git", "fetch", "--quiet", "origin", "master"]);
+		expect(calls[1]?.argv).toEqual(["git", "fetch", "--quiet", "origin", "--", "master"]);
 		expect(calls[2]?.argv).toEqual(["git", "diff", "origin/master...abc123"]);
 		expect(calls[3]?.argv).toEqual([
 			"env",
@@ -218,6 +219,26 @@ describe("reviewWithClaude", () => {
 		const { run } = fakeRun(ok('{"score": 5, "comments": []}'), ok("  \n"));
 		const result = await reviewWithClaude({ ...input, run });
 		expect(result).toMatchObject({ status: "failed", score: null });
+	});
+
+	test("a base branch starting with '-' fails before git runs", async () => {
+		const option = fakeRun(
+			ok('{"score": 5, "comments": []}'),
+			ok(DIFF),
+			ok('{"baseRefName":"--upload-pack=evil"}'),
+		);
+		const result = await reviewWithClaude({ ...input, run: option.run });
+		expect(result).toMatchObject({ status: "failed", score: null });
+		expect(option.calls.map((c) => c.argv[0])).toEqual(["gh"]);
+	});
+
+	test("a diff over MAX_DIFF_BYTES fails with the size and claude is not invoked", async () => {
+		const big = `${DIFF}${"+x\n".repeat(MAX_DIFF_BYTES / 2)}`;
+		const { run, calls } = fakeRun(ok('{"score": 5, "comments": []}'), ok(big));
+		const result = await reviewWithClaude({ ...input, run });
+		expect(result).toMatchObject({ status: "failed", score: null });
+		expect(result.error).toContain(`over ${MAX_DIFF_BYTES}`);
+		expect(calls.map((c) => c.argv[0])).toEqual(["gh", "git", "git"]);
 	});
 
 	test("the reviewer child is isolated: login only, no tools, no settings sources, no extended thinking", async () => {

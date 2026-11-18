@@ -12,6 +12,8 @@
  * `~/.claude/skills`, so a name held by a skill made from other lessons is refused and the lesson keeps only its draft.
  * Hermes and unknown hosts only get a draft under `<stateDir>/teach/skill-drafts`: Hermes installs through
  * `skill_manage` so its `skills.write_approval` gate applies, and ultrathink never writes `~/.hermes/skills`.
+ * The marker is read again just before the rename, but a write landing between that read and the rename is still
+ * replaced: POSIX rename has no compare-and-swap, so closing that window needs a lock held across check and rename.
  */
 import { randomBytes } from "node:crypto";
 import {
@@ -208,7 +210,8 @@ export function renderSkillDraft(moments: TeachableMoment[], ctx: TeachContext):
 	if (moments.length === 0) throw new Error("no lessons to promote");
 	// Stable sort: the most repeated lesson is primary, ties keep the caller's order.
 	const ordered = [...moments].sort((a, b) => b.occurrences - a.occurrences);
-	const primary = ordered[0] as TeachableMoment;
+	const primary = ordered[0];
+	if (!primary) throw new Error("no lessons to promote");
 
 	const home = ctx.env.HOME?.trim() || homedir();
 	let changed = false;
@@ -217,13 +220,14 @@ export function renderSkillDraft(moments: TeachableMoment[], ctx: TeachContext):
 		if (out !== text) changed = true;
 		return out;
 	};
-	const clean = ordered.map((m) => ({
+	const cleanOf = (m: TeachableMoment) => ({
 		m,
 		name: red(m.name).replace(/\s+/g, " ").trim(),
 		description: red(m.description).trim(),
 		body: red(m.body).trim(),
-	}));
-	const lead = clean[0] as (typeof clean)[number];
+	});
+	const lead = cleanOf(primary);
+	const clean = ordered.map(cleanOf);
 	if (!clean.some((c) => c.body !== "")) throw new Error("lesson has no body text");
 
 	const slug = slugOf(lead.name) || slugOf(primary.id);
@@ -276,9 +280,7 @@ export function renderSkillDraft(moments: TeachableMoment[], ctx: TeachContext):
 	const body = [
 		`# ${lead.name}`,
 		"## When to use",
-		several
-			? when.map((w) => `- ${w.replace(/\s+/g, " ").trim()}`).join("\n")
-			: (when[0] as string),
+		several ? when.map((w) => `- ${w.replace(/\s+/g, " ").trim()}`).join("\n") : when.join("\n"),
 		...[...sections].map(([heading, parts]) => `## ${heading}\n\n${parts.join("\n\n")}`),
 		`## Evidence\n\n${evidence.join("\n")}`,
 		`<!-- ultrathink:teach ids=${ids.join(",")} -->`,
@@ -401,6 +403,10 @@ function writeHostSkill(
 			// O_EXCL claims the name, so a skill that appeared since the lstat is never replaced.
 			closeSync(openSync(path, "wx", 0o644));
 			placeholder = true;
+		}
+		// The slot is read again just before the rename: a write since the check above is refused, not replaced.
+		if (replace && slotOf(dir, path, new Set(draft.sourceIds.map(markerId))) !== "ours") {
+			return refuse("a skill with this name changed meanwhile");
 		}
 		renameSync(tmp, path);
 		tmp = undefined;

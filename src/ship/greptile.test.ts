@@ -98,16 +98,45 @@ describe("findGreptileRepo", () => {
 						},
 		});
 		expect(await findGreptileRepo(client, "acme/app")).toEqual({
-			name: "ACME/App",
-			remote: "github",
-			defaultBranch: "master",
-			reviewsEnabled: false,
+			repo: { name: "ACME/App", remote: "github", defaultBranch: "master", reviewsEnabled: false },
 		});
 	});
 
-	test("errors -> undefined", async () => {
+	test("without a total, pages until an empty page", async () => {
+		const others = Array.from({ length: 100 }, (_, i) => ({
+			name: `acme/other-${i}`,
+			remote: "github",
+			defaultBranch: "main",
+		}));
+		const { client, calls } = fakeClient({
+			list_repositories: (args) =>
+				args.page === 0
+					? { repositories: others }
+					: { repositories: [{ name: "acme/app", remote: "github", defaultBranch: "master" }] },
+		});
+		expect(await findGreptileRepo(client, "acme/app")).toEqual({
+			repo: { name: "acme/app", remote: "github", defaultBranch: "master" },
+		});
+		expect(calls.map((c) => c.args.page)).toEqual([0, 1]);
+	});
+
+	test("an unsupported remote is a note naming it, not a silent miss", async () => {
+		const { client } = fakeClient({
+			list_repositories: () => ({
+				repositories: [{ name: "acme/app", remote: "bitbucket", defaultBranch: "master" }],
+				total: 1,
+			}),
+		});
+		const lookup = await findGreptileRepo(client, "acme/app");
+		expect(lookup.repo).toBeUndefined();
+		expect(lookup.note).toContain('"bitbucket"');
+	});
+
+	test("a non-tenant lookup error is returned as a note, not dropped", async () => {
 		const { client } = fakeClient({});
-		expect(await findGreptileRepo(client, "acme/app")).toBeUndefined();
+		expect(await findGreptileRepo(client, "acme/app")).toEqual({
+			note: "Greptile repository lookup failed: unexpected list_repositories",
+		});
 	});
 });
 
@@ -572,6 +601,24 @@ describe("reviewCli", () => {
 		expect(time.sleeps).toEqual([]);
 	});
 
+	test("a status record naming neither commit nor headSha is no review for headSha: a new run starts", async () => {
+		const { run, argvs } = fakeRun((argv) =>
+			argv[2] === "status"
+				? {
+						exitCode: 0,
+						stdout: JSON.stringify({
+							runId: "run-9",
+							status: "COMPLETED",
+							confidence: 5,
+							comments: [],
+						}),
+					}
+				: { exitCode: 0, stdout: JSON.stringify({ runId: "run-10", confidence: 4, comments: [] }) },
+		);
+		expect(await review(run)).toMatchObject({ status: "completed", score: 4, reviewId: "run-10" });
+		expect(argvs).toEqual([STATUS, START]);
+	});
+
 	test("restart skips the status lookup and starts a new run", async () => {
 		const { run, argvs } = fakeRun((argv) =>
 			argv[2] === "status"
@@ -826,6 +873,32 @@ describe("runReview", () => {
 			});
 			expect(argvs.at(-1)).toEqual(["greptile", "review", "--json", "-b", "master"]);
 		}
+	});
+
+	test("an unsupported remote runs the CLI review and records why", async () => {
+		const { client } = fakeClient({
+			list_repositories: () => ({
+				repositories: [{ name: "acme/app", remote: "bitbucket", defaultBranch: "master" }],
+				total: 1,
+			}),
+		});
+		const { run } = cliRun();
+		const result = await runReview({ ...input, client, run });
+		expect(result).toMatchObject({ source: "cli", status: "completed", score: 2 });
+		expect(result.error).toContain('"bitbucket"');
+	});
+
+	test("a non-tenant lookup error runs the CLI review and keeps the error on the result", async () => {
+		const { client } = fakeClient({
+			list_repositories: () => {
+				throw new Error("list_repositories: upstream 502");
+			},
+		});
+		const { run, argvs } = cliRun();
+		const result = await runReview({ ...input, client, run });
+		expect(argvs.at(-1)).toEqual(["greptile", "review", "--json", "-b", "master"]);
+		expect(result).toMatchObject({ source: "cli", status: "completed", score: 2 });
+		expect(result.error).toContain("upstream 502");
 	});
 });
 

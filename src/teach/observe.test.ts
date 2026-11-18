@@ -403,6 +403,34 @@ describe("parseLessons", () => {
 	test("a quote in prose before the object does not hide it", () => {
 		expect(parseLessons(`He said "no, ${lessonJson(GOOD)}`)).toHaveLength(1);
 	});
+
+	test("a reply that is not a lessons object is reported as a rejection", () => {
+		for (const text of ["not json", '{"x":1}']) {
+			const rejected: string[] = [];
+			expect(parseLessons(text, rejected)).toEqual([]);
+			expect(rejected).toEqual(["reply is not a lessons object"]);
+		}
+	});
+});
+
+describe("observeDigest reply shape and redaction", () => {
+	test("a reply that is not a lessons object reports it as the detail", async () => {
+		const h = harness({ reply: "I could not find any lessons." });
+		const outcome = await observeDigest(digest(), h.ctx, { capture: h.capture });
+		expect(outcome.captured).toEqual([]);
+		expect(outcome.detail).toContain("reply is not a lessons object");
+	});
+
+	test("a secret that straddles the body limit never reaches the stored lesson as a fragment", async () => {
+		const body = `${"a".repeat(1190)} ${KEY}`;
+		const h = harness({ reply: lessonJson({ ...GOOD, body }) });
+		await observeDigest(digest(), h.ctx, { capture: h.capture });
+		expect(h.captured).toHaveLength(1);
+		const stored = h.captured[0]?.body ?? "";
+		expect(stored).toContain("aaaa");
+		expect(stored).not.toContain("sk-");
+		expect(stored).not.toContain("abcdefgh");
+	});
 });
 
 describe("observeDigest capture", () => {

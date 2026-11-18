@@ -159,7 +159,11 @@ describe("runUplift", () => {
 		const original = "add a clients list page";
 		const result = await runUplift({
 			original,
-			complete: async () => ({ text: "<BUILD_PROMPT/>" }) as unknown as string,
+			// The cast is deliberate: the runtime guard in runUplift is what is under test, not the type of the fake.
+			complete: (async () => ({ text: "<BUILD_PROMPT/>" })) as unknown as (
+				system: string,
+				user: string,
+			) => Promise<string>,
 			report: () => ({ attempts: 3 }),
 		});
 		expect(result.source).toBe("fallback");

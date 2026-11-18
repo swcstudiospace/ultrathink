@@ -135,14 +135,25 @@ export function totEnabled(config: UltrathinkConfig): boolean {
 	return config.think.tot.enabled !== false;
 }
 
-/** A file-name-safe segment: the graph id is content-addressed but a state dir name never trusts it. */
+/** A file-name-safe segment: the graph id is content-addressed but a state dir name never trusts it. A dot-only name would be a parent directory, so it is the fallback too. */
 function segment(value: string): string {
-	return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 96) || "graph";
+	const safe = value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 96);
+	return safe === "" || /^\.+$/.test(safe) ? "graph" : safe;
 }
 
 function causeOf(error: unknown): string {
 	const raw = error instanceof Error ? error.message : String(error);
 	return redactSecrets(raw).replace(/\s+/g, " ").trim().slice(0, 200) || "error";
+}
+
+/** The tracker sync summary of a stage that wrote `manifest` (none when it failed before writing). Written PRDs that never reached a tracker row are owed, not lost: the checkpoints keep them for the next run. */
+function summaryOf(manifest: TotManifest | undefined, total: number): SyncSummary {
+	return {
+		total,
+		synced: 0,
+		pending: manifest?.generated ?? 0,
+		failed: manifest?.failed ?? total,
+	};
 }
 
 const NO_FACTS = (root: string): ProjectFacts => ({
@@ -175,13 +186,7 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 	};
 	const failedOutcome = (error: string, manifest?: TotManifest): PrdOutcome => ({
 		manifest: manifest ?? { total, generated: 0, failed: total, fallbacks: 0, records: [] },
-		sync: {
-			total,
-			synced: 0,
-			// Written PRDs that never reached a tracker row are owed, not lost: the checkpoints keep them for the next run.
-			pending: manifest?.generated ?? 0,
-			failed: manifest?.failed ?? total,
-		},
+		sync: summaryOf(manifest, total),
 		model,
 		error,
 	});
@@ -266,7 +271,7 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 			log("tot: no tracker reachable, PRDs stay pending");
 			return {
 				manifest,
-				sync: { total, synced: 0, pending: manifest.generated, failed: manifest.failed },
+				sync: summaryOf(manifest, total),
 				model,
 				error: "no tracker is reachable to receive the PRDs",
 			};

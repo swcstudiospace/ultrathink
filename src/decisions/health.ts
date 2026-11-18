@@ -14,7 +14,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { withFileLock, writeFileAtomic } from "../claude/atomic.ts";
 
 export type JevOpenCause = "credits" | "auth";
@@ -159,10 +159,20 @@ function parseState(raw: unknown): JevHealthState {
 	};
 }
 
+/** One stderr line under `ULTRATHINK_DEBUG=1` naming the state file and the error's code or class, never its contents. */
+function debugLog(path: string, problem: string, error: unknown): void {
+	if (process.env.ULTRATHINK_DEBUG !== "1") return;
+	const err = error as NodeJS.ErrnoException | undefined;
+	const kind = err?.code ?? err?.name ?? "unknown error";
+	process.stderr.write(`[ultrathink] decisions breaker ${basename(path)} ${problem}: ${kind}\n`);
+}
+
 function readState(path: string): JevHealthState {
 	try {
 		return parseState(JSON.parse(readFileSync(path, "utf8")));
-	} catch {
+	} catch (error) {
+		const err = error as NodeJS.ErrnoException | undefined;
+		if (err?.code !== "ENOENT") debugLog(path, "unreadable, read as closed", err);
 		return closed();
 	}
 }
@@ -207,7 +217,8 @@ function fileBacking(path: string): Backing {
 				if (next) {
 					try {
 						writeFileAtomic(path, `${JSON.stringify(next, null, "\t")}\n`);
-					} catch {
+					} catch (error) {
+						debugLog(path, "not saved", error);
 						// reason: an unwritable state dir leaves the breaker as it was; it must never block Jev
 					}
 				}
