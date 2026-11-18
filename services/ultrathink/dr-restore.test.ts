@@ -26,6 +26,7 @@ import { join, relative } from "node:path";
 import {
 	hasTool,
 	makeStateDir,
+	removeFixtureHome,
 	runDr,
 	type StateDirSpec,
 	type SystemctlStub,
@@ -53,6 +54,7 @@ beforeAll(() => {
 afterAll(() => {
 	if (work) rmSync(work, { recursive: true, force: true });
 });
+afterAll(removeFixtureHome);
 
 interface Scenario {
 	base: string;

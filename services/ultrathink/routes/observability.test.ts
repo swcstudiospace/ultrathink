@@ -3,23 +3,21 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createAuth } from "../auth/auth.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { type PlanBackend, PlanCompleterError } from "../engine/plan.ts";
-import { createLogger } from "../obs/log.ts";
 import type { FinishedSpan, SpanSink } from "../obs/otel.ts";
 import type { RuntimeSample } from "../obs/runtime.ts";
-import { type Store, openStore } from "../store/store.ts";
-import { type App, type RouterDeps, createApp } from "./router.ts";
+import type { RouterDeps } from "./router.ts";
+import {
+	CONNECTOR_KEY,
+	ORIGIN,
+	PEER,
+	type Harness,
+	type LogLine,
+	closeHarnesses,
+	harness as createHarness,
+} from "./test-harness.ts";
 
-const ORIGIN = "https://ultrathink.test";
-const PEER = "127.0.0.1";
-const CONNECTOR_KEY = randomBytes(24).toString("hex");
-const OWNER_HASH = await Bun.password.hash(randomBytes(24).toString("base64url"));
-const SESSION_SECRET = randomBytes(32).toString("hex");
 /** A plan backend that is ready and fails every call with the given error. */
 function failingBackend(error: PlanCompleterError): PlanBackend {
 	return {
@@ -36,94 +34,13 @@ const PROMPT = "Build a small TypeScript CLI that converts CSV files to JSON.";
 /** Backoff waits are below this; the plan and model timeouts are above it and so never resolve here. */
 const BACKOFF_CEILING_MS = 2000;
 
-type LogLine = Record<string, unknown>;
-
-const dirs: string[] = [];
-const stores: Store[] = [];
-
-afterAll(() => {
-	for (const store of stores.splice(0)) {
-		try {
-			store.close();
-		} catch {
-			// reason: already closed
-		}
-	}
-	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-interface Harness {
-	app: App;
-	logs: LogLine[];
-}
+afterAll(closeHarnesses);
 
 function harness(
 	configOverrides: Partial<UltrathinkConfig> = {},
 	deps: Partial<RouterDeps> = {},
 ): Harness {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-obs-"));
-	dirs.push(dir);
-	const config: UltrathinkConfig = {
-		publicOrigin: ORIGIN,
-		ownerPasswordHash: OWNER_HASH,
-		sessionSecret: SESSION_SECRET,
-		stateDir: dir,
-		dbPath: join(dir, "ultrathink.db"),
-		port: 0,
-		maxInputChars: 8000,
-		maxAnswerChars: 20000,
-		maxBodyBytes: 65536,
-		runTokenCeiling: 5_000_000,
-		dailyTokenCeiling: 50_000_000,
-		planningModel: "claude-haiku-5-5",
-		connectorKey: CONNECTOR_KEY,
-		allowedOrigins: [],
-		oauthRedirectOrigins: [],
-		legacyEnvIgnored: [],
-		serverPlanning: false,
-		maxConcurrentPlans: 2,
-		modelTimeoutMs: 5000,
-		planTimeoutMs: 60_000,
-		modelMaxOutputTokens: 1000,
-		sessionSecretPrevious: [],
-		breakerFailures: 5,
-		breakerWindowMs: 60000,
-		breakerOpenMs: 30000,
-		maxInflight: 256,
-		drainMs: 5000,
-		retentionDays: 30,
-		auditLog: true,
-		auditAnchorEvery: 1000,
-		auditSegmentBytes: 67108864,
-		auditRetentionDays: 365,
-		auditWatchMs: 1000,
-		auditSinkQueue: 10000,
-		priorityReservePct: 25,
-		fairQueueDepth: 16,
-		fairQueueWaitMs: 1500,
-		adaptiveQuotaMinPct: 50,
-		lagTargetMs: 100,
-		replicaCapacityRps: 20,
-		abuseFailuresPerMinute: 20,
-		penaltyBaseSec: 60,
-		penaltyMaxSec: 3600,
-		tls: undefined,
-		spiffeTrustDomain: "ultrathink.internal",
-		plaintextLoopback: true,
-		chaosEnabled: false,
-		...configOverrides,
-	};
-	const store = openStore(config.dbPath);
-	stores.push(store);
-	const auth = createAuth({
-		ownerPasswordHash: OWNER_HASH,
-		sessionSecret: SESSION_SECRET,
-		cookieSecure: true,
-	});
-	const logs: LogLine[] = [];
-	const logger = createLogger({ write: (line) => logs.push(JSON.parse(line) as LogLine) });
-	const app = createApp({ config, store, auth, logger, ...deps });
-	return { app, logs };
+	return createHarness({ config: configOverrides, deps });
 }
 
 /** A sink that keeps what it is given and counts its flushes and shutdowns. */

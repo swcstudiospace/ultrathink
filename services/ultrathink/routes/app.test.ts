@@ -12,25 +12,30 @@ import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../../../src/think/promp
 import { UPLIFT_SYSTEM_PROMPT } from "../../../src/uplift/prompt.ts";
 import { escapeXml } from "../../../src/uplift/xml.ts";
 import { type Auth, createAuth } from "../auth/auth.ts";
-import type { UltrathinkConfig } from "../config/config.ts";
 import type { HeadlessPlanner, ResultView } from "../engine/headless.ts";
 import type { PlanBackend } from "../engine/plan.ts";
 import { auditPath, verifyAuditFile } from "../obs/audit.ts";
 import { type RequestContext, currentRequestContext } from "../obs/context.ts";
-import { createLogger } from "../obs/log.ts";
 import type { SinkEnvelope, SinkTransport } from "../obs/sinks/types.ts";
-import { type Store, openStore } from "../store/store.ts";
-import { makeTempDir } from "../test.helpers.ts";
-import { type App, type RouterDeps, createApp } from "./router.ts";
+import type { RouterDeps } from "./router.ts";
+import {
+	CONNECTOR_KEY,
+	ORIGIN,
+	OWNER_HASH,
+	OWNER_PASSWORD,
+	PEER,
+	RESOURCE,
+	SESSION_SECRET,
+	type Harness,
+	type LogLine,
+	closeHarnesses,
+	harness,
+	mcpRequest,
+	rpc,
+	tempDir,
+} from "./test-harness.ts";
 
-const ORIGIN = "https://ultrathink.test";
-const RESOURCE = `${ORIGIN}/mcp`;
 const REDIRECT = "https://claude.ai/api/mcp/auth_callback";
-const PEER = "127.0.0.1";
-const CONNECTOR_KEY = randomBytes(24).toString("hex");
-const OWNER_PASSWORD = randomBytes(24).toString("base64url");
-const OWNER_HASH = await Bun.password.hash(OWNER_PASSWORD);
-const SESSION_SECRET = randomBytes(32).toString("hex");
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 type Json = Record<string, unknown>;
@@ -39,122 +44,8 @@ type ToolResult = {
 	structuredContent: Json;
 	isError: boolean;
 };
-type LogLine = Record<string, unknown>;
 
-const dirs: string[] = [];
-const stores: Store[] = [];
-
-afterAll(() => {
-	for (const store of stores.splice(0)) {
-		try {
-			store.close();
-		} catch {
-			// reason: already closed
-		}
-	}
-	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-function tmp(): string {
-	return makeTempDir("ultrathink-app-", dirs);
-}
-
-function baseConfig(dir: string, overrides: Partial<UltrathinkConfig> = {}): UltrathinkConfig {
-	return {
-		publicOrigin: ORIGIN,
-		ownerPasswordHash: OWNER_HASH,
-		sessionSecret: SESSION_SECRET,
-		stateDir: dir,
-		dbPath: join(dir, "ultrathink.db"),
-		port: 0,
-		maxInputChars: 8000,
-		maxAnswerChars: 20000,
-		maxBodyBytes: 65536,
-		runTokenCeiling: 5_000_000,
-		dailyTokenCeiling: 50_000_000,
-		planningModel: "claude-haiku-5-5",
-		connectorKey: CONNECTOR_KEY,
-		allowedOrigins: [],
-		oauthRedirectOrigins: [],
-		legacyEnvIgnored: [],
-		serverPlanning: false,
-		maxConcurrentPlans: 2,
-		modelTimeoutMs: 5000,
-		planTimeoutMs: 60_000,
-		modelMaxOutputTokens: 1000,
-		sessionSecretPrevious: [],
-		breakerFailures: 5,
-		breakerWindowMs: 60000,
-		breakerOpenMs: 30000,
-		maxInflight: 256,
-		drainMs: 5000,
-		retentionDays: 30,
-		auditLog: true,
-		auditAnchorEvery: 1000,
-		auditSegmentBytes: 67108864,
-		auditRetentionDays: 365,
-		auditWatchMs: 1000,
-		auditSinkQueue: 10000,
-		priorityReservePct: 25,
-		fairQueueDepth: 16,
-		fairQueueWaitMs: 1500,
-		adaptiveQuotaMinPct: 50,
-		lagTargetMs: 100,
-		replicaCapacityRps: 20,
-		abuseFailuresPerMinute: 20,
-		penaltyBaseSec: 60,
-		penaltyMaxSec: 3600,
-		tls: undefined,
-		spiffeTrustDomain: "ultrathink.internal",
-		plaintextLoopback: true,
-		chaosEnabled: false,
-		...overrides,
-	};
-}
-
-interface Harness {
-	app: App;
-	dir: string;
-	store: Store;
-	config: UltrathinkConfig;
-	logs: LogLine[];
-}
-
-interface HarnessOptions {
-	config?: Partial<UltrathinkConfig>;
-	deps?: Partial<RouterDeps>;
-	auth?: Auth;
-}
-
-function harness(options: HarnessOptions = {}): Harness {
-	const dir = tmp();
-	const config = baseConfig(dir, options.config);
-	const store = openStore(config.dbPath);
-	stores.push(store);
-	const auth =
-		options.auth ??
-		createAuth({
-			ownerPasswordHash: OWNER_HASH,
-			sessionSecret: SESSION_SECRET,
-			cookieSecure: true,
-		});
-	const logs: LogLine[] = [];
-	const logger = createLogger({ write: (line) => logs.push(JSON.parse(line) as LogLine) });
-	const app = createApp({ config, store, auth, logger, ...options.deps });
-	return { app, dir, store, config, logs };
-}
-
-function mcpRequest(body: unknown, headers: Record<string, string> = {}, path = "/mcp"): Request {
-	return new Request(`${ORIGIN}${path}`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json", "x-connector-key": CONNECTOR_KEY, ...headers },
-		body: JSON.stringify(body),
-	});
-}
-
-function rpc(h: Harness, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
-	return h.app.handle(mcpRequest(body, headers), PEER);
-}
+afterAll(closeHarnesses);
 
 async function callTool(h: Harness, name: string, args: Json): Promise<ToolResult> {
 	const response = await rpc(h, {
@@ -1504,9 +1395,9 @@ describe("readiness and metrics endpoints", () => {
 		expect((await json<{ failed: string[] }>(storeDown)).failed).toEqual(["store"]);
 		expect((await closed.app.handle(new Request(`${ORIGIN}/healthz`), PEER)).status).toBe(503);
 
-		const stateDir = join(tmp(), "state");
+		const stateDir = join(tempDir(), "state");
 		mkdirSync(stateDir);
-		const missing = harness({ config: { stateDir, dbPath: join(tmp(), "ultrathink.db") } });
+		const missing = harness({ config: { stateDir, dbPath: join(tempDir(), "ultrathink.db") } });
 		rmSync(stateDir, { recursive: true, force: true });
 		const dirDown = await missing.app.handle(new Request(`${ORIGIN}/readyz`), PEER);
 		expect(dirDown.status).toBe(503);

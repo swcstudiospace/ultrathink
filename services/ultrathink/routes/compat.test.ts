@@ -5,28 +5,27 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import type { Socket } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createAuth } from "../auth/auth.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
-import { createLogger } from "../obs/log.ts";
-import { type Store, openStore } from "../store/store.ts";
-import { type App, createApp } from "./router.ts";
+import {
+	CONNECTOR_KEY,
+	ORIGIN,
+	OWNER_PASSWORD,
+	PEER,
+	RESOURCE,
+	type Harness,
+	type LogLine,
+	closeHarnesses,
+	harness as createHarness,
+	postRaw,
+	releaseHarness,
+	rpc,
+} from "./test-harness.ts";
 
-const ORIGIN = "https://ultrathink.test";
-const RESOURCE = `${ORIGIN}/mcp`;
 const REDIRECT = "https://claude.ai/api/mcp/auth_callback";
-const PEER = "127.0.0.1";
-const CONNECTOR_KEY = randomBytes(24).toString("hex");
-const OWNER_PASSWORD = randomBytes(24).toString("base64url");
-const OWNER_HASH = await Bun.password.hash(OWNER_PASSWORD);
-const SESSION_SECRET = randomBytes(32).toString("hex");
 
 type Json = Record<string, unknown>;
-type LogLine = Record<string, unknown>;
 type RpcBody = {
 	jsonrpc?: string;
 	id?: unknown;
@@ -34,110 +33,11 @@ type RpcBody = {
 	error?: { code: number; message: string };
 };
 
-const dirs: string[] = [];
-const stores: Store[] = [];
+afterAll(closeHarnesses);
 
-afterAll(() => {
-	for (const store of stores.splice(0)) {
-		try {
-			store.close();
-		} catch {
-			// reason: already closed
-		}
-	}
-	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-interface Harness {
-	app: App;
-	logs: LogLine[];
-	store: Store;
-	dir: string;
-}
-
+/** A harness with this file's config overrides. */
 function harness(overrides: Partial<UltrathinkConfig> = {}): Harness {
-	const dir = mkdtempSync(join(tmpdir(), "ultrathink-compat-"));
-	dirs.push(dir);
-	const config: UltrathinkConfig = {
-		publicOrigin: ORIGIN,
-		ownerPasswordHash: OWNER_HASH,
-		sessionSecret: SESSION_SECRET,
-		stateDir: dir,
-		dbPath: join(dir, "ultrathink.db"),
-		port: 0,
-		maxInputChars: 8000,
-		maxAnswerChars: 20000,
-		maxBodyBytes: 65536,
-		runTokenCeiling: 5_000_000,
-		dailyTokenCeiling: 50_000_000,
-		planningModel: "claude-haiku-5-5",
-		connectorKey: CONNECTOR_KEY,
-		allowedOrigins: [],
-		oauthRedirectOrigins: [],
-		legacyEnvIgnored: [],
-		serverPlanning: false,
-		maxConcurrentPlans: 2,
-		modelTimeoutMs: 5000,
-		planTimeoutMs: 60_000,
-		modelMaxOutputTokens: 1000,
-		sessionSecretPrevious: [],
-		breakerFailures: 5,
-		breakerWindowMs: 60000,
-		breakerOpenMs: 30000,
-		maxInflight: 256,
-		drainMs: 5000,
-		retentionDays: 30,
-		auditLog: true,
-		auditAnchorEvery: 1000,
-		auditSegmentBytes: 67108864,
-		auditRetentionDays: 365,
-		auditWatchMs: 1000,
-		auditSinkQueue: 10000,
-		priorityReservePct: 25,
-		fairQueueDepth: 16,
-		fairQueueWaitMs: 1500,
-		adaptiveQuotaMinPct: 50,
-		lagTargetMs: 100,
-		replicaCapacityRps: 20,
-		abuseFailuresPerMinute: 20,
-		penaltyBaseSec: 60,
-		penaltyMaxSec: 3600,
-		tls: undefined,
-		spiffeTrustDomain: "ultrathink.internal",
-		plaintextLoopback: true,
-		chaosEnabled: false,
-		...overrides,
-	};
-	const store = openStore(config.dbPath);
-	stores.push(store);
-	const auth = createAuth({
-		ownerPasswordHash: OWNER_HASH,
-		sessionSecret: SESSION_SECRET,
-		cookieSecure: true,
-	});
-	const logs: LogLine[] = [];
-	const logger = createLogger({ write: (line) => logs.push(JSON.parse(line) as LogLine) });
-	return { app: createApp({ config, store, auth, logger }), logs, store, dir };
-}
-
-/** A /mcp POST whose body is sent exactly as given, so a test can send something that is not JSON. */
-function post(
-	h: Harness,
-	rawBody: string,
-	headers: Record<string, string> = {},
-): Promise<Response> {
-	return h.app.handle(
-		new Request(RESOURCE, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", "x-connector-key": CONNECTOR_KEY, ...headers },
-			body: rawBody,
-		}),
-		PEER,
-	);
-}
-
-function rpc(h: Harness, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
-	return post(h, JSON.stringify(body), headers);
+	return createHarness({ config: overrides });
 }
 
 function initialize(protocolVersion: string): Json {
@@ -318,7 +218,7 @@ describe("protocol version header", () => {
 			"",
 			JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { pad: "x".repeat(2048) } }),
 		]) {
-			const response = await post(h, raw, headers);
+			const response = await postRaw(h, raw, headers);
 			expect(response.status).toBe(400);
 			expect(await body(response)).toEqual(WIRE_BODY);
 		}
@@ -787,10 +687,7 @@ describe("stateless transport across TCP connections", () => {
 			const closed = Promise.withResolvers<void>();
 			server.close(() => closed.resolve());
 			await closed.promise;
-			h.store.close();
-			stores.splice(stores.indexOf(h.store), 1);
-			rmSync(h.dir, { recursive: true, force: true });
-			dirs.splice(dirs.indexOf(h.dir), 1);
+			releaseHarness(h);
 		}
 	});
 });
@@ -868,7 +765,9 @@ describe("request log diagnostics", () => {
 
 	test("a rejected probe whose body does not parse logs the version only, and the 400 is unchanged", async () => {
 		const h = harness();
-		const response = await post(h, "{ this is not json", { "MCP-Protocol-Version": "2024-11-05" });
+		const response = await postRaw(h, "{ this is not json", {
+			"MCP-Protocol-Version": "2024-11-05",
+		});
 		expect(response.status).toBe(400);
 		expect((await body(response)).error).toEqual({
 			code: -32600,
@@ -887,7 +786,7 @@ describe("request log diagnostics", () => {
 			method: "server/discover",
 			params: { pad: "x".repeat(2048) },
 		});
-		const response = await post(h, big, { "MCP-Protocol-Version": "2025-12-01" });
+		const response = await postRaw(h, big, { "MCP-Protocol-Version": "2025-12-01" });
 		expect(response.status).toBe(400);
 		const [line] = requestLogs(h);
 		expect(line).toMatchObject({ status: 400, mcpVersion: "2025-12-01" });
