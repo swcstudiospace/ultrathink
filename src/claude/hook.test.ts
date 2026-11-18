@@ -2214,7 +2214,17 @@ function offDeps(deps: HookDeps): HookDeps {
 function normalized(value: unknown, graphId?: string): unknown {
 	const text = JSON.stringify(value);
 	if (text === undefined) return undefined;
-	return JSON.parse(graphId ? text.replaceAll(graphId, "GRAPH") : text);
+	const withGraph = graphId ? text.replaceAll(graphId, "GRAPH") : text;
+	return JSON.parse(withGraph.replace(/ultrathink-hook-[A-Za-z0-9]+/g, "ultrathink-hook-TMP"));
+}
+
+function withoutSettledBit(result: PromptSubmitResult, bit: string): PromptSubmitResult {
+	const output = result.output;
+	if (!output) return result;
+	return {
+		...result,
+		output: { ...output, systemMessage: output.systemMessage?.replace(bit, "") },
+	};
 }
 
 function withoutDecisions(record: SessionRecord | undefined): SessionRecord | undefined {
@@ -2246,7 +2256,7 @@ function expectBaseline(
 		normalized(base.output?.hookSpecificOutput, baseGraph),
 	);
 	expect(normalized(withoutDecisions(jev.record), jevGraph)).toEqual(
-		normalized(base.record, baseGraph),
+		normalized(withoutDecisions(base.record), baseGraph),
 	);
 	const summary = jev.output?.systemMessage;
 	expect(summary?.match(JEV_WARNING) ?? []).toHaveLength(
@@ -2842,7 +2852,8 @@ describe("Jev knowledge and blocking points through the hook", () => {
 		return async (system, user) => (user.startsWith("<spec>") ? reply : complete(system, user));
 	}
 
-	test("every knowledge failure kind keeps both claims settled and reports the kind (AC-4.13)", async () => {
+	test("every knowledge failure kind keeps both claims settled, as when Jev supports them, and reports the kind (AC-4.13)", async () => {
+		const settledBit = " · Decisions · knowledge 2/2 kept";
 		for (const failure of FAILURES) {
 			const timeouts = controlledTimeouts();
 			const { fetch: fetchImpl, timeoutMs } = failureFetch(failure, "supported", timeouts);
@@ -2851,8 +2862,18 @@ describe("Jev knowledge and blocking points through the hook", () => {
 				knowledge: usedReader,
 			});
 			const deps = { ...h.deps, complete: clarifying(SETTLED) };
+			const reference = jevHarness(
+				onConfig({ points: ["knowledge"] }),
+				recordingFetch([JEV(0.95, "supported")]).fetch,
+				{
+					knowledge: usedReader,
+				},
+			);
+			const referenceDeps = { ...reference.deps, complete: clarifying(SETTLED) };
 			try {
-				const base = await runPromptSubmit({ ...input, prompt: NEW_WORK }, offDeps(deps));
+				const settled = await runPromptSubmit({ ...input, prompt: NEW_WORK }, referenceDeps);
+				expect(settled.output?.systemMessage).toContain(settledBit);
+				const base = withoutSettledBit(settled, settledBit);
 				expect(base.record?.clarifications?.filter((c) => c.source === "knowledge")).toHaveLength(
 					2,
 				);
@@ -2887,6 +2908,7 @@ describe("Jev knowledge and blocking points through the hook", () => {
 				}
 			} finally {
 				timeouts.restore();
+				reference.cleanup();
 				h.cleanup();
 			}
 		}
