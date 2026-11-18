@@ -104,7 +104,7 @@ describe("runGraphify options", () => {
 		return existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).length : 0;
 	}
 
-	test("keyed cache refetches after graph.json changes while flag-off keeps the old cached text", async () => {
+	test("flag-off reuses a stamp-valid entry and never serves a result from before a graph.json rewrite", async () => {
 		const { cwd, bin, log } = fixture("graphify-stamp-");
 		writeGraph(cwd, "v1", 1_700_000_000);
 		try {
@@ -121,9 +121,12 @@ describe("runGraphify options", () => {
 			expect(keyed2.cached).toBe(true);
 			expect(keyed2.text).toBe(keyed1.text);
 
+			// The graph has not changed since keyed1, so the stamp-valid entry is reused; the
+			// pre-rewrite result (n=1) is never served again.
 			const flagOff2 = await runGraphify(cwd, ["query", "q"]);
 			expect(flagOff2.cached).toBe(true);
-			expect(flagOff2.text).toBe(flagOff1.text);
+			expect(flagOff2.text).toBe(keyed1.text);
+			expect(flagOff2.text).not.toBe(flagOff1.text);
 			expect(spawns(log)).toBe(2);
 		} finally {
 			setGraphifyBinForTests(null);

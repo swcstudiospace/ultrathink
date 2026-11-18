@@ -32,7 +32,7 @@ interface GraphL2Lease extends GraphL2Cache {
 interface GraphifyRunOptions {
 	/** Positive safe integer. Appends `--budget N` to query only. */
 	budget?: number;
-	/** Key L1 by graph.json stamp; bypass the cache when graph.json is missing. */
+	/** Bypass the cache when graph.json is missing. */
 	keyedCache?: boolean;
 	/** Shared L2 cache. Consulted only with keyedCache. */
 	l2?: GraphL2Cache;
@@ -217,9 +217,9 @@ async function readCapped(
 /**
  * Run graphify with an argv array. Never a shell string.
  * query [question], path [from, to], explain [node].
- * Successful query/path/explain text is cached by cwd + args (32 entries).
- * options.budget appends `--budget N` to query only. options.keyedCache keys the
- * cache by the graph.json stamp and bypasses it when graph.json is missing.
+ * Successful query/path/explain text is cached by cwd + args + graph.json stamp (32 entries).
+ * options.budget appends `--budget N` to query only. options.keyedCache bypasses the
+ * cache when graph.json is missing.
  * options.l2 is a shared write-through cache, consulted on L1 miss when keyedCache is set.
  * With l2.acquire, one caller per key spawns. Others wait on L2 only while the lease reports "held"; "granted" or "unavailable" spawns at once (singleflight).
  */
@@ -234,9 +234,10 @@ export async function runGraphify(
 	const cacheable = typeof command === "string" && Boolean(CACHED_COMMANDS[command]);
 	const argv = budgetArgv(command, args, options?.budget);
 	const keyed = options?.keyedCache === true;
-	const stamp = keyed ? graphStamp(cwd) : undefined;
+	// The L1 key always carries the graph.json stamp, so a rewritten graph.json misses the cache.
+	const stamp = cacheable ? graphStamp(cwd) : undefined;
 	// Keyed mode with no graph.json bypasses the cache entirely: no read, no write.
-	const useCache = cacheable && stamp !== "none";
+	const useCache = cacheable && (!keyed || stamp !== "none");
 	const key = cacheKey(cwd, argv, stamp);
 	const l2 = keyed ? options?.l2 : undefined;
 	if (cacheable) {
