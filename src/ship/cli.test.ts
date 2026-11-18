@@ -2445,3 +2445,98 @@ describe("merge phase gate", () => {
 		expect(phaseRecord()?.humanItems ?? []).toEqual([]);
 	});
 });
+
+describe("phase repair-runtime", () => {
+	const phaseLoopDir = () => join(dir, "phase-loop");
+	const CLOCK_AT = "1970-01-01T00:00:01.000Z";
+	const REASON = "checked the verification log";
+	const REPAIR = ["--phase", "01-core", "--session", "s", "--reason", REASON];
+	const phaseRecord = () => {
+		const outcome = fileStore(phaseLoopDir()).load("s");
+		return outcome.status === "found" ? outcome.record : undefined;
+	};
+	/** Drops the runtime marker, as a record written before F5 has none. */
+	const unmark = (): void => {
+		const store = fileStore(phaseLoopDir());
+		const outcome = store.load("s");
+		if (outcome.status !== "found") throw new Error("no phase record");
+		const { runtimeSessionId: _marker, ...unmarked } = outcome.record;
+		store.save("s", unmarked);
+	};
+	const repair = (d: ShipDeps, ...flags: string[]) =>
+		runShip(["phase", "repair-runtime", "--cwd", dir, ...flags], d);
+
+	beforeEach(() => {
+		writeShip(statePath, { pr: PR, phase: "pr-open", rounds: [PASSED] });
+	});
+
+	test("refuses a missing record and writes nothing", async () => {
+		const out = await repair(deps({ phases: [] }), ...REPAIR);
+		expect(out.output).toMatchObject({ ok: false });
+		expect(String(out.output.error)).toContain("no phase record for session s");
+		expect(phaseRecord()).toBeUndefined();
+	});
+
+	test("refuses a record that already has the runtime marker", async () => {
+		const current = deps();
+		const before = phaseRecord();
+		const out = await repair(current, ...REPAIR);
+		expect(out.output).toMatchObject({ ok: false });
+		expect(String(out.output.error)).toContain("already has the runtime marker");
+		expect(phaseRecord()).toEqual(before);
+		expect(phaseRecord()?.runtimeRepair).toBeUndefined();
+	});
+
+	test("refuses a record that is not at Verify", async () => {
+		const current = deps({ phases: ["Discuss", "Plan", "Execute"] });
+		unmark();
+		const before = phaseRecord();
+		const out = await repair(current, ...REPAIR);
+		expect(out.output).toMatchObject({ ok: false });
+		expect(String(out.output.error)).toContain("not at Verify");
+		expect(phaseRecord()).toEqual(before);
+	});
+
+	test("a Verify record with no marker gets the marker and the reason, and no other field changes", async () => {
+		const current = deps();
+		unmark();
+		const before = phaseRecord();
+		if (before === undefined) throw new Error("the Verify record is missing before the repair");
+		const out = await repair(current, ...REPAIR);
+		expect(out.code).toBe(0);
+		expect(out.output).toMatchObject({
+			ok: true,
+			sessionId: "s",
+			phase: "01-core",
+			repairedAt: CLOCK_AT,
+		});
+		expect(phaseRecord()).toEqual({
+			...before,
+			runtimeSessionId: "s",
+			runtimeRepair: { reason: REASON, at: CLOCK_AT },
+		});
+	});
+
+	test("a record that names a different phase is refused and keeps no marker", async () => {
+		mkdirSync(join(dir, ".planning", "phases", "01-core"), { recursive: true });
+		mkdirSync(join(dir, ".planning", "phases", "02-next"), { recursive: true });
+		const current = deps();
+		open("s", { id: "verification:01-core", owner: "human" }, fileStore(phaseLoopDir()));
+		unmark();
+		const out = await repair(current, "--phase", "02-next", "--session", "s", "--reason", REASON);
+		expect(out.output).toMatchObject({ ok: false });
+		expect(String(out.output.error)).toContain("not 02-next");
+		expect(phaseRecord()?.runtimeSessionId).toBeUndefined();
+	});
+
+	test("after the repair, the merge confirmation for the session is no longer refused as not connected", async () => {
+		await ship("review", deps());
+		unmark();
+		const repaired = await repair(deps(), ...REPAIR);
+		expect(repaired.output).toMatchObject({ ok: true });
+		const out = await ship("merge", deps());
+		expect(out.output.reason).not.toBe("runtime is not connected");
+		expect(out.output).toMatchObject({ ok: true, merged: true });
+		expect(calls.filter((call) => call.startsWith("merge:"))).toEqual(["merge:squash:abc"]);
+	});
+});

@@ -79,6 +79,12 @@ export interface ClosedBy {
 	recordedAt: string;
 }
 
+/** The owner's repair (F5) of a record written before the runtime marker: the owner's reason and the time it was made (ISO 8601). */
+export interface RuntimeRepair {
+	reason: string;
+	at: string;
+}
+
 export interface PhaseLoopState {
 	runtimeId: string;
 	phaseOrder: PhaseName[];
@@ -94,6 +100,8 @@ export interface PhaseLoopState {
 	overrides?: OverrideDecision[];
 	/** The runtime session an accepted attempt ran under. The close's connection check reads it, so a record without it is refused as not connected. Absent until an attempt is accepted. */
 	runtimeSessionId?: string;
+	/** The owner's repair that set runtimeSessionId on a record written before the marker: its reason and time. Absent unless a repair ran. */
+	runtimeRepair?: RuntimeRepair;
 }
 
 /** Result of a resume (LIFE-04): what was restored, and whether an unreadable record was set aside. */
@@ -168,6 +176,7 @@ function snapshot(row: PhaseLoopState): PhaseLoopState {
 			? {}
 			: { overrides: row.overrides.map((item) => ({ ...item })) }),
 		...(row.runtimeSessionId === undefined ? {} : { runtimeSessionId: row.runtimeSessionId }),
+		...(row.runtimeRepair === undefined ? {} : { runtimeRepair: { ...row.runtimeRepair } }),
 	};
 }
 
