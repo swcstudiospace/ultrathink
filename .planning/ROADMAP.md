@@ -92,7 +92,7 @@ Status: Verified human_needed on 2026-11-18 at origin/main 99ce989. The three in
 
 ### Phase 112: Single guarded writer for STATE and ROADMAP
 
-Status: Verified human_needed on 2026-11-18 at origin/main 6eedb14 (PR #170 merged). Criteria 1 and 2 are met in-repo: a four-process contention test, and a contract that matches the writer. Criterion 3, the writer in gsd-core, is out of repo and not counted. Deferred: verification_deferred_human, resume with `/gsd:verify-work 112`.
+Status: Complete at origin/main c3348a2. Criteria 1 and 2 are met in-repo: a four-process contention test, and a contract that matches the writer. Criterion 3, the writer in gsd-core (out of repo), now refuses a write when the file changed since it was read (ConcurrentWriteError); a throwaway check showed a normal write, a refused write after an external change, and no lock left behind; no committed test covers it. Residual: the migration rollback in gsd-core roadmap-upgrade.cjs (lines 2113-2116) can rewrite its snapshot over that external change; not changed. Deferred: verification_deferred_human, resume with `/gsd:verify-work 112`.
 
 **Goal:** one guarded writer for STATE.md and ROADMAP.md; concurrent writes fail loudly.
 **Requirements:** LIFE-03.
