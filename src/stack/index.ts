@@ -21,6 +21,7 @@ import {
 	type StackMember,
 	type StackProbe,
 	type StackProbeContext,
+	unavailableOutcome,
 } from "./types.ts";
 
 export interface StackReport {
@@ -40,6 +41,24 @@ const DEFAULT_PROBES: Readonly<Record<StackMember, StackProbe>> = {
 
 const TIMED_OUT = Symbol("probe-timed-out");
 
+/**
+ * The seam each member's probe names when it cannot answer: the `affects` and `via` its own `unavailableOutcome` uses.
+ * A probe that times out, returns a malformed outcome or throws never reaches its own outcome, so the aggregator names
+ * this seam instead. Mirrors the `AFFECTS` constants and unavailable `via` of each probe module; keep them in step.
+ */
+const UNAVAILABLE_SEAM: Readonly<
+	Record<StackMember, { affects: readonly string[]; via: NonNullable<StackConnection["via"]> }>
+> = {
+	substrate: { affects: ["brief"], via: "http" },
+	swarm: { affects: ["preflight", "lanes"], via: "cli" },
+	realm: { affects: ["containment"], via: "socket" },
+	decisions: {
+		affects: ["plan gate", "ship gate", "knowledge, blocking and teachable decisions"],
+		via: "http",
+	},
+	hindsight: { affects: ["lesson retain", "lesson recall"], via: "http" },
+};
+
 async function runProbe(
 	member: StackMember,
 	probe: StackProbe,
@@ -51,29 +70,29 @@ async function runProbe(
 		const delta = now() - startedAt;
 		return Number.isFinite(delta) ? Math.max(0, delta) : 0;
 	};
+	const unavailable = (reason: string): StackConnection => ({
+		member,
+		...unavailableOutcome({ reason, ...UNAVAILABLE_SEAM[member] }),
+		latencyMs: elapsed(),
+	});
 	const guard = Promise.withResolvers<typeof TIMED_OUT>();
 	const timer = setTimeout(() => guard.resolve(TIMED_OUT), ctx.timeoutMs);
 	try {
 		const settled = await Promise.race([probe(ctx), guard.promise]);
 		if (settled === TIMED_OUT) {
-			return {
-				member,
-				status: "unavailable",
-				reason: `probe timed out after ${ctx.timeoutMs} ms`,
-				latencyMs: elapsed(),
-			};
+			return unavailable(`probe timed out after ${ctx.timeoutMs} ms`);
 		}
 		if (
 			typeof settled !== "object" ||
 			settled === null ||
 			!(CONNECTION_STATUSES as readonly string[]).includes(settled.status)
 		) {
-			return { member, status: "unavailable", reason: "probe failed", latencyMs: elapsed() };
+			return unavailable("probe failed");
 		}
 		return { ...settled, member, latencyMs: elapsed() };
 	} catch {
 		// reason: the caught error may carry a secret or a URL; only the fixed reason is reported.
-		return { member, status: "unavailable", reason: "probe failed", latencyMs: elapsed() };
+		return unavailable("probe failed");
 	} finally {
 		clearTimeout(timer);
 	}
