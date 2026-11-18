@@ -789,9 +789,9 @@ interface PhaseMergeInput {
 /**
  * The phase record gates the merge: the session's record confirms a reviewed head once, and a head that moved after that
  * confirmation is blocked for a human. The close cites the audit the review stage recorded for the head, or, with an owner
- * override, the override, which the record keeps with its reason. Only the store is read; the runtime connection is not
- * evaluated here. An unreadable or unwritable record blocks, so GitHub is never asked to merge on a record the CLI could not
- * read or write.
+ * override, the override, which the record keeps with its reason. The close's connection is the record's
+ * runtimeSessionId, which an accepted attempt under this session wrote. An unreadable or unwritable record
+ * blocks, so GitHub is never asked to merge on a record the CLI could not read or write.
  */
 function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
 	const { cwd, dir, sessionId, headSha, now, override } = input;
@@ -833,7 +833,7 @@ function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
 					`phase was confirmed for ${closedBy.recordId}; the head moved, so a human must confirm ${recordId}`,
 				);
 			}
-			// The runtime connection is not evaluated here: the CLI checks only the store.
+
 			const afterVerify = record?.phaseOrder.at(-1) === "Verify";
 			let closing: ShipConfirmationInput;
 			if (override !== undefined) {
@@ -857,7 +857,13 @@ function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
 				}
 				closing = { afterVerify, audit, auditId: recordId };
 			}
-			const outcome = confirmShip(sessionId, closing, () => true, store);
+			// The close is connected only when this session's record carries the runtime marker an accepted attempt wrote.
+			const outcome = confirmShip(
+				sessionId,
+				closing,
+				() => record?.runtimeSessionId === sessionId,
+				store,
+			);
 			if (outcome.accepted) return undefined;
 			const reason = outcome.refusals.join("; ");
 			return {

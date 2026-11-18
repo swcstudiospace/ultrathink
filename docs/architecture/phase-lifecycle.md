@@ -27,7 +27,7 @@ Ship is terminal and is the close. The phase 111 ADR text names a separate Close
 | T2 | Discuss to Plan | `attemptPhase` (`applyAttempt`) | connected (L165); next in order (L167-169) | push (L174) | Yes, save at L269 |
 | T3 | Plan to Execute | `attemptPhase` (`applyAttempt`) | connected (L165); next in order (L167-169); `completeUpliftCount >= 1` and `unansweredBlockingClarifications === 0` (L170-173) | push (L174); `executeStarts += 1` (L175) | Yes, save at L269 |
 | T4 | Execute to Verify | `attemptPhase` (`applyAttempt`) | connected (L165); next in order (L167-169) | push (L174) | Yes, save at L269 |
-| T5 (the close) | Verify to Ship | `confirmShip` (`applyShipConfirmation`, L220-243) | `afterVerify` (L227); last element is Verify (L228-230); connected (L231); passing audit or owner override (L232-233, `closeRecord` L192-201 and `closeRefusals` L204-214); no open HTIL entry (L234-236) | push (L238); `shipStarts = 1` (L239); `operatorConfirmations += 1` (L240); `closedBy` set to the cited record (L241) | Yes, save at L269 |
+| T5 (the close) | Verify to Ship | `confirmShip` (`applyShipConfirmation`, L220-243) | `afterVerify` (L227); last element is Verify (L228-230); connected (L231): the record's `runtimeSessionId` is the session; passing audit or owner override (L232-233, `closeRecord` L192-201 and `closeRefusals` L204-214); no open HTIL entry (L234-236) | push (L238); `shipStarts = 1` (L239); `operatorConfirmations += 1` (L240); `closedBy` set to the cited record (L241) | Yes, save at L269 |
 | T-open | none (no phase change) | `open` (L318-334) | id and owner non-blank (L325-326); id not already used (L327-329) | push an entry in state `open` (L331) | Yes, save at L269 |
 | T-resolve | none (no phase change) | `resolve` (L341-362) | entry exists and is `open` (L348-350); `done` has non-blank `evidenceId` (L351-352); `deferred` has non-blank `decisionId` (L357) | entry becomes `done` (L353-354) or `deferred` (L358-359) | Yes, save at L269 |
 
@@ -37,7 +37,7 @@ Without a store, `transition` (L253-271) applies the gates to the in-memory row 
 
 | ID | Refused when | Line |
 |---|---|---|
-| R1 | Runtime not connected (`attemptPhase`, `confirmShip`) | L165; L231 |
+| R1 | Runtime not connected: `attemptPhase`, or `confirmShip` when the record's `runtimeSessionId` is not the session | L165; L231 |
 | R2 | `attemptPhase` with phase Ship | L166 |
 | R3 | Phase is not the next in order | L167-169 |
 | R4 | Execute gates unmet | L171-172 |
@@ -71,6 +71,7 @@ stateDiagram-v2
 - `closedBy` holds the cited record's kind, id, and time (L241). It does not hold the record body: the audit's content and the owner decision's reason stay with the caller. `recordAudit` (L385) stores audits in the phase record, and the merge looks the cited one up there. `confirmShip` takes the audit as the caller gives it and does not check it against the stored audits (L232-233).
 - `attemptPhase` does not return its refusal reasons (L289-291).
 - `open` and `resolve` do not check the runtime connection. The phase 111 design did not require it.
+- `runtimeSessionId` is written only by an accepted `attemptPhase`, in `applyAttempt` before the push. A refused attempt writes no marker. A record written before the marker existed has none, so a close on it is refused as not connected.
 
 ## 2. Transitions from ADR 0001: status
 

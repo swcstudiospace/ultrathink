@@ -235,11 +235,11 @@ export function recordGsdPhase(options: {
 		const store = fileStore(dir);
 		// A phase whose verification needs a human opens an HTIL entry (Q8); an entry already open is refused without a write.
 		openHtilEntries(options.cwd, options.sessionId, store);
-		// The live session is connected by construction: this host records only for its own flight.
+		// This host records only for its own session, so the connection check holds for that session.
 		const outcome = attemptPhase(
 			options.sessionId,
 			attemptInputOf(phase, options.plan),
-			() => true,
+			(runtimeId) => runtimeId === options.sessionId,
 			store,
 		);
 		if (outcome.accepted) return NONE;
