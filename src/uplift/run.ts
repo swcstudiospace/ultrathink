@@ -4,13 +4,14 @@ import { isAbortError } from "../shared.ts";
 import type { CompletionReport, UpliftResult } from "../types.ts";
 import { fallbackUplift } from "./fallback.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "./prompt.ts";
-import { checkUpliftXml } from "./xml.ts";
+import { checkUpliftXml, escapeXmlText } from "./xml.ts";
 
 function buildPayload(original: string, conversation?: string): string {
+	const request = escapeXmlText(original);
 	if (conversation?.trim()) {
-		return `<conversation>\n${conversation}\n</conversation>\n\n<user_request>\n${original}\n</user_request>`;
+		return `<conversation>\n${escapeXmlText(conversation)}\n</conversation>\n\n<user_request>\n${request}\n</user_request>`;
 	}
-	return `<user_request>\n${original}\n</user_request>`;
+	return `<user_request>\n${request}\n</user_request>`;
 }
 
 function fallbackResult(original: string): UpliftResult {
