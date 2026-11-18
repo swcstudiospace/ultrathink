@@ -28,7 +28,6 @@ import type {
 	Model,
 	SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
-import { resolvePstack } from "../cursor/pstack.ts";
 import type { EnvironmentPort } from "../../core/src/ports/environment.ts";
 import { createOmpCommandPort, type OmpCommandHandler } from "../../adapters/omp/commands.ts";
 import type { ClockPort } from "../../core/src/ports/injection.ts";
@@ -60,17 +59,7 @@ import {
 import { abortableSleep } from "../resilience/sleep.ts";
 import { FlightThrottle } from "../resilience/throttle.ts";
 import { DEFAULT_GROK_CONFIG } from "../grok/types.ts";
-import { shipNudge } from "../ship/nudge.ts";
-import { shipApplies } from "../ship/policy.ts";
-import { shipPrecheck } from "../ship/precheck.ts";
-import { writeShip } from "../ship/state.ts";
-import type { ShipConfig } from "../ship/types.ts";
-import { teachContext, teachEnabled } from "../teach/context.ts";
-import { digestFromAgentMessages } from "../teach/digest.ts";
-import { spawnObserveDetached } from "../teach/spawn.ts";
-import { createGreptileKnowledge, type KnowledgeReader } from "../greptile/knowledge.ts";
 import { runExplicitRecall } from "../recall/explicit.ts";
-import type { KnowledgeLookup } from "../greptile/knowledge-probe.ts";
 import type { RecallSettings } from "../recall/config.ts";
 import {
 	createRecallState,
@@ -82,38 +71,59 @@ import {
 } from "../recall/engine.ts";
 import { createFailureState, recordFailure, resetTurn } from "../recall/gates.ts";
 import { recallMoments } from "../recall/moments.ts";
-import { lessonsLookup, recallLessons } from "../teach/recall.ts";
-import { runSkillsCommand } from "../teach/skill-controls.ts";
-import { recallSkills, type SkillKey, skillsLookup } from "../teach/skills.ts";
 import { status as authStatus } from "../mcp/oauth.ts";
 import { storePath } from "../mcp/store.ts";
 import {
+	allLaneDirs,
+	createGreptileKnowledge,
+	digestFromAgentMessages,
 	filterSpawnable,
 	formatLaneHandles,
 	formatLaneStatusText,
 	isSdlcPrompt,
-	allLaneDirs,
-	type LaneClassify,
 	laneDirs,
-	type LaneHandle,
 	laneStatus,
-	type LanePlan,
+	lessonsLookup,
 	maxLanes,
 	orchStatusRunner,
 	parseLaneArgs,
 	pidAlive,
 	planLanes,
+	projectOf,
+	readActivity,
+	recallLessons,
+	recallSkills,
+	resolvePstack,
 	resolveStopTargets,
 	resolveSwarmRoot,
+	runSkillsCommand,
+	shipApplies,
+	shipNudge,
+	shipPrecheck,
+	skillsLookup,
 	spawnGuarded,
 	spawnLanes,
+	spawnObserveDetached,
 	stopLanes,
 	swarmClassifier,
 	swarmRootMessage,
+	TEAMS_USAGE,
+	teachContext,
+	teachEnabled,
 	toSwarmSpawnCard,
 	toSwarmStatusCard,
-	TEAMS_USAGE,
-} from "../swarm/teams.ts";
+	writeShip,
+	type KnowledgeLookup,
+	type KnowledgeReader,
+	type LaneClassify,
+	type LaneHandle,
+	type LanePlan,
+	type LessonsLookup,
+	type ShipConfig,
+	type SkillKey,
+	type SkillsLookup,
+	type TeachContext,
+} from "./omp-lanes.ts";
 import { extractPrFromOutput, isPrCreationTool } from "../track/pr-detect.ts";
 import { resolveRepoSlug } from "../track/git.ts";
 import { runControl, type UltrathinkVerb } from "../uplift/commands.ts";
@@ -153,7 +163,6 @@ import { planPrompt, wouldSkipPlanning, type PlanResponse } from "./plan.ts";
 import { claimPlan, loadPlan, planKey, savePlan } from "./plan-store.ts";
 import type { ProgressEvent } from "./progress.ts";
 import { toActivityNotice } from "./activity-notice.ts";
-import { readActivity } from "../teach/activity.ts";
 import {
 	confirmInsightLesson,
 	installInsightSkill,
@@ -175,8 +184,6 @@ import type {
 import { formatInsightText, readInsightSnapshot, toInsightCardSnapshot } from "./omp-insights.ts";
 import { paint, truncateToWidth } from "./omp-paint.ts";
 import { INSIGHT_TYPE, SWARM_TYPE } from "./omp-render.ts";
-import { projectOf } from "../teach/mapping.ts";
-import type { LessonsLookup, SkillsLookup, TeachContext } from "../teach/types.ts";
 import { type PlanView, projectResolution } from "./view.ts";
 import {
 	installKillCheckpoint,
