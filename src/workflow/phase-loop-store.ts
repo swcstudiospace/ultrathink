@@ -136,7 +136,8 @@ function isPhaseLoopRecord(value: unknown): value is StoredRecord {
 		(row.closedBy === undefined || isClosedBy(row.closedBy)) &&
 		(row.audits === undefined || (Array.isArray(row.audits) && row.audits.every(isAuditRecord))) &&
 		(row.overrides === undefined ||
-			(Array.isArray(row.overrides) && row.overrides.every(isOverrideDecision)))
+			(Array.isArray(row.overrides) && row.overrides.every(isOverrideDecision))) &&
+		(row.runtimeSessionId === undefined || typeof row.runtimeSessionId === "string")
 	);
 }
 

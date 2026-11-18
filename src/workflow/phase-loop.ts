@@ -92,6 +92,8 @@ export interface PhaseLoopState {
 	audits?: AuditRecord[];
 	/** The owner decisions an accepted close was made on, with their reasons (LIFE-02). Absent until one is accepted. */
 	overrides?: OverrideDecision[];
+	/** The runtime session an accepted attempt ran under. The close's connection check reads it, so a record without it is refused as not connected. Absent until an attempt is accepted. */
+	runtimeSessionId?: string;
 }
 
 /** Result of a resume (LIFE-04): what was restored, and whether an unreadable record was set aside. */
@@ -165,6 +167,7 @@ function snapshot(row: PhaseLoopState): PhaseLoopState {
 		...(row.overrides === undefined
 			? {}
 			: { overrides: row.overrides.map((item) => ({ ...item })) }),
+		...(row.runtimeSessionId === undefined ? {} : { runtimeSessionId: row.runtimeSessionId }),
 	};
 }
 
@@ -184,6 +187,7 @@ function applyAttempt(
 		const gatesMet = input.completeUpliftCount >= 1 && input.unansweredBlockingClarifications === 0;
 		if (!gatesMet) return ["Execute gates are unmet"];
 	}
+	row.runtimeSessionId = runtimeId;
 	row.phaseOrder.push(input.phase);
 	if (input.phase === "Execute") row.executeStarts += 1;
 	return [];
@@ -301,6 +305,8 @@ function transition(
  * With a store, state is read from it and an accepted attempt is committed to it before
  * return. Without one, the in-memory row is used. A quarantined record throws
  * PhaseLoopCorruptError.
+ * An accepted attempt also records runtimeId as the loop's runtimeSessionId, the marker the close's connection
+ * check reads. A refused attempt writes no marker.
  */
 export function attemptPhase(
 	runtimeId: string,

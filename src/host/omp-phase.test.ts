@@ -46,6 +46,7 @@ const recordPath = (root: string, sessionId = SESSION): string =>
 
 interface StoredRecord {
 	phaseOrder: string[];
+	runtimeSessionId?: string;
 	executeStarts: number;
 	humanItems: { id: string; owner: string; state: string }[];
 	checkpoint?: { reason: string; at: string };
@@ -138,6 +139,13 @@ describe("omp phase record", () => {
 		expect(readRecord(root).phaseOrder).toEqual(["Discuss", "Plan"]);
 		expect(readRecord(root).executeStarts).toBe(0);
 		expect(advisories(sent, "Execute gates are unmet")).toHaveLength(1);
+	});
+
+	test("an accepted host attempt records the session as the connected runtime", async () => {
+		const root = newRoot();
+		const { run } = setup(planner(), 1_000, { stateDir: root });
+		await discussAndPlan(run);
+		expect(readRecord(root).runtimeSessionId).toBe(SESSION);
 	});
 
 	test("a plain prompt writes nothing under phase-loop", async () => {

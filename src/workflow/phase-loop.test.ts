@@ -244,6 +244,18 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		expect(storedRecord(dir, "fresh")).toBeUndefined();
 	});
 
+	test("a refused attempt writes no runtime marker; an accepted connected attempt writes it", () => {
+		const { store, saves } = countingStore(dir);
+		const refused = attemptPhase("claude", { phase: "Discuss", ...READY }, DISCONNECTED, store);
+		expect(refused).toMatchObject({ accepted: false, refusals: ["runtime is not connected"] });
+		expect(refused.state.runtimeSessionId).toBeUndefined();
+		expect(saves()).toBe(0);
+		expect(storedRecord(dir, "claude")).toBeUndefined();
+		const accepted = attemptPhase("claude", { phase: "Discuss", ...READY }, CONNECTED, store);
+		expect(accepted.state.runtimeSessionId).toBe("claude");
+		expect(storedRecord(dir, "claude")?.runtimeSessionId).toBe("claude");
+	});
+
 	test("a restart restores the same phase order and counts from the store", () => {
 		const { store } = countingStore(dir);
 		step("claude", "Discuss", store);

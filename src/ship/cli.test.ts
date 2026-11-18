@@ -2073,6 +2073,31 @@ describe("merge phase gate", () => {
 		expect(mergeCalls()).toEqual([]);
 	});
 
+	test("a record without the runtime marker refuses the merge: the runtime is not connected", async () => {
+		await reviewStage();
+		const store = fileStore(phaseDir());
+		const outcome = store.load("s");
+		if (outcome.status !== "found") throw new Error("no phase record");
+		const { runtimeSessionId: _marker, ...unmarked } = outcome.record;
+		store.save("s", unmarked);
+		const out = await ship("merge", deps());
+		expect(out.output).toMatchObject({
+			ok: false,
+			merged: false,
+			reason: "runtime is not connected",
+		});
+		expect(mergeCalls()).toEqual([]);
+		expect(phaseRecord()?.closedBy).toBeUndefined();
+	});
+
+	test("a record with the runtime marker lets the merge proceed", async () => {
+		await reviewStage();
+		expect(phaseRecord()?.runtimeSessionId).toBe("s");
+		const out = await ship("merge", deps());
+		expect(out.output).toMatchObject({ ok: true, merged: true });
+		expect(mergeCalls()).toEqual(["merge:squash:abc"]);
+	});
+
 	test("with a recorded Verify and a passing review the merge closes the phase on the review's head", async () => {
 		await reviewStage();
 		const out = await ship("merge", deps());
