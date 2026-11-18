@@ -22,7 +22,11 @@ import type {
 import { openJevHealth } from "../decisions/health.ts";
 import { GRAPH_ID_PATTERN } from "../gateway/types.ts";
 import { decideUplift } from "../uplift/detect.ts";
-import { JEV, recordingFetch, UPLIFT } from "../test.helpers.ts";
+import { JEV, moment, recordingFetch, UPLIFT } from "../test.helpers.ts";
+import { projectOf } from "../teach/mapping.ts";
+import { openStore, storeDir } from "../teach/store.ts";
+import { type AutoSkill, contentHashOf } from "../teach/skill-author.ts";
+import { writeGeneratedSkill } from "../teach/skill-store.ts";
 import type { Clarification } from "../hitl/types.ts";
 import type { KnowledgeReader, KnowledgeResult } from "../greptile/knowledge.ts";
 import type { RunClarifyOptions } from "../hitl/pipeline.ts";
@@ -32,6 +36,7 @@ import { HANDOFF_MAX_CHARS } from "../host/display-limits.ts";
 import { TRACKING_OFF_NOTE, UPLIFT_CONTEXT_HEADER } from "./output.ts";
 import {
 	runPromptSubmit,
+	runToolResultRecall,
 	savePlanRecord,
 	type HookDeps,
 	type PromptSubmitInput,
@@ -57,6 +62,9 @@ import type {
 	SkillRecallOutcome,
 } from "../teach/types.ts";
 import { graphJson } from "../test.helpers.ts";
+import type { KnowledgeLookup } from "../greptile/knowledge.ts";
+import type { LessonsLookup } from "../teach/types.ts";
+import { defaultRecallSettings, type RecallSettings } from "../recall/config.ts";
 import { FlightThrottle } from "../resilience/throttle.ts";
 import { runThink, type RunThinkOptions } from "../think/pipeline.ts";
 import { instantThink } from "../think/test.helpers.ts";
@@ -4594,4 +4602,331 @@ describe("runPromptSubmit lock policy", () => {
 			cleanup();
 		}
 	}, 30_000);
+});
+
+/** Recall on: the master switch, the given triggers and sources, and the bounded wait. */
+function recallConfig(
+	triggers: Partial<RecallSettings["recall"]["triggers"]>,
+	sources: Partial<RecallSettings["recall"]["sources"]>,
+	timeoutMs = 2_500,
+): RecallSettings {
+	const settings = defaultRecallSettings();
+	settings.recall.enabled = true;
+	settings.recall.timeoutMs = timeoutMs;
+	Object.assign(settings.recall.triggers, triggers);
+	Object.assign(settings.recall.sources, sources);
+	return settings;
+}
+
+/** An unanswered clarification question, as the clarifier returns it. */
+function openQuestion(question: string): Clarification {
+	return {
+		id: `q-${question}`,
+		question,
+		header: "Question",
+		why: "The spec leaves this open",
+		options: [{ label: "Postgres" }],
+		blocking: false,
+	};
+}
+
+/** A knowledge lookup that found nothing: the pass runs and injects no items. */
+const KNOWLEDGE_OFF: KnowledgeLookup = {
+	outcome: "off",
+	reasonCode: "disabled",
+	docs: [],
+	chars: 0,
+	ms: 0,
+};
+
+/** A lessons lookup with one lesson the panel can show. */
+const LESSONS_USED: LessonsLookup = {
+	outcome: "used",
+	count: 1,
+	ids: ["lesson-1"],
+	chars: 40,
+	ms: 1,
+	source: "local",
+	rows: [
+		{
+			id: "lesson-1",
+			kind: "pitfall",
+			title: "Use bun test",
+			preview: "Run bun test from the package root",
+			createdAt: "2026-11-01",
+			matchReason: "matches the error",
+		},
+	],
+};
+
+/** A PostToolUse envelope whose tool failed. */
+const TOOL_ERROR = {
+	session_id: "s1",
+	cwd: "/repo",
+	hook_event_name: "PostToolUse",
+	tool_name: "Bash",
+	tool_response: { is_error: true, stderr: "EACCES: permission denied" },
+};
+
+/** Planning deps with HITL on and a clarifier that asks nothing unless a test says otherwise. */
+function recallDeps(overrides: Partial<HookDeps> = {}): { deps: HookDeps; cleanup: () => void } {
+	return baseDeps({
+		complete: smartComplete(),
+		control: { hitlEnabled: true },
+		clarify: async () => ({ items: [] }),
+		...overrides,
+	});
+}
+
+/**
+ * Writes one generated skill whose only trigger is `error`, with no scope restriction, then activates it as the store
+ * does for an accepted skill. The skill is in the manifest and its SKILL.md is on disk, so the keyed lookup can read it.
+ */
+async function activeSkillFor(stateDir: string, error: string): Promise<AutoSkill> {
+	const at = "2026-11-01T00:00:00.000Z";
+	const draft: AutoSkill = {
+		name: "eacces-permission-denied",
+		description: "Check the owner and mode of the path before retrying the write.",
+		applies_when: { task_types: ["bash-run"], scope_globs: [], error_signatures: [error] },
+		steps: ["Check the owner and mode of the path before retrying the write."],
+		source_ids: ["moment-1"],
+		generated_by: "auto",
+		generated_at: at,
+		content_hash: "",
+		version: 1,
+		status: "draft",
+		signature_hash: "0123456789abcdef0123456789abcdef",
+		stale: false,
+		warnings: [],
+	};
+	const skill: AutoSkill = { ...draft, content_hash: contentHashOf(draft) };
+	const dir = join(stateDir, "generated-skills");
+	expect(await writeGeneratedSkill(dir, skill, at)).toMatchObject({ ok: true });
+	// The store never sets `active` (setGeneratedStatus takes draft or disabled), so the fixture edits the manifest directly.
+	const manifest = join(dir, "manifest.json");
+	const raw = JSON.parse(readFileSync(manifest, "utf8")) as {
+		skills: { name: string; status: string }[];
+	};
+	for (const entry of raw.skills) if (entry.name === skill.name) entry.status = "active";
+	writeFileSync(manifest, JSON.stringify(raw));
+	return skill;
+}
+
+describe("mid-session recall (SPE-34394)", () => {
+	test("with the master switch off, nothing is fetched and no recall state is written", async () => {
+		let fetches = 0;
+		const { deps, cleanup } = recallDeps({
+			clarify: async () => ({ items: [openQuestion("Which database?")] }),
+			recallSeams: {
+				knowledge: async () => {
+					fetches += 1;
+					return KNOWLEDGE_OFF;
+				},
+				lessons: async () => {
+					fetches += 1;
+					return LESSONS_USED;
+				},
+			},
+		});
+		try {
+			const planned = await runPromptSubmit(input, deps);
+			expect(planned.record?.recall).toBeUndefined();
+			expect(await runToolResultRecall(TOOL_ERROR, deps)).toEqual({ audit: [], reasons: [] });
+			expect(readSession(deps.stateDir, "s1")?.recall).toBeUndefined();
+			expect(fetches).toBe(0);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("with recall on, state persists across two prompts: the second sees the first's counters", async () => {
+		let clock = 1_000;
+		const queries: string[] = [];
+		const { deps, cleanup } = recallDeps({
+			now: () => clock,
+			clarify: async () => ({ items: [openQuestion("Which database?")] }),
+			recallSeams: {
+				knowledge: async ({ query }) => {
+					queries.push(query);
+					return KNOWLEDGE_OFF;
+				},
+			},
+		});
+		deps.config.recallSettings = recallConfig({ uncertainty: true }, { knowledge: true });
+		try {
+			const first = await runPromptSubmit(input, deps);
+			expect(first.record?.recall?.state.budget).toMatchObject({
+				turnIndex: 1,
+				session: { calls: 1 },
+			});
+			clock += 120_000; // past the uncertainty cooldown
+			const second = await runPromptSubmit(input, deps);
+			expect(second.record?.recall?.state.budget).toMatchObject({
+				turnIndex: 2,
+				session: { calls: 2 },
+			});
+			expect(readSession(deps.stateDir, "s1")?.recall?.state.budget.session.calls).toBe(2);
+			expect(queries).toEqual(["Which database?", "Which database?"]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("an uncertainty lookup that times out proceeds with the planner's result and records the reason", async () => {
+		const { deps, cleanup } = recallDeps({
+			clarify: async () => ({ items: [openQuestion("Which database?")] }),
+			recallSeams: { knowledge: () => new Promise<KnowledgeLookup>(() => undefined) },
+		});
+		deps.config.recallSettings = recallConfig({ uncertainty: true }, { knowledge: true }, 1);
+		try {
+			const result = await runPromptSubmit(input, deps);
+			expect(result.output).toBeDefined();
+			expect(result.record?.recall?.last?.reasons).toEqual(["uncertainty/knowledge: timeout"]);
+			expect(result.record?.recall?.last?.audit).toContainEqual({
+				source: "knowledge",
+				trigger: "uncertainty",
+				outcome: "fired",
+				injected: 0,
+				deduped: 0,
+			});
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a prompt in another repository fires the scope-change trigger", async () => {
+		const { deps, cleanup } = recallDeps({ recallSeams: { knowledge: async () => KNOWLEDGE_OFF } });
+		deps.config.recallSettings = recallConfig({ scopeChange: true }, { knowledge: true });
+		try {
+			await runPromptSubmit(input, deps);
+			deps.git = () => ({ repo: "acme/other", branch: "main" });
+			const moved = await runPromptSubmit(input, deps);
+			expect(moved.record?.recall?.last?.audit).toContainEqual({
+				source: "knowledge",
+				trigger: "scopeChange",
+				outcome: "fired",
+				injected: 0,
+				deduped: 0,
+			});
+			expect(moved.record?.recall?.lastScope).toBe("acme/other");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a PostToolUse error runs the failure trigger: its lessons are injected and the audit recorded", async () => {
+		const queries: string[] = [];
+		const { deps, cleanup } = recallDeps({
+			recallSeams: {
+				lessons: async ({ query }) => {
+					queries.push(query);
+					return LESSONS_USED;
+				},
+			},
+		});
+		try {
+			// Recall is off for this prompt: it only writes the session record the failure is recorded on.
+			await runPromptSubmit(input, deps);
+			deps.config.recallSettings = recallConfig({ failure: true }, { lessons: true });
+			const outcome = await runToolResultRecall(TOOL_ERROR, deps);
+			expect(queries).toEqual(["EACCES: permission denied"]);
+			expect(outcome.additionalContext).toContain("Use bun test");
+			expect(outcome.audit).toContainEqual({
+				source: "lessons",
+				trigger: "failure",
+				outcome: "fired",
+				injected: 1,
+				deduped: 0,
+			});
+			expect(readSession(deps.stateDir, "s1")?.recall?.last?.audit).toEqual(outcome.audit);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a successful tool result does not run the failure trigger", async () => {
+		const queries: string[] = [];
+		const { deps, cleanup } = recallDeps({
+			recallSeams: {
+				lessons: async ({ query }) => {
+					queries.push(query);
+					return LESSONS_USED;
+				},
+			},
+		});
+		deps.config.recallSettings = recallConfig({ failure: true }, { lessons: true });
+		try {
+			const outcome = await runToolResultRecall(
+				{ ...TOOL_ERROR, tool_response: { stdout: "ok" } },
+				deps,
+			);
+			expect(outcome).toEqual({ audit: [], reasons: [] });
+			expect(queries).toEqual([]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a repeated PostToolUse error recalls teachable moments on its second occurrence, not no_source", async () => {
+		const { deps, cleanup } = recallDeps({
+			recallSeams: {
+				lessons: async () => ({
+					outcome: "none",
+					count: 0,
+					ids: [],
+					chars: 0,
+					ms: 0,
+					source: "none",
+				}),
+			},
+		});
+		try {
+			// Recall is off for the prompt: it only writes the session record the failure occurrences are kept on.
+			await runPromptSubmit(input, deps);
+			deps.config.recallSettings = recallConfig(
+				{ failure: true },
+				{ lessons: true, moments: true },
+			);
+			deps.config.teach = { ...deps.config.teach, enabled: true, recall: true };
+			await runToolResultRecall(TOOL_ERROR, deps);
+			openStore(storeDir(deps.stateDir)).put(
+				moment("m1", { name: "EACCES permission denied on write", project: projectOf("/repo") }),
+			);
+			// The next user prompt starts a new turn: occurrence one spent this turn's routine recall.
+			await runPromptSubmit(input, deps);
+			const second = await runToolResultRecall(TOOL_ERROR, deps);
+			expect(second.audit).toContainEqual({
+				source: "moments",
+				trigger: "failure",
+				outcome: "fired",
+				injected: 1,
+				deduped: 0,
+			});
+			expect(second.audit.some((entry) => entry.outcome === "no_source")).toBe(false);
+			expect(second.additionalContext).toContain("- EACCES permission denied on write:");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a failure whose error matches an active generated skill injects that skill", async () => {
+		const { deps, cleanup } = recallDeps();
+		deps.config.recallSettings = recallConfig({ failure: true }, { skills: true });
+		deps.config.teach = { ...deps.config.teach, enabled: true, recall: true };
+		try {
+			const skill = await activeSkillFor(deps.stateDir, "EACCES: permission denied");
+			const outcome = await runToolResultRecall(TOOL_ERROR, deps);
+			expect(outcome.audit).toContainEqual({
+				source: "skills",
+				trigger: "failure",
+				outcome: "fired",
+				injected: 1,
+				deduped: 0,
+			});
+			expect(outcome.additionalContext).toContain(skill.name);
+			expect(outcome.additionalContext).toContain(skill.description);
+		} finally {
+			cleanup();
+		}
+	});
 });

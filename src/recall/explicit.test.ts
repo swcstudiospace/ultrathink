@@ -63,6 +63,7 @@ const SKILLS: SkillsLookup = {
 			name: "bun-snapshot-tests",
 			description: "Use when snapshot tests fail.",
 			target: "omp",
+			injected: true,
 		},
 	],
 };

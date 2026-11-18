@@ -16,18 +16,22 @@ import {
 	createBudgetState,
 	createCooldownState,
 	createDedupeState,
+	createFailureState,
 	cooldownKey,
 	dedupeKey,
 	filterInjected,
+	pruneCooldown,
+	pruneFailures,
 	recordCooldownFire,
+	recordFailure,
 	recordInjected,
 	recordSpend,
 	resetDedupeEpoch,
-	startTurn,
+	resetTurn,
 } from "./gates.ts";
 
 const { budget: CAPS, cooldownMs } = defaultRecallSettings().recall;
-const WINDOWS: CooldownWindows = { ...cooldownMs, phaseBoundary: 120_000 };
+const WINDOWS: CooldownWindows = cooldownMs;
 const T0 = 1_000_000;
 
 function scope(path: string, source: RecallSource = "knowledge"): CooldownRequest {
@@ -48,7 +52,7 @@ function uncertainty(topic: string): CooldownRequest {
 
 /** A cooldown state holding one fire for `request` at `atMs`. */
 function firedAt(request: CooldownRequest, atMs: number) {
-	return recordCooldownFire(createCooldownState(), cooldownKey(request), atMs);
+	return recordCooldownFire(createCooldownState(), request, atMs);
 }
 
 function routine(tokens: number): BudgetRequest {
@@ -58,7 +62,7 @@ function routine(tokens: number): BudgetRequest {
 /** Records `count` calls of `tokens` each, one per turn, so only the session counters grow. */
 function spendInTurns(state: BudgetState, count: number, tokens: number): BudgetState {
 	let next = state;
-	for (let i = 0; i < count; i++) next = recordSpend(startTurn(next), tokens);
+	for (let i = 0; i < count; i++) next = recordSpend(resetTurn(next), tokens);
 	return next;
 }
 
@@ -116,6 +120,11 @@ describe("cooldown", () => {
 			allowed: false,
 			reason: "cooldown_active",
 		});
+		const later = T0 + 10 * 86_400_000;
+		expect(checkCooldown(state, phase("2", "migration"), WINDOWS, later)).toMatchObject({
+			allowed: false,
+			remainingMs: Number.POSITIVE_INFINITY,
+		});
 	});
 
 	test("uncertainty cools down per normalized topic, ignoring word order and case", () => {
@@ -141,10 +150,26 @@ describe("cooldown", () => {
 	test("recording a fire returns a new state and leaves the earlier one unchanged", () => {
 		const request = scope("src/a");
 		const before = createCooldownState();
-		const after = recordCooldownFire(before, cooldownKey(request), T0);
+		const after = recordCooldownFire(before, request, T0);
 
 		expect(checkCooldown(before, request, WINDOWS, T0 + 1)).toMatchObject({ allowed: true });
 		expect(checkCooldown(after, request, WINDOWS, T0 + 1)).toMatchObject({ allowed: false });
+	});
+
+	test("each windowed trigger refuses a repeat inside its own window and allows it at the window", () => {
+		const cases: { request: CooldownRequest; window: number }[] = [
+			{ request: scope("src/a"), window: cooldownMs.scopeChange },
+			{ request: failure("TypeError at line 12"), window: cooldownMs.failure },
+			{ request: uncertainty("which cache layer"), window: cooldownMs.uncertainty },
+		];
+		for (const { request, window } of cases) {
+			const state = firedAt(request, T0);
+			expect(checkCooldown(state, request, WINDOWS, T0 + window - 1)).toMatchObject({
+				allowed: false,
+				remainingMs: 1,
+			});
+			expect(checkCooldown(state, request, WINDOWS, T0 + window)).toMatchObject({ allowed: true });
+		}
 	});
 });
 
@@ -156,19 +181,42 @@ describe("budget", () => {
 			allowed: false,
 			reason: "turn_calls_cap",
 		});
-		expect(checkBudget(startTurn(state), CAPS, routine(100))).toEqual({ allowed: true });
+		expect(checkBudget(resetTurn(state), CAPS, routine(100))).toEqual({ allowed: true });
+	});
+
+	test("resetTurn advances the turn counter, clears the turn spend and keeps the session spend", () => {
+		const next = resetTurn(recordSpend(createBudgetState(), 100));
+
+		expect(next).toEqual({
+			turnIndex: 1,
+			turn: { calls: 0, tokens: 0 },
+			session: { calls: 1, tokens: 100 },
+		});
+	});
+
+	test("a recorded spend keeps the turn index, so resetTurn advances it across prompts", () => {
+		const first = recordSpend(createBudgetState(), 100);
+		const turnOne = resetTurn(first);
+		expect(turnOne.turnIndex).toBe(1);
+
+		const second = recordSpend(turnOne, 100);
+		expect(second.turnIndex).toBe(1);
+
+		const turnTwo = resetTurn(second);
+		expect(turnTwo.turnIndex).toBe(2);
+		expect(turnTwo.session.calls).toBe(2);
 	});
 
 	test("a routine request is refused by the session call cap once every turn is fresh", () => {
 		const routineShare = Math.floor(CAPS.perSessionCalls * (1 - CAPS.reservedShare));
 		let state = createBudgetState();
 		for (let i = 0; i < routineShare; i++) {
-			const turn = startTurn(state);
+			const turn = resetTurn(state);
 			expect(checkBudget(turn, CAPS, routine(10))).toEqual({ allowed: true });
 			state = recordSpend(turn, 10);
 		}
 
-		expect(checkBudget(startTurn(state), CAPS, routine(10))).toEqual({
+		expect(checkBudget(resetTurn(state), CAPS, routine(10))).toEqual({
 			allowed: false,
 			reason: "session_calls_cap",
 		});
@@ -192,19 +240,19 @@ describe("budget", () => {
 		const afterRoutine = spendInTurns(createBudgetState(), routineShare, 10);
 		const uncertain: BudgetRequest = { trigger: "uncertainty", tokens: 10 };
 
-		expect(checkBudget(startTurn(afterRoutine), CAPS, routine(10))).toEqual({
+		expect(checkBudget(resetTurn(afterRoutine), CAPS, routine(10))).toEqual({
 			allowed: false,
 			reason: "session_calls_cap",
 		});
-		expect(checkBudget(startTurn(afterRoutine), CAPS, uncertain)).toEqual({ allowed: true });
-		expect(checkBudget(startTurn(afterRoutine), CAPS, { trigger: "explicit", tokens: 10 })).toEqual(
+		expect(checkBudget(resetTurn(afterRoutine), CAPS, uncertain)).toEqual({ allowed: true });
+		expect(checkBudget(resetTurn(afterRoutine), CAPS, { trigger: "explicit", tokens: 10 })).toEqual(
 			{
 				allowed: true,
 			},
 		);
 
 		const afterReserved = spendInTurns(afterRoutine, reservedShare, 10);
-		expect(checkBudget(startTurn(afterReserved), CAPS, uncertain)).toEqual({
+		expect(checkBudget(resetTurn(afterReserved), CAPS, uncertain)).toEqual({
 			allowed: false,
 			reason: "session_calls_cap",
 		});
@@ -309,5 +357,50 @@ describe("dedupe", () => {
 		expect(contentHash("")).toBe("811c9dc5");
 		expect(contentHash("a")).toBe("e40c292c");
 		expect(contentHash("foobar")).toBe("bf9cf968");
+	});
+});
+
+describe("session state", () => {
+	test("pruning drops windowed fires older than the largest window and keeps once-per-session fires", () => {
+		const state = recordCooldownFire(
+			recordCooldownFire(createCooldownState(), scope("src/a"), T0),
+			phase("2", "migration"),
+			T0,
+		);
+
+		const kept = pruneCooldown(state, T0 + cooldownMs.scopeChange - 1, cooldownMs.scopeChange);
+		expect(kept.size).toBe(2);
+		const pruned = pruneCooldown(state, T0 + cooldownMs.scopeChange, cooldownMs.scopeChange);
+		expect([...pruned.keys()]).toEqual([cooldownKey(phase("2", "migration"))]);
+		const later = T0 + 10 * 86_400_000;
+		expect(checkCooldown(pruned, phase("2", "migration"), WINDOWS, later)).toMatchObject({
+			allowed: false,
+			reason: "cooldown_active",
+		});
+	});
+});
+
+describe("failure occurrences", () => {
+	test("counts repeats of one normalized signature while they are within the window", () => {
+		const window = cooldownMs.failure;
+		const first = recordFailure(createFailureState(), "TypeError at line 12: x", T0, window);
+		const second = recordFailure(first.state, "typeerror at line 40:  x", T0 + 1, window);
+		const other = recordFailure(second.state, "TypeError at line 7: y", T0 + 2, window);
+
+		expect([first.occurrence, second.occurrence, other.occurrence]).toEqual([1, 2, 1]);
+	});
+
+	test("an occurrence exactly one window after the last starts the count again", () => {
+		const window = cooldownMs.failure;
+		const first = recordFailure(createFailureState(), "boom", T0, window);
+
+		expect(recordFailure(first.state, "boom", T0 + window, window).occurrence).toBe(1);
+	});
+
+	test("pruning drops the records that are a window old", () => {
+		const { state } = recordFailure(createFailureState(), "boom", T0, cooldownMs.failure);
+
+		expect(pruneFailures(state, T0 + cooldownMs.failure - 1, cooldownMs.failure).size).toBe(1);
+		expect(pruneFailures(state, T0 + cooldownMs.failure, cooldownMs.failure).size).toBe(0);
 	});
 });

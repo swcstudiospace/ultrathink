@@ -41,10 +41,13 @@ const PLAIN_SCALAR_RE = /^[A-Za-z0-9][^#:"'\\]*$/;
 
 export type GeneratedStatus = AutoSkill["status"];
 
+/** Every status a manifest entry may hold. `active` is kept as written; this store never sets it. */
+type ManifestStatus = GeneratedStatus | "active";
+
 /** One generated skill as the manifest records it. */
 interface GeneratedEntry {
 	name: string;
-	status: GeneratedStatus;
+	status: ManifestStatus;
 	generated_by: "auto";
 	version: number;
 	content_hash: string;
@@ -461,8 +464,8 @@ function isSlug(name: unknown): name is string {
 	return typeof name === "string" && NAME_RE.test(name);
 }
 
-function isStatus(value: unknown): value is GeneratedStatus {
-	return value === "draft" || value === "disabled";
+function isStatus(value: unknown): value is ManifestStatus {
+	return value === "draft" || value === "active" || value === "disabled";
 }
 
 function isSingleLine(text: unknown): text is string {

@@ -90,8 +90,9 @@ export function lessonsLookupToPanel(lookup: LessonsLookup, floor: number): Pane
 
 /**
  * Map one skills lookup record onto a panel envelope.
- * - `used`: a published skill is a pointer item (its description as the preview, its target in the match reason). A
- *   draft is excluded as filtered and never returned. When only drafts matched the envelope is empty with reason filtered.
+ * - `used`: a row with `injected` is a pointer item (its description as the preview, its target in the match reason). A
+ *   row without it (a draft, which is not installed) is excluded as filtered and never returned. When no row is injected
+ *   the envelope is empty with reason filtered.
  *   The record's names are never shown: only its rows are, so a skill the record does not list (a disabled one never
  *   reaches the record) is absent.
  * - `none` is empty (no_match). `off` is empty (gate_off). `error` is an error envelope, classed unclassified.
@@ -110,7 +111,7 @@ export function skillsLookupToPanel(lookup: SkillsLookup): PanelEnvelope {
 			const items: PanelItem[] = [];
 			const excluded: ExcludedRow[] = [];
 			for (const row of lookup.rows) {
-				if (row.target === "drafts")
+				if (!row.injected)
 					excluded.push({ ref: sanitizePanelText(row.name, REF_MAX_CHARS), reason: "filtered" });
 				else
 					items.push({

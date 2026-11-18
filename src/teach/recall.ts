@@ -24,7 +24,7 @@ import type {
 } from "./types.ts";
 
 const MAX_QUERY_CHARS = 1_500;
-const MAX_LIMIT = 10;
+export const MAX_LIMIT = 10;
 const BODY_CHARS = 500;
 const HEADER = "## Lessons from earlier work";
 const FRAMING =
@@ -84,7 +84,7 @@ export function tokenOverlap(wanted: readonly string[], text: string): number {
  * Local match: weighted overlap of the query's tokens with name (3), description (2) and body (1), plus a small bonus for
  * repeated lessons. The scan yields to the event loop before each moment file, so a large store never holds the prompt.
  */
-async function recallLocal(
+export async function recallLocal(
 	store: TeachStore,
 	project: string,
 	query: string,

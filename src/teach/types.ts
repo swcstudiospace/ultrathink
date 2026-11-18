@@ -296,6 +296,8 @@ export interface SkillRow {
 	name: string;
 	description: string;
 	target: SkillTarget;
+	/** Injection status: true for a promotion or an active generated skill. `target` names the install state, not this. */
+	injected: boolean;
 }
 
 export const DIGEST_MAX_TURNS = 60;

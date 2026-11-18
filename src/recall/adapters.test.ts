@@ -44,6 +44,7 @@ function skillRow(over: Partial<SkillRow> = {}): SkillRow {
 		name: "bun-snapshot-tests",
 		description: "Use when snapshot tests fail.",
 		target: "omp",
+		injected: true,
 		...over,
 	};
 }
@@ -234,7 +235,7 @@ describe("skillsLookupToPanel", () => {
 
 	test("a draft is never returned: it is excluded as filtered while the published skill is still an item", () => {
 		const panel = skillsLookupToPanel(
-			skills([skillRow(), skillRow({ name: "lesson-draft", target: "drafts" })]),
+			skills([skillRow(), skillRow({ name: "lesson-draft", target: "drafts", injected: false })]),
 		);
 		expect(panel).toMatchObject({
 			status: "success",
@@ -246,12 +247,47 @@ describe("skillsLookupToPanel", () => {
 
 	test("a lookup whose only skill is a draft is an empty envelope with reason filtered", () => {
 		expect(
-			skillsLookupToPanel(skills([skillRow({ name: "lesson-draft", target: "drafts" })])),
+			skillsLookupToPanel(
+				skills([skillRow({ name: "lesson-draft", target: "drafts", injected: false })]),
+			),
 		).toEqual({
 			status: "empty",
 			reason: "filtered",
 			items: [],
 			excluded: [{ ref: "lesson-draft", reason: "filtered" }],
+			missing: [],
+			stages: [],
+		});
+	});
+
+	test("an injected row is a pointer item even when its target is drafts: the adapter decides by injected only", () => {
+		expect(
+			skillsLookupToPanel(
+				skills([skillRow({ name: "generated-skill", target: "drafts", injected: true })]),
+			),
+		).toMatchObject({
+			status: "success",
+			items: [
+				{
+					id: "skill:drafts:generated-skill",
+					source: { kind: "skill", ref: "generated-skill" },
+					matchReason: "Promoted skill matched the prompt (drafts)",
+				},
+			],
+			excluded: [],
+		});
+	});
+
+	test("a row that is not injected is an excluded row, even when its target is an install", () => {
+		expect(
+			skillsLookupToPanel(
+				skills([skillRow({ name: "omp-draft", target: "omp", injected: false })]),
+			),
+		).toEqual({
+			status: "empty",
+			reason: "filtered",
+			items: [],
+			excluded: [{ ref: "omp-draft", reason: "filtered" }],
 			missing: [],
 			stages: [],
 		});

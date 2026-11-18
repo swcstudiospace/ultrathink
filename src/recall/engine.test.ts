@@ -7,14 +7,15 @@ import { defaultRecallSettings, type RecallSettings } from "./config.ts";
 import {
 	type BudgetState,
 	createBudgetState,
-	createCooldownState,
 	createDedupeState,
 	dedupeKey,
 	recordInjected,
 	recordSpend,
-	startTurn,
+	resetDedupeEpoch,
+	resetTurn,
 } from "./gates.ts";
 import {
+	createRecallState,
 	type PanelSourceName,
 	type RecallEvent,
 	type RecallInput,
@@ -35,7 +36,7 @@ const CASES: { name: string; event: RecallEvent; sources: PanelSourceName[] }[] 
 	{
 		name: "failure",
 		event: { trigger: "failure", error: "TypeError at line 12" },
-		sources: ["lessons"],
+		sources: ["lessons", "skills"],
 	},
 	{
 		name: "phase boundary",
@@ -117,6 +118,7 @@ const SKILL: SkillRow = {
 	name: "bun-snapshot-tests",
 	description: "Use when snapshot tests fail.",
 	target: "omp",
+	injected: true,
 };
 
 function allLookups(): RecallLookups {
@@ -128,17 +130,13 @@ function allLookups(): RecallLookups {
 }
 
 function freshState(): RecallRuntimeState {
-	return {
-		cooldown: createCooldownState(),
-		budget: createBudgetState(),
-		dedupe: createDedupeState(),
-	};
+	return createRecallState();
 }
 
 /** Session budget spent by `calls` recall calls, each in its own turn so the per-turn cap never refuses first. */
 function sessionSpent(calls: number): BudgetState {
 	let state = createBudgetState();
-	for (let i = 0; i < calls; i++) state = startTurn(recordSpend(state, 0));
+	for (let i = 0; i < calls; i++) state = resetTurn(recordSpend(state, 0));
 	return state;
 }
 
@@ -218,6 +216,7 @@ describe("planRecall", () => {
 		);
 		expect(result.audit).toEqual([
 			{ source: "lessons", trigger: "failure", outcome: "skipped_disabled", reason: "trigger_off" },
+			{ source: "skills", trigger: "failure", outcome: "skipped_disabled", reason: "trigger_off" },
 		]);
 		expect(result.panels).toEqual({});
 	});
@@ -250,24 +249,31 @@ describe("planRecall", () => {
 		expect(second.audit.map((entry) => entry.outcome)).toEqual(["fired", "fired", "fired"]);
 	});
 
-	test("the phase boundary window comes from the input", () => {
+	test("a phase boundary fires once per plan step and task type for the session", () => {
 		const PHASE: RecallEvent = { trigger: "phaseBoundary", planStep: "Verify", taskType: "test" };
-		const first = planned(
-			planRecall(planInput({ trigger: PHASE, nowMs: NOW, phaseBoundaryWindowMs: 60_000 })),
-		);
+		const first = planned(planRecall(planInput({ trigger: PHASE, nowMs: NOW })));
 		const second = planned(
+			planRecall(planInput({ trigger: PHASE, nowMs: NOW + 10 * SCOPE_WINDOW, state: first.next })),
+		);
+		expect(second.audit).toEqual([
+			{
+				source: "skills",
+				trigger: "phaseBoundary",
+				outcome: "skipped_cooldown",
+				remainingMs: Number.POSITIVE_INFINITY,
+			},
+		]);
+
+		const otherTask = planned(
 			planRecall(
 				planInput({
-					trigger: PHASE,
-					nowMs: NOW + 59_999,
+					trigger: { trigger: "phaseBoundary", planStep: "Verify", taskType: "lint" },
+					nowMs: NOW,
 					state: first.next,
-					phaseBoundaryWindowMs: 60_000,
 				}),
 			),
 		);
-		expect(second.audit).toEqual([
-			{ source: "skills", trigger: "phaseBoundary", outcome: "skipped_cooldown", remainingMs: 1 },
-		]);
+		expect(otherTask.audit.map((entry) => entry.outcome)).toEqual(["fired"]);
 	});
 
 	test("a routine request refused by the session budget is skipped_budget, while a reserved request still fires", () => {
@@ -278,13 +284,15 @@ describe("planRecall", () => {
 				source: "knowledge",
 				trigger: "scopeChange",
 				outcome: "skipped_budget",
-				reason: "session_calls_cap",
+				reason: "skipped-by-budget",
+				cap: "session_calls_cap",
 			},
 			{
 				source: "lessons",
 				trigger: "scopeChange",
 				outcome: "skipped_budget",
-				reason: "session_calls_cap",
+				reason: "skipped-by-budget",
+				cap: "session_calls_cap",
 			},
 		]);
 		expect(routine.panels).toEqual({});
@@ -363,4 +371,272 @@ describe("planRecall", () => {
 			expect(result.audit.map((entry) => entry.outcome)).toEqual(c.sources.map(() => "no_source"));
 		});
 	}
+
+	test("a call with no prior state plans from a fresh session", () => {
+		const input: RecallInput = {
+			trigger: SCOPE,
+			nowMs: NOW,
+			settings: enabledSettings(),
+			lookups: allLookups(),
+		};
+		const result = planned(planRecall(input));
+		expect(result.audit.map((entry) => entry.outcome)).toEqual(["fired", "fired"]);
+		expect(result.next.budget.session.calls).toBe(2);
+	});
+
+	test("a state written before failure tracking plans as if no failure was seen", () => {
+		const { failures: _failures, ...older } = freshState();
+		const result = planned(
+			planRecall(
+				planInput({ trigger: { trigger: "failure", error: "TypeError at line 12" }, state: older }),
+			),
+		);
+		expect(result.audit.map((entry) => [entry.source, entry.outcome])).toEqual([
+			["lessons", "fired"],
+			["skills", "fired"],
+		]);
+	});
+
+	test("a failure recalls lessons on its first occurrence and teachable moments on its second, then nothing", () => {
+		const first = planned(
+			planRecall(planInput({ trigger: { trigger: "failure", error: "TypeError at line 12" } })),
+		);
+		expect(first.audit).toEqual([
+			{ source: "lessons", trigger: "failure", outcome: "fired", injected: 1, deduped: 0 },
+			{ source: "skills", trigger: "failure", outcome: "fired", injected: 1, deduped: 0 },
+		]);
+
+		const second = planned(
+			planRecall(
+				planInput({
+					trigger: { trigger: "failure", error: "typeerror at line 40" },
+					nowMs: NOW + 1_000,
+					state: first.next,
+					lookups: { moments: lessonsUsed([lessonRow("t1", 0.9)]) },
+				}),
+			),
+		);
+		expect(second.audit).toEqual([
+			{ source: "moments", trigger: "failure", outcome: "fired", injected: 1, deduped: 0 },
+			{ source: "skills", trigger: "failure", outcome: "no_source" },
+		]);
+		expect(listed(second.panels.moments).items.map((item) => item.id)).toEqual(["lesson:t1"]);
+
+		const third = planned(
+			planRecall(
+				planInput({
+					trigger: { trigger: "failure", error: "TypeError at line 7" },
+					nowMs: NOW + 2_000,
+					state: second.next,
+				}),
+			),
+		);
+		expect(third.audit).toEqual([]);
+	});
+
+	test("a failure plans the skills source on its first two occurrences, and skips it when its switch is off", () => {
+		const first = planned(
+			planRecall(planInput({ trigger: { trigger: "failure", error: "TypeError at line 12" } })),
+		);
+		const OTHER: SkillRow = { ...SKILL, name: "other-skill" };
+		const second = planned(
+			planRecall(
+				planInput({
+					trigger: { trigger: "failure", error: "typeerror at line 40" },
+					nowMs: NOW + 1_000,
+					state: first.next,
+					lookups: { moments: lessonsUsed([lessonRow("t1", 0.9)]), skills: skillsUsed([OTHER]) },
+				}),
+			),
+		);
+		expect(second.audit).toContainEqual({
+			source: "skills",
+			trigger: "failure",
+			outcome: "fired",
+			injected: 1,
+			deduped: 0,
+		});
+
+		const settings = enabledSettings();
+		settings.recall.sources.skills = false;
+		const off = planned(
+			planRecall(
+				planInput({ settings, trigger: { trigger: "failure", error: "TypeError at line 12" } }),
+			),
+		);
+		expect(off.audit).toContainEqual({
+			source: "skills",
+			trigger: "failure",
+			outcome: "skipped_disabled",
+			reason: "source_off",
+		});
+	});
+
+	test("an uncertainty refuses a repeat inside its 60 s window and allows it at the window", () => {
+		const UNCERTAIN: RecallEvent = { trigger: "uncertainty", topic: "which cache layer" };
+		const window = defaultRecallSettings().recall.cooldownMs.uncertainty;
+		const first = planned(planRecall(planInput({ trigger: UNCERTAIN, nowMs: NOW })));
+
+		const inside = planned(
+			planRecall(planInput({ trigger: UNCERTAIN, nowMs: NOW + window - 1, state: first.next })),
+		);
+		expect(inside.audit).toEqual([
+			{ source: "knowledge", trigger: "uncertainty", outcome: "skipped_cooldown", remainingMs: 1 },
+		]);
+
+		const atWindow = planned(
+			planRecall(planInput({ trigger: UNCERTAIN, nowMs: NOW + window, state: first.next })),
+		);
+		expect(atWindow.audit.map((entry) => entry.outcome)).toEqual(["fired"]);
+	});
+
+	test("an explicit request bypasses a cooldown but stops at the session call ceiling", () => {
+		const sessionCalls = defaultRecallSettings().recall.budget.perSessionCalls;
+		const scoped = planned(planRecall(planInput({ trigger: SCOPE, nowMs: NOW })));
+		const explicit = planned(
+			planRecall(planInput({ trigger: EXPLICIT, nowMs: NOW + 1, state: scoped.next })),
+		);
+		expect(explicit.audit.map((entry) => entry.outcome)).toEqual(["fired", "fired", "fired"]);
+
+		const nearCeiling = planned(
+			planRecall(
+				planInput({
+					trigger: EXPLICIT,
+					nowMs: NOW + 2,
+					state: { ...freshState(), budget: sessionSpent(sessionCalls - 1) },
+				}),
+			),
+		);
+		const refused = {
+			outcome: "skipped_budget",
+			reason: "skipped-by-budget",
+			cap: "session_calls_cap",
+		} as const;
+		expect(nearCeiling.audit).toEqual([
+			{ source: "knowledge", trigger: "explicit", outcome: "fired", injected: 1, deduped: 0 },
+			{ source: "lessons", trigger: "explicit", ...refused },
+			{ source: "skills", trigger: "explicit", ...refused },
+		]);
+	});
+
+	test("an explicit request stops at the session token ceiling", () => {
+		const spent = resetTurn(recordSpend(createBudgetState(), 7_000));
+		const lookups: RecallLookups = {
+			knowledge: { outcome: "used", docs: ["docs/big.md"], chars: 6_000, ms: 1 },
+		};
+		const result = planned(
+			planRecall(
+				planInput({ trigger: EXPLICIT, state: { ...freshState(), budget: spent }, lookups }),
+			),
+		);
+		expect(result.audit[0]).toEqual({
+			source: "knowledge",
+			trigger: "explicit",
+			outcome: "skipped_budget",
+			reason: "skipped-by-budget",
+			cap: "session_tokens_cap",
+		});
+	});
+
+	test("an exhausted turn budget refuses until the turn resets, while the session budget stays open", () => {
+		const settings = enabledSettings(2);
+		const first = planned(planRecall(planInput({ trigger: SCOPE, nowMs: NOW, settings })));
+		expect(first.audit).toEqual([
+			{ source: "knowledge", trigger: "scopeChange", outcome: "fired", injected: 1, deduped: 0 },
+			{
+				source: "lessons",
+				trigger: "scopeChange",
+				outcome: "skipped_budget",
+				reason: "skipped-by-budget",
+				cap: "turn_calls_cap",
+			},
+		]);
+		expect(first.next.budget.session.calls).toBe(1);
+
+		const nextTurn = planned(
+			planRecall(
+				planInput({
+					trigger: SCOPE,
+					nowMs: NOW + 1,
+					settings,
+					state: { ...first.next, budget: resetTurn(first.next.budget) },
+				}),
+			),
+		);
+		expect(nextTurn.audit).toEqual([
+			{
+				source: "knowledge",
+				trigger: "scopeChange",
+				outcome: "skipped_cooldown",
+				remainingMs: SCOPE_WINDOW - 1,
+			},
+			{ source: "lessons", trigger: "scopeChange", outcome: "fired", injected: 1, deduped: 0 },
+		]);
+	});
+
+	test("session counters accumulate across explicit calls through the carried state", () => {
+		const first = planned(planRecall(planInput({ trigger: EXPLICIT, nowMs: NOW })));
+		const second = planned(
+			planRecall(planInput({ trigger: EXPLICIT, nowMs: NOW + 1, state: first.next })),
+		);
+		expect(first.next.budget.session.calls).toBe(3);
+		expect(second.next.budget.session.calls).toBe(6);
+	});
+
+	test("an injected id stays deduped until resetDedupeEpoch clears it", () => {
+		const first = planned(planRecall(planInput({ trigger: EXPLICIT, nowMs: NOW })));
+		const again = planned(
+			planRecall(planInput({ trigger: EXPLICIT, nowMs: NOW + 1, state: first.next })),
+		);
+		expect(again.audit.find((entry) => entry.source === "lessons")).toMatchObject({
+			outcome: "fired",
+			injected: 0,
+			deduped: 1,
+		});
+
+		const compacted = { ...again.next, dedupe: resetDedupeEpoch(again.next.dedupe) };
+		const afterCompaction = planned(
+			planRecall(planInput({ trigger: EXPLICIT, nowMs: NOW + 2, state: compacted })),
+		);
+		expect(afterCompaction.audit.find((entry) => entry.source === "lessons")).toMatchObject({
+			outcome: "fired",
+			injected: 1,
+			deduped: 0,
+		});
+	});
+
+	test("cooldown fires older than the largest window are dropped, so the map stays bounded", () => {
+		const settings = enabledSettings();
+		settings.recall.budget.perSessionCalls = 1_000;
+		settings.recall.budget.perSessionTokens = 1_000_000;
+		const phase = planned(
+			planRecall(
+				planInput({
+					settings,
+					trigger: { trigger: "phaseBoundary", planStep: "verify", taskType: "test" },
+					nowMs: NOW,
+				}),
+			),
+		);
+
+		let state = phase.next;
+		let nowMs = NOW;
+		for (let i = 0; i < 50; i++) {
+			nowMs += SCOPE_WINDOW;
+			const step = planned(
+				planRecall(
+					planInput({
+						settings,
+						trigger: { trigger: "scopeChange", scopePath: `src/${i}` },
+						nowMs,
+						state: { ...state, budget: resetTurn(state.budget) },
+						lookups: { knowledge: knowledgeUsed([`docs/${i}.md`]) },
+					}),
+				),
+			);
+			state = step.next;
+		}
+		// The once-per-session phase fire, and the last scope fire; every earlier scope fire has aged out.
+		expect(state.cooldown.size).toBe(2);
+	});
 });
