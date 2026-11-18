@@ -48,7 +48,7 @@ export interface HostModelInfo {
 	readonly available?: boolean;
 }
 
-/** Remembers which models already answered the smoke check, so each is probed once. */
+/** Remembers which models answered the smoke check, so each is probed once. A failed probe is not remembered. */
 export interface SmokeCache {
 	check(key: string, run: () => Promise<boolean>): Promise<boolean>;
 	forget(key: string): void;
@@ -60,7 +60,19 @@ export function createSmokeCache(): SmokeCache {
 		check(key, run) {
 			const known = results.get(key);
 			if (known) return known;
-			const started = run();
+			const forgetIfFailed = (): void => {
+				if (results.get(key) === started) results.delete(key);
+			};
+			const started: Promise<boolean> = run().then(
+				(ok) => {
+					if (!ok) forgetIfFailed();
+					return ok;
+				},
+				(error: unknown) => {
+					forgetIfFailed();
+					throw error;
+				},
+			);
 			results.set(key, started);
 			return started;
 		},
@@ -236,8 +248,6 @@ async function smokeCheck(
 			ctx.signal?.removeEventListener("abort", onAbort);
 		}
 	});
-	// An aborted caller says nothing about the model: do not remember a failure it caused.
-	if (!ok && ctx.signal?.aborted) cache.forget(key);
 	return ok;
 }
 
