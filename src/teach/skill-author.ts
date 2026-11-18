@@ -207,7 +207,7 @@ export type AuthorOutcome =
  * names a skill and matches signatures, so "tsc rejects value imports of types: use import type" and its variant with
  * a different line number or path normalize alike.
  */
-function normalizeSignature(text: string): string {
+export function normalizeSignature(text: string): string {
 	return text
 		.toLowerCase()
 		.replace(PATH_TOKEN_RE, " path ")

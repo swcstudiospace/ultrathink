@@ -5,7 +5,8 @@
  * trigger over the knowledge, lessons and skills sources. The caller supplies the fetchers; this module runs them,
  * turns a rejected fetch into the failed lookup the planner already understands, and returns the panels and the audit.
  * The planner applies the master switch, the source and trigger flags and the session budget. An explicit request has no
- * cooldown and no per-turn cap. Nothing is kept between calls except the `next` state the caller chooses to store.
+ * cooldown and no per-turn cap. The caller keeps the `next` state and passes it back, so the session ceilings accumulate
+ * across explicit calls; a call with no state plans from a fresh session.
  */
 import type { KnowledgeLookup } from "../greptile/knowledge-probe.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
@@ -30,7 +31,8 @@ export interface ExplicitRecallInput {
 	/** Clock value in epoch milliseconds, supplied by the caller. */
 	nowMs: number;
 	settings: RecallSettings;
-	state: RecallRuntimeState;
+	/** The session state the caller kept from the last recall. Absent starts a fresh session. */
+	state?: RecallRuntimeState;
 	fetch: ExplicitFetchers;
 }
 

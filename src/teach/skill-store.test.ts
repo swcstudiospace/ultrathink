@@ -126,6 +126,40 @@ describe("generated skill store", () => {
 		expect(await skillMd(SKILL)).toContain("status: disabled\n");
 	});
 
+	test("a schema 2 manifest with an active entry loads, and the entry keeps status active", async () => {
+		await mkdir(storeDir, { recursive: true });
+		await writeFile(
+			join(storeDir, "manifest.json"),
+			JSON.stringify({
+				schema: 2,
+				skills: [
+					{
+						name: SKILL,
+						status: "active",
+						generated_by: "auto",
+						version: 1,
+						content_hash: "a".repeat(64),
+						generated_at: NOW,
+						source_ids: ["moment-1"],
+						stale: false,
+						description: "Use import type for type-only imports.",
+						applies_when: {
+							task_types: ["typescript-build"],
+							scope_globs: ["src/**"],
+							error_signatures: ["tsc rejects value imports of types"],
+						},
+						signature_hash: "0123456789abcdef0123456789abcdef",
+					},
+				],
+			}),
+		);
+
+		expect(await listGenerated(storeDir)).toMatchObject({
+			ok: true,
+			entries: [{ name: SKILL, status: "active" }],
+		});
+	});
+
 	test("a user-authored directory is never overwritten or removed", async () => {
 		const dir = join(storeDir, "hand-written");
 		await mkdir(dir, { recursive: true });

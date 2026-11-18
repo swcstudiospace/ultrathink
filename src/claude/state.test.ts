@@ -20,6 +20,13 @@ import { shipNudge } from "../ship/nudge.ts";
 import { DEFAULT_SHIP_CONFIG } from "../ship/types.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import { main as mcpMain } from "../mcp/cli.ts";
+import { createRecallState, type RecallRuntimeState } from "../recall/engine.ts";
+import {
+	createDedupeState,
+	createFailureState,
+	recordFailure,
+	recordInjected,
+} from "../recall/gates.ts";
 import type { TrackingRefs } from "../track/types.ts";
 import { LockTimeoutError, type LockOptions, writeFileAtomic } from "./atomic.ts";
 import {
@@ -39,6 +46,8 @@ import {
 	writeControl,
 	writeSession,
 	withLastLock,
+	restoreRecallState,
+	serializeRecallState,
 } from "./state.ts";
 
 const ANSWERS_HOOK = join(import.meta.dir, "..", "..", "hooks", "answers.ts");
@@ -1066,5 +1075,22 @@ describe("writeControl never builds on an unreadable control.json", () => {
 	test("a missing control.json is still empty: the first write creates it", () => {
 		const dir = tempDir();
 		expect(writeControl(dir, { thinkEnabled: true })).toEqual({ thinkEnabled: true });
+	});
+});
+
+describe("recall state", () => {
+	test("the planner state round-trips through JSON, and a damaged record restores a fresh session", () => {
+		const used: RecallRuntimeState = {
+			cooldown: new Map(),
+			budget: { turnIndex: 3, turn: { calls: 1, tokens: 40 }, session: { calls: 2, tokens: 90 } },
+			dedupe: recordInjected(createDedupeState(), ["k1"]),
+			failures: recordFailure(createFailureState(), "EACCES: permission denied", 500, 1_000).state,
+		};
+		const stored: unknown = JSON.parse(JSON.stringify(serializeRecallState(used)));
+		const restored = restoreRecallState(stored);
+		expect(restored.budget).toEqual(used.budget);
+		expect([...restored.dedupe.injected]).toEqual(["k1"]);
+		expect(restored.failures?.size).toBe(1);
+		expect(restoreRecallState("damaged")).toEqual(createRecallState());
 	});
 });

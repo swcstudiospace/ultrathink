@@ -4,8 +4,10 @@
  * Mid-session recall planner (SPE-34394). One call plans one trigger. For each source the trigger maps to, it checks
  * the master switch, the source flag and the trigger flag; then whether the caller supplied the lookup; then the
  * cooldown and the budget. A source that passes is admitted: its lookup becomes a panel through the adapters, its items
- * are deduped against everything injected in the current epoch, and its cost is spent. Every source-trigger pair yields
- * exactly one audit entry. Pure: no I/O, no fetch, no clock reads. The caller fetches the lookups and passes them in.
+ * are deduped against everything injected in the current epoch, and its cost is spent. Every source a trigger considers
+ * yields exactly one audit entry. The session state (cooldown, budget, dedupe, failure occurrences) is passed in and the
+ * next state returned, so a caller that keeps it carries the session ceilings across calls. Pure: no I/O, no fetch, no
+ * clock reads. The caller fetches the lookups and passes them in.
  */
 import type { KnowledgeLookup } from "../greptile/knowledge-probe.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
@@ -16,13 +18,19 @@ import {
 	type BudgetState,
 	type CooldownRequest,
 	type CooldownState,
-	type CooldownWindows,
 	type DedupeState,
+	type FailureState,
 	checkBudget,
 	checkCooldown,
-	cooldownKey,
+	createBudgetState,
+	createCooldownState,
+	createDedupeState,
+	createFailureState,
 	filterInjected,
+	pruneCooldown,
+	pruneFailures,
 	recordCooldownFire,
+	recordFailure,
 	recordInjected,
 	recordSpend,
 } from "./gates.ts";
@@ -37,13 +45,12 @@ export type RecallEvent =
 	| { trigger: "explicit" };
 
 type RecallTrigger = RecallEvent["trigger"];
-/** The sources the planner handles. Moments are not in the trigger map, so they are never planned here. */
-export type PanelSourceName = "knowledge" | "lessons" | "skills";
+/** The sources the planner handles. A failure recalls teachable moments on its second occurrence (see `failureSources`). */
+export type PanelSourceName = "knowledge" | "lessons" | "moments" | "skills";
 
-/** The trigger-to-source map. Each trigger may recall from exactly these sources. */
-const SOURCES_BY_TRIGGER: Record<RecallTrigger, readonly PanelSourceName[]> = {
+/** The trigger-to-source map for the triggers whose sources do not depend on an occurrence. */
+const SOURCES_BY_TRIGGER: Record<Exclude<RecallTrigger, "failure">, readonly PanelSourceName[]> = {
 	scopeChange: ["knowledge", "lessons"],
-	failure: ["lessons"],
 	phaseBoundary: ["skills"],
 	uncertainty: ["knowledge"],
 	explicit: ["knowledge", "lessons", "skills"],
@@ -51,6 +58,15 @@ const SOURCES_BY_TRIGGER: Record<RecallTrigger, readonly PanelSourceName[]> = {
 
 /** Estimated tokens per character: the convention of decisions/client.ts. */
 const CHARS_PER_TOKEN = 4;
+
+/** The largest age a cooldown fire or failure occurrence is kept for: the largest windowed cooldown, capped at one day. */
+const MAX_PRUNE_AGE_MS = 86_400_000;
+
+/**
+ * Teachable moments the caller fetched for a failure's second occurrence. A moment is recalled the way a lesson is, so it
+ * shares the lessons record shape and the lessons adapter renders it.
+ */
+type MomentsLookup = LessonsLookup;
 
 /**
  * Lookups the caller already fetched. An absent lookup means its source was not fetched; that source's audit entry is
@@ -60,13 +76,30 @@ export interface RecallLookups {
 	knowledge?: KnowledgeLookup;
 	lessons?: LessonsLookup;
 	skills?: SkillsLookup;
+	moments?: MomentsLookup;
 }
 
-/** State carried between plans. The caller stores the `next` state a plan returns and passes it to the next plan. */
+/**
+ * The session state the planner carries between calls: cooldown fires, the budget (turn counter and spend), the dedupe
+ * epoch with the ids injected in it, and failure occurrences. The caller stores the `next` state a plan returns, passes
+ * it to the next plan, calls `resetTurn` on the budget at each turn boundary and `resetDedupeEpoch` on compaction.
+ */
 export interface RecallRuntimeState {
 	cooldown: CooldownState;
 	budget: BudgetState;
 	dedupe: DedupeState;
+	/** Failure occurrences. Absent on a state written before failure tracking; it then counts as empty. */
+	failures?: FailureState;
+}
+
+/** A fresh session state: nothing cooled down, nothing spent, nothing injected, no failure seen. */
+export function createRecallState(): RecallRuntimeState {
+	return {
+		cooldown: createCooldownState(),
+		budget: createBudgetState(),
+		dedupe: createDedupeState(),
+		failures: createFailureState(),
+	};
 }
 
 export interface RecallInput {
@@ -74,13 +107,9 @@ export interface RecallInput {
 	/** Clock value in epoch milliseconds, supplied by the caller. */
 	nowMs: number;
 	settings: RecallSettings;
-	state: RecallRuntimeState;
+	/** The session state the last plan returned. Absent starts a fresh session (see `createRecallState`). */
+	state?: RecallRuntimeState;
 	lookups: RecallLookups;
-	/**
-	 * Cooldown window for phaseBoundary, in ms. Defaults to 0. The settings carry no phaseBoundary window yet, so the
-	 * caller must supply it until the settings schema adds one.
-	 */
-	phaseBoundaryWindowMs?: number;
 }
 
 type BudgetRefusalReason = Extract<BudgetDecision, { allowed: false }>["reason"];
@@ -91,7 +120,7 @@ export type RecallAuditEntry = { source: PanelSourceName; trigger: RecallTrigger
 	| { outcome: "fired"; injected: number; deduped: number }
 	| { outcome: "skipped_disabled"; reason: DisabledReason }
 	| { outcome: "skipped_cooldown"; remainingMs: number }
-	| { outcome: "skipped_budget"; reason: BudgetRefusalReason }
+	| { outcome: "skipped_budget"; reason: "skipped-by-budget"; cap: BudgetRefusalReason }
 	| { outcome: "no_source" }
 );
 
@@ -100,10 +129,11 @@ interface RecallPanels {
 	knowledge?: PanelEnvelope;
 	lessons?: PanelEnvelope;
 	skills?: PanelEnvelope;
+	moments?: PanelEnvelope;
 }
 
 /** Why a plan was refused before any source was considered. The settings or clock are invalid, not the sources. */
-type RecallRefusal = "invalid_clock" | "invalid_floor" | "invalid_phase_window";
+type RecallRefusal = "invalid_clock" | "invalid_floor";
 
 export type RecallPlan =
 	| {
@@ -116,13 +146,11 @@ export type RecallPlan =
 	  }
 	| { ok: false; reason: RecallRefusal };
 
-/** The cooldown request of one source under an event; undefined for an explicit request, which has no cooldown. */
+/** The cooldown request of one source under an event; undefined for a failure or an explicit request, which have none. */
 function cooldownRequest(source: PanelSourceName, event: RecallEvent): CooldownRequest | undefined {
 	switch (event.trigger) {
 		case "scopeChange":
 			return { source, trigger: "scopeChange", subject: { scopePath: event.scopePath } };
-		case "failure":
-			return { source, trigger: "failure", subject: { error: event.error } };
 		case "phaseBoundary":
 			return {
 				source,
@@ -131,9 +159,22 @@ function cooldownRequest(source: PanelSourceName, event: RecallEvent): CooldownR
 			};
 		case "uncertainty":
 			return { source, trigger: "uncertainty", subject: { topic: event.topic } };
+		// A failure is limited by its occurrence count (see failureSources), not a cooldown: a cooldown on its skills
+		// would block the skills its second occurrence plans.
+		case "failure":
 		case "explicit":
 			return undefined;
 	}
+}
+
+/**
+ * The sources a failure recalls for its occurrence number: lessons on the first occurrence of its error signature,
+ * teachable moments on the second, and none after that. Each of the first two also plans the skills source.
+ */
+function failureSources(occurrence: number): readonly PanelSourceName[] {
+	if (occurrence === 1) return ["lessons", "skills"];
+	if (occurrence === 2) return ["moments", "skills"];
+	return [];
 }
 
 function disabledReason(
@@ -170,6 +211,10 @@ function panelFor(
 			const lookup = lookups.skills;
 			return lookup && { panel: skillsLookupToPanel(lookup), chars: lookup.chars };
 		}
+		case "moments": {
+			const lookup = lookups.moments;
+			return lookup && { panel: lessonsLookupToPanel(lookup, floor), chars: lookup.chars };
+		}
 	}
 }
 
@@ -185,31 +230,45 @@ function markItems(panel: PanelEnvelope, fresh: ReadonlySet<PanelItem>): PanelEn
 }
 
 /**
- * Plans the recall for one trigger. Sources are considered in the trigger map's order. A refusal (invalid clock, floor
- * or phase window) returns before any source is considered; otherwise every mapped source yields one audit entry, and
- * the returned `next` state carries the cooldown fires, budget spend and injected dedupe keys of the admitted sources.
+ * Plans the recall for one trigger. A failure's sources depend on its occurrence: lessons on the first occurrence of its
+ * error signature, teachable moments on the second, none after that. Each other trigger considers its mapped sources in
+ * the trigger map's order. A refusal (invalid clock or floor) returns before any source is considered; otherwise each
+ * source considered yields one audit entry. The `next` state carries the cooldown fires, failure occurrences, budget
+ * spend and injected dedupe keys of the admitted sources, with cooldown fires and failure occurrences older than the
+ * largest windowed cooldown dropped. A call with no `state` plans from a fresh session.
  */
 export function planRecall(input: RecallInput): RecallPlan {
 	const { trigger, nowMs, settings, lookups } = input;
 	const recall = settings.recall;
-	const phaseBoundaryWindowMs = input.phaseBoundaryWindowMs ?? 0;
 	const floor = recall.relevanceFloor.lessons;
 
 	if (!Number.isFinite(nowMs)) return { ok: false, reason: "invalid_clock" };
 	if (!Number.isFinite(floor) || floor < 0 || floor > 1) {
 		return { ok: false, reason: "invalid_floor" };
 	}
-	if (!Number.isFinite(phaseBoundaryWindowMs) || phaseBoundaryWindowMs < 0) {
-		return { ok: false, reason: "invalid_phase_window" };
-	}
 
-	const windows: CooldownWindows = { ...recall.cooldownMs, phaseBoundary: phaseBoundaryWindowMs };
+	const { cooldownMs } = recall;
+	const pruneAgeMs = Math.min(
+		Math.max(cooldownMs.scopeChange, cooldownMs.failure, cooldownMs.uncertainty),
+		MAX_PRUNE_AGE_MS,
+	);
 	const audit: RecallAuditEntry[] = [];
 	const panels: RecallPanels = {};
 	const injectedIds: string[] = [];
-	let { cooldown, budget, dedupe } = input.state;
+	const prior = input.state ?? createRecallState();
+	let { cooldown, budget, dedupe } = prior;
+	let failures = prior.failures ?? createFailureState();
 
-	for (const source of SOURCES_BY_TRIGGER[trigger.trigger]) {
+	let sources: readonly PanelSourceName[];
+	if (trigger.trigger === "failure") {
+		const recorded = recordFailure(failures, trigger.error, nowMs, pruneAgeMs);
+		failures = recorded.state;
+		sources = failureSources(recorded.occurrence);
+	} else {
+		sources = SOURCES_BY_TRIGGER[trigger.trigger];
+	}
+
+	for (const source of sources) {
 		const pair = { source, trigger: trigger.trigger };
 
 		const disabled = disabledReason(recall, source, trigger.trigger);
@@ -226,7 +285,7 @@ export function planRecall(input: RecallInput): RecallPlan {
 
 		const request = cooldownRequest(source, trigger);
 		if (request !== undefined) {
-			const decision = checkCooldown(cooldown, request, windows, nowMs);
+			const decision = checkCooldown(cooldown, request, cooldownMs, nowMs);
 			if (!decision.allowed) {
 				audit.push({ ...pair, outcome: "skipped_cooldown", remainingMs: decision.remainingMs });
 				continue;
@@ -245,7 +304,12 @@ export function planRecall(input: RecallInput): RecallPlan {
 				: recall.budget;
 		const spend = checkBudget(budget, caps, { trigger: trigger.trigger, tokens });
 		if (!spend.allowed) {
-			audit.push({ ...pair, outcome: "skipped_budget", reason: spend.reason });
+			audit.push({
+				...pair,
+				outcome: "skipped_budget",
+				reason: "skipped-by-budget",
+				cap: spend.reason,
+			});
 			continue;
 		}
 
@@ -265,7 +329,7 @@ export function planRecall(input: RecallInput): RecallPlan {
 		);
 		panels[source] = markItems(admitted.panel, fresh);
 
-		if (request !== undefined) cooldown = recordCooldownFire(cooldown, cooldownKey(request), nowMs);
+		if (request !== undefined) cooldown = recordCooldownFire(cooldown, request, nowMs);
 		budget = recordSpend(budget, tokens);
 		audit.push({
 			...pair,
@@ -275,5 +339,16 @@ export function planRecall(input: RecallInput): RecallPlan {
 		});
 	}
 
-	return { ok: true, audit, panels, injectedIds, next: { cooldown, budget, dedupe } };
+	return {
+		ok: true,
+		audit,
+		panels,
+		injectedIds,
+		next: {
+			cooldown: pruneCooldown(cooldown, nowMs, pruneAgeMs),
+			budget,
+			dedupe,
+			failures: pruneFailures(failures, nowMs, pruneAgeMs),
+		},
+	};
 }

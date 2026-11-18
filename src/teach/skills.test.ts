@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import { DEFAULT_HINDSIGHT_CONFIG } from "../hindsight/types.ts";
+import { skillsLookupToPanel } from "../recall/adapters.ts";
 import { captureMoment, forgetMoment } from "./capture.ts";
 import { installSkill, markPromoted, renderSkillDraft } from "./promote.ts";
+import { type AutoSkill, contentHashOf } from "./skill-author.ts";
+import { writeGeneratedSkill } from "./skill-store.ts";
 import {
 	formatSkillsSection,
+	type GeneratedSkill,
+	matchesGeneratedSkill,
 	MAX_SCANNED_DRAFTS,
 	MAX_SCANNED_MOMENTS,
 	recallSkills,
@@ -114,7 +119,9 @@ function writeDraft(
 	return path;
 }
 
-function skillObj(overrides: Partial<RecalledSkill> = {}): RecalledSkill {
+function skillObj(overrides: Partial<RecalledSkill & { injected: boolean }> = {}): RecalledSkill & {
+	injected: boolean;
+} {
 	return {
 		name: "lesson-bun-test",
 		description: "Use when running the test suite.",
@@ -122,6 +129,7 @@ function skillObj(overrides: Partial<RecalledSkill> = {}): RecalledSkill {
 		target: "drafts",
 		sourceIds: ["aaa"],
 		occurrences: 3,
+		injected: false,
 		...overrides,
 	};
 }
@@ -645,13 +653,23 @@ describe("skillsLookup", () => {
 			skillsLookup(
 				used([
 					skillObj({ name: "aaa" }),
-					skillObj({ name: "ddd", target: "omp", description: "Use when lint fails." }),
+					skillObj({
+						name: "ddd",
+						target: "omp",
+						description: "Use when lint fails.",
+						injected: true,
+					}),
 				]),
 			),
 		).toMatchObject({
 			rows: [
-				{ name: "aaa", target: "drafts", description: "Use when running the test suite." },
-				{ name: "ddd", target: "omp", description: "Use when lint fails." },
+				{
+					name: "aaa",
+					target: "drafts",
+					injected: false,
+					description: "Use when running the test suite.",
+				},
+				{ name: "ddd", target: "omp", injected: true, description: "Use when lint fails." },
 			],
 		});
 		expect(
@@ -662,5 +680,218 @@ describe("skillsLookup", () => {
 			names: [],
 			reason: "nope",
 		});
+	});
+});
+
+describe("recallSkills: generated skills by key", () => {
+	const GENERATED_AT = "2026-06-01T00:00:00.000Z";
+	const SKILL = "tsc-value-import-of-types";
+	const TSC_ERROR =
+		"src/app.ts(3,8): error TS1205: tsc rejects value imports of types: use import type";
+
+	function generated(overrides: Partial<GeneratedSkill> = {}): GeneratedSkill {
+		return {
+			name: SKILL,
+			status: "active",
+			description: "Use import type for type-only imports in typescript-build runs.",
+			source_ids: ["moment-1"],
+			applies_when: {
+				task_types: ["typescript-build"],
+				scope_globs: ["src/**"],
+				error_signatures: ["tsc rejects value imports of types"],
+			},
+			...overrides,
+		};
+	}
+
+	function autoSkill(status: AutoSkill["status"]): AutoSkill {
+		const draft: AutoSkill = {
+			name: SKILL,
+			description: "Use import type for type-only imports in typescript-build runs.",
+			applies_when: {
+				task_types: ["typescript-build"],
+				scope_globs: ["src/**"],
+				error_signatures: ["tsc rejects value imports of types"],
+			},
+			steps: ["Change the import to import type for symbols that are only types."],
+			source_ids: ["moment-1"],
+			generated_by: "auto",
+			generated_at: GENERATED_AT,
+			content_hash: "",
+			version: 1,
+			status,
+			signature_hash: "0123456789abcdef0123456789abcdef",
+			stale: false,
+			warnings: [],
+		};
+		return { ...draft, content_hash: contentHashOf(draft) };
+	}
+
+	test("an active entry is injected when its task type matches", () => {
+		expect(matchesGeneratedSkill(generated(), { taskType: "typescript-build" })).toBe(true);
+	});
+
+	test("an active entry is injected when an error signature occurs in the error", () => {
+		expect(matchesGeneratedSkill(generated(), { error: TSC_ERROR })).toBe(true);
+	});
+
+	test("a draft or disabled entry is never injected, whatever it matches", () => {
+		for (const status of ["draft", "disabled"]) {
+			const entry = generated({ status });
+			expect(matchesGeneratedSkill(entry, { taskType: "typescript-build" })).toBe(false);
+			expect(matchesGeneratedSkill(entry, { error: TSC_ERROR })).toBe(false);
+		}
+	});
+
+	test("an entry that matches neither the task type nor a signature is not injected", () => {
+		expect(matchesGeneratedSkill(generated(), { taskType: "rust-build" })).toBe(false);
+		expect(matchesGeneratedSkill(generated(), { error: "kubernetes ingress timed out" })).toBe(
+			false,
+		);
+		// A signature matches whole words only: a longer word that starts with it is a different error.
+		expect(
+			matchesGeneratedSkill(generated(), { error: "tsc rejects value imports of typescript" }),
+		).toBe(false);
+		expect(matchesGeneratedSkill(generated(), {})).toBe(false);
+	});
+
+	test("a keyed lookup never injects a draft, even when it matches", async () => {
+		const { ctx } = setup();
+		const dir = join(ctx.stateDir, "generated-skills");
+		expect(await writeGeneratedSkill(dir, autoSkill("draft"), GENERATED_AT)).toMatchObject({
+			ok: true,
+		});
+		expect(
+			await recallSkills({ query: "typescript build", taskType: "typescript-build" }, ctx),
+		).toMatchObject({ status: "used", skills: [] });
+		expect(await recallSkills({ query: "tsc imports", error: TSC_ERROR }, ctx)).toMatchObject({
+			status: "used",
+			skills: [],
+		});
+	});
+
+	/** Marks every manifest entry active, with the given scope globs. The store writes drafts; only an active entry is injected. */
+	function activate(dir: string, scopeGlobs?: string[]): void {
+		const path = join(dir, "manifest.json");
+		const raw = JSON.parse(readFileSync(path, "utf8")) as {
+			skills: Array<{ status: string; applies_when: { scope_globs: string[] } }>;
+		};
+		for (const entry of raw.skills) {
+			entry.status = "active";
+			if (scopeGlobs) entry.applies_when.scope_globs = scopeGlobs;
+		}
+		writeFileSync(path, JSON.stringify(raw));
+	}
+
+	test("a draft is excluded from injection and visible to the panel", async () => {
+		const { ctx } = setup();
+		const dir = join(ctx.stateDir, "generated-skills");
+		await writeGeneratedSkill(dir, autoSkill("draft"), GENERATED_AT);
+
+		const outcome = await recallSkills(
+			{ query: "typescript build", taskType: "typescript-build" },
+			ctx,
+		);
+
+		expect(outcome).toMatchObject({ status: "used", skills: [] });
+		expect(outcome.excluded).toEqual([
+			{ ref: SKILL, reason: "filtered", status: "draft", description: generated().description },
+		]);
+		expect(skillsLookupToPanel(skillsLookup(outcome))).toMatchObject({
+			status: "empty",
+			reason: "filtered",
+			excluded: [{ ref: SKILL, reason: "filtered" }],
+		});
+	});
+
+	test("a disabled entry is excluded from injection and visible to the panel", async () => {
+		const { ctx } = setup();
+		const dir = join(ctx.stateDir, "generated-skills");
+		await writeGeneratedSkill(dir, autoSkill("disabled"), GENERATED_AT);
+
+		const outcome = await recallSkills(
+			{ query: "typescript build", taskType: "typescript-build" },
+			ctx,
+		);
+
+		expect(outcome).toMatchObject({ status: "used", skills: [] });
+		expect(outcome.excluded).toEqual([
+			{
+				ref: SKILL,
+				reason: "filtered",
+				status: "disabled",
+				description: generated().description,
+			},
+		]);
+		expect(skillsLookupToPanel(skillsLookup(outcome))).toMatchObject({
+			status: "empty",
+			reason: "filtered",
+			excluded: [{ ref: SKILL, reason: "filtered" }],
+		});
+	});
+
+	test("an active entry matched by task type is injected", async () => {
+		const { ctx } = setup();
+		const dir = join(ctx.stateDir, "generated-skills");
+		await writeGeneratedSkill(dir, autoSkill("draft"), GENERATED_AT);
+		activate(dir);
+
+		const outcome = await recallSkills(
+			{ query: "typescript build", taskType: "typescript-build" },
+			ctx,
+		);
+
+		expect(outcome).toMatchObject({ status: "used", skills: [{ name: SKILL }] });
+		expect(outcome.excluded).toEqual([]);
+		expect(skillsLookup(outcome).rows).toEqual([
+			expect.objectContaining({ name: SKILL, target: "drafts", injected: true }),
+		]);
+	});
+
+	test("an active entry whose scope globs do not match the scope is excluded", async () => {
+		const { ctx } = setup();
+		const dir = join(ctx.stateDir, "generated-skills");
+		await writeGeneratedSkill(dir, autoSkill("draft"), GENERATED_AT);
+		activate(dir);
+
+		const outcome = await recallSkills(
+			{ query: "typescript build", taskType: "typescript-build", scope: "docs/readme.md" },
+			ctx,
+		);
+
+		expect(outcome).toMatchObject({ status: "used", skills: [] });
+		expect(outcome.excluded).toEqual([
+			{ ref: SKILL, reason: "filtered", status: "active", description: generated().description },
+		]);
+	});
+
+	test("an active entry whose scope globs match the scope is injected", async () => {
+		const { ctx } = setup();
+		const dir = join(ctx.stateDir, "generated-skills");
+		await writeGeneratedSkill(dir, autoSkill("draft"), GENERATED_AT);
+		activate(dir);
+
+		const outcome = await recallSkills(
+			{ query: "typescript build", taskType: "typescript-build", scope: "src/teach/skills.ts" },
+			ctx,
+		);
+
+		expect(outcome).toMatchObject({ status: "used", skills: [{ name: SKILL }] });
+		expect(outcome.excluded).toEqual([]);
+	});
+
+	test("an active entry without scope globs is injected whatever the scope", async () => {
+		const { ctx } = setup();
+		const dir = join(ctx.stateDir, "generated-skills");
+		await writeGeneratedSkill(dir, autoSkill("draft"), GENERATED_AT);
+		activate(dir, []);
+
+		const outcome = await recallSkills(
+			{ query: "typescript build", taskType: "typescript-build", scope: "docs/readme.md" },
+			ctx,
+		);
+
+		expect(outcome).toMatchObject({ status: "used", skills: [{ name: SKILL }] });
+		expect(outcome.excluded).toEqual([]);
 	});
 });

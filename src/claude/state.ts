@@ -35,10 +35,15 @@ import type { SkillInvocation } from "../uplift/skill.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import { resolveStateDir } from "../host/paths.ts";
 import type { ShipState } from "../ship/types.ts";
-import { readJson } from "../shared.ts";
+import { isRecord, readJson } from "../shared.ts";
 import type { KnowledgeLookup } from "../greptile/knowledge.ts";
 import type { DocsLookup } from "../ragflow/types.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
+import {
+	createRecallState,
+	type RecallAuditEntry,
+	type RecallRuntimeState,
+} from "../recall/engine.ts";
 
 export interface ControlState {
 	enabled?: boolean;
@@ -101,6 +106,8 @@ export interface SessionRecord {
 	 * `edited` is the full `workRepos` at that point, so a warning fires once per distinct edited set.
 	 */
 	repoMismatch?: { labelled: string | null; edited: string[] } | null;
+	/** Mid-session recall (SPE-34394): the planner state and the last pass. Absent until recall is on and a prompt or tool result has run. */
+	recall?: RecallRecord;
 }
 
 export function defaultStateDir(env: Record<string, string | undefined> = process.env): string {
@@ -583,4 +590,131 @@ export function readLast(dir: string): SessionRecord | undefined {
 	const rec = raw as Partial<SessionRecord>;
 	if (!rec.result || typeof rec.result !== "object") return undefined;
 	return dropBadFailover(rec as SessionRecord);
+}
+
+/** The planner state (src/recall/engine.ts) as JSON: Maps become entry arrays and the dedupe set an array. */
+export interface RecallStateRecord {
+	cooldown: Array<[string, { atMs: number; oncePerSession: boolean }]>;
+	budget: {
+		turnIndex: number;
+		turn: { calls: number; tokens: number };
+		session: { calls: number; tokens: number };
+	};
+	dedupe: { epoch: number; injected: string[] };
+	failures: Array<[string, { count: number; lastMs: number }]>;
+}
+
+/**
+ * The mid-session recall record of a session (SPE-34394): the planner state the next prompt or tool result restores, the
+ * scope of the last planned prompt, and what the last recall pass did.
+ */
+export interface RecallRecord {
+	state: RecallStateRecord;
+	/** Scope of the last planned prompt: the repository slug, else the working directory. */
+	lastScope?: string;
+	/** The last pass: one audit entry per source it considered, and the reasons a lookup failed or timed out. */
+	last?: { at: number; audit: RecallAuditEntry[]; reasons: string[] };
+}
+
+export function serializeRecallState(state: RecallRuntimeState): RecallStateRecord {
+	const { turnIndex, turn, session } = state.budget;
+	return {
+		cooldown: [...state.cooldown].map(
+			([key, fire]): [string, { atMs: number; oncePerSession: boolean }] => [
+				key,
+				{ atMs: fire.atMs, oncePerSession: fire.oncePerSession },
+			],
+		),
+		budget: {
+			turnIndex,
+			turn: { calls: turn.calls, tokens: turn.tokens },
+			session: { calls: session.calls, tokens: session.tokens },
+		},
+		dedupe: { epoch: state.dedupe.epoch, injected: [...state.dedupe.injected] },
+		failures: [...(state.failures ?? [])].map(
+			([signature, record]): [string, { count: number; lastMs: number }] => [
+				signature,
+				{ count: record.count, lastMs: record.lastMs },
+			],
+		),
+	};
+}
+
+/** A count read from a stored record: a finite number at least 0, else 0. */
+function countOf(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+/** The `[key, value]` entries of a stored map, skipping any entry that is not one. */
+function entriesOf(value: unknown): Array<[string, Record<string, unknown>]> {
+	if (!Array.isArray(value)) return [];
+	const entries: Array<[string, Record<string, unknown>]> = [];
+	for (const entry of value) {
+		if (Array.isArray(entry) && typeof entry[0] === "string" && isRecord(entry[1]))
+			entries.push([entry[0], entry[1]]);
+	}
+	return entries;
+}
+
+/**
+ * The planner state a stored record restores. An absent or unreadable record starts a fresh session, and a damaged field
+ * costs only its own counter: a hand-edited record never throws.
+ */
+export function restoreRecallState(stored: unknown): RecallRuntimeState {
+	if (!isRecord(stored)) return createRecallState();
+	const budget: Record<string, unknown> = isRecord(stored.budget) ? stored.budget : {};
+	const turn: Record<string, unknown> = isRecord(budget.turn) ? budget.turn : {};
+	const session: Record<string, unknown> = isRecord(budget.session) ? budget.session : {};
+	const dedupe: Record<string, unknown> = isRecord(stored.dedupe) ? stored.dedupe : {};
+	const injected = Array.isArray(dedupe.injected)
+		? dedupe.injected.filter((key): key is string => typeof key === "string")
+		: [];
+	return {
+		cooldown: new Map(
+			entriesOf(stored.cooldown).map(
+				([key, fire]): [string, { atMs: number; oncePerSession: boolean }] => [
+					key,
+					{ atMs: countOf(fire.atMs), oncePerSession: fire.oncePerSession === true },
+				],
+			),
+		),
+		budget: {
+			turnIndex: countOf(budget.turnIndex),
+			turn: { calls: countOf(turn.calls), tokens: countOf(turn.tokens) },
+			session: { calls: countOf(session.calls), tokens: countOf(session.tokens) },
+		},
+		dedupe: { epoch: countOf(dedupe.epoch), injected: new Set(injected) },
+		failures: new Map(
+			entriesOf(stored.failures).map(
+				([signature, failure]): [string, { count: number; lastMs: number }] => [
+					signature,
+					{ count: countOf(failure.count), lastMs: countOf(failure.lastMs) },
+				],
+			),
+		),
+	};
+}
+
+/**
+ * Locked read-plan-write of one session's recall record, under the session record's lock (the lock every record writer
+ * holds). `plan` runs under that lock with the stored record (undefined before the first save) and returns the next one,
+ * or undefined to write nothing. Planning is pure and sync, so every lookup belongs before this call: the lock is never
+ * held across a fetch. Returns the record written, if one was.
+ */
+export function updateRecall(
+	dir: string,
+	sessionId: string,
+	plan: (prior: RecallRecord | undefined) => RecallRecord | undefined,
+	lock?: LockOptions,
+): RecallRecord | undefined {
+	const saved = updateSession(
+		dir,
+		sessionId,
+		(record) => {
+			const next = plan(record.recall);
+			return next ? { ...record, recall: next } : undefined;
+		},
+		lock,
+	);
+	return saved?.recall;
 }

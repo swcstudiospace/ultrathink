@@ -39,6 +39,7 @@ function skillRow(over: Partial<SkillRow> = {}): SkillRow {
 		name: "bun-snapshot-tests",
 		description: "Use when snapshot tests fail.",
 		target: "omp",
+		injected: true,
 		...over,
 	};
 }

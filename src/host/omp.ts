@@ -70,10 +70,21 @@ import { digestFromAgentMessages } from "../teach/digest.ts";
 import { spawnObserveDetached } from "../teach/spawn.ts";
 import { createGreptileKnowledge, type KnowledgeReader } from "../greptile/knowledge.ts";
 import { runExplicitRecall } from "../recall/explicit.ts";
-import { createBudgetState, createCooldownState, createDedupeState } from "../recall/gates.ts";
+import type { KnowledgeLookup } from "../greptile/knowledge-probe.ts";
+import type { RecallSettings } from "../recall/config.ts";
+import {
+	createRecallState,
+	planRecall,
+	type RecallEvent,
+	type RecallLookups,
+	type RecallPlan,
+	type RecallRuntimeState,
+} from "../recall/engine.ts";
+import { createFailureState, recordFailure, resetTurn } from "../recall/gates.ts";
+import { recallMoments } from "../recall/moments.ts";
 import { lessonsLookup, recallLessons } from "../teach/recall.ts";
 import { runSkillsCommand } from "../teach/skill-controls.ts";
-import { recallSkills, skillsLookup } from "../teach/skills.ts";
+import { recallSkills, type SkillKey, skillsLookup } from "../teach/skills.ts";
 import { status as authStatus } from "../mcp/oauth.ts";
 import { storePath } from "../mcp/store.ts";
 import {
@@ -165,7 +176,7 @@ import { formatInsightText, readInsightSnapshot, toInsightCardSnapshot } from ".
 import { paint, truncateToWidth } from "./omp-paint.ts";
 import { INSIGHT_TYPE, SWARM_TYPE } from "./omp-render.ts";
 import { projectOf } from "../teach/mapping.ts";
-import type { TeachContext } from "../teach/types.ts";
+import type { LessonsLookup, SkillsLookup, TeachContext } from "../teach/types.ts";
 import { type PlanView, projectResolution } from "./view.ts";
 import {
 	installKillCheckpoint,
@@ -543,6 +554,86 @@ function boundedSet<K, V>(map: Map<K, V>, key: K, value: V, cap: number): void {
 		map.delete(oldest);
 	}
 }
+
+/** Recall state the host keeps per session (SPE-34394): the planner's runtime state, the repository of the last turn that recalled, and the chain of its recall steps. */
+interface RecallSession {
+	runtime: RecallRuntimeState;
+	/** The repository of the last turn seen while recall was on; undefined before the first one. */
+	scope?: string;
+	/** Settles after the last step, so the next step plans from the state that step left. */
+	chain: Promise<void>;
+}
+
+const RECALL_SESSIONS_CAP = 200;
+/** The planner's failure window: the largest windowed cooldown, capped at one day (`MAX_PRUNE_AGE_MS` in engine.ts). */
+const FAILURE_WINDOW_CAP_MS = 86_400_000;
+
+/**
+ * A trigger may inject only when the master switch, its trigger flag and the injection flag (`panels.informationPanels`)
+ * are all on. Otherwise it does nothing: nothing is fetched, planned, injected or stored.
+ */
+function recallInjects(settings: RecallSettings, trigger: RecallEvent["trigger"]): boolean {
+	return (
+		settings.recall.enabled &&
+		settings.recall.triggers[trigger] &&
+		settings.panels.informationPanels
+	);
+}
+
+/** The window the planner counts failure occurrences in. */
+function failureWindowMs(settings: RecallSettings): number {
+	const { cooldownMs } = settings.recall;
+	return Math.min(
+		Math.max(cooldownMs.scopeChange, cooldownMs.failure, cooldownMs.uncertainty),
+		FAILURE_WINDOW_CAP_MS,
+	);
+}
+
+/**
+ * Runs one lookup bounded by `ms`. A rejection or a timeout becomes the failed lookup `failed` builds, with its reason, so
+ * the other sources' results survive a slow one. A source without a fetcher resolves to undefined.
+ */
+async function boundedLookup<T>(
+	run: () => Promise<T> | undefined,
+	failed: (reason: string) => T,
+	ms: number,
+): Promise<T | undefined> {
+	const { promise: expired, resolve: expire } = Promise.withResolvers<T>();
+	const timer = setTimeout(() => expire(failed("timeout")), ms);
+	try {
+		return await Promise.race([Promise.resolve().then(run), expired]);
+	} catch (error) {
+		return failed(error instanceof Error ? error.message : String(error));
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+const failedKnowledge = (reason: string): KnowledgeLookup => ({
+	outcome: "error",
+	docs: [],
+	chars: 0,
+	ms: 0,
+	reason,
+});
+const failedLessons = (reason: string): LessonsLookup => ({
+	outcome: "error",
+	count: 0,
+	ids: [],
+	chars: 0,
+	ms: 0,
+	source: "none",
+	reason,
+});
+const failedSkills = (reason: string): SkillsLookup => ({
+	outcome: "error",
+	count: 0,
+	names: [],
+	rows: [],
+	chars: 0,
+	ms: 0,
+	reason,
+});
 
 function boundedAdd<T>(set: Set<T>, value: T, cap: number): void {
 	set.delete(value);
@@ -2370,6 +2461,7 @@ export function createOmpExtension(
 				const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
 				boundedSet(turns, sessionId, (turns.get(sessionId) ?? 0) + 1, TURNS_CAP);
 			});
+			guard(() => recallTurnStart(ctx));
 		});
 
 		// Edit attribution: each file a successful edit or write changed is attributed to its repo, and a warning fires when
@@ -2385,6 +2477,11 @@ export function createOmpExtension(
 					if (warning) ctx?.ui?.notify?.(warning, "warning");
 				}
 			});
+		});
+
+		// A failed tool result recalls for its error (SPE-34394): lessons on its first occurrence, teachable moments on its second.
+		pi.on("tool_result", (event, ctx) => {
+			guard(() => recallFailure(event, ctx));
 		});
 
 		// PR-sync parity with hooks/pr-sync.ts: once a planned session opens a PR, nudge the agent to run
@@ -2513,18 +2610,28 @@ export function createOmpExtension(
 		// re-runs of it) skip planning, tracking and the bar. Any other prompt disarms it, so a quick
 		// message queued as a steer never swallows the next one.
 		let quick: { sessionId: string; text: string; submission?: number } | undefined;
-		/**
-		 * `/ultrathink-recall <query>`: one explicit recall over the knowledge base, lessons and skills. Off unless
-		 * `recall.enabled` is set. The panels go to the transcript as a display-only card, never a model turn. The
-		 * reply is computed across awaits, so it is dropped when the session changed or the extension shut down.
-		 */
-		const runRecallCommand = async (
-			args: string,
-			ctx: ExtensionContext | undefined,
-		): Promise<void> => {
-			const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
-			const cwd = ctx?.cwd || process.cwd();
-			const config = flightConfig(cwd);
+		/** Recall state per session. An entry exists once a recall step was asked for in the session. */
+		const recallSessions = new Map<string, RecallSession>();
+		const recallSessionOf = (sessionId: string): RecallSession => {
+			const session = recallSessions.get(sessionId) ?? {
+				runtime: createRecallState(),
+				chain: Promise.resolve(),
+			};
+			boundedSet(recallSessions, sessionId, session, RECALL_SESSIONS_CAP);
+			return session;
+		};
+		/** Runs one recall step after the session's earlier steps settle, so each plans from the state the last one left. */
+		const serialRecall = <T>(sessionId: string, step: () => Promise<T>): Promise<T> => {
+			const session = recallSessionOf(sessionId);
+			const run = session.chain.then(step);
+			session.chain = run.then(
+				() => undefined,
+				() => undefined,
+			);
+			return run;
+		};
+		/** The fetchers the recall sources read through, for one config. The knowledge fetcher is absent when its base is off. */
+		const recallFetchers = (cwd: string, sessionId: string, config: UltrathinkConfig) => {
 			const reader = (
 				options.knowledgeReader ?? ((c: UltrathinkConfig) => createGreptileKnowledge(c))
 			)(config);
@@ -2541,31 +2648,185 @@ export function createOmpExtension(
 					gateway: config.gateway,
 				},
 			});
-			const result = await runExplicitRecall({
-				query: args,
-				nowMs: Date.now(),
-				settings: config.recallSettings,
-				state: {
-					cooldown: createCooldownState(),
-					budget: createBudgetState(),
-					dedupe: createDedupeState(),
-				},
-				fetch: {
-					...(reader && {
-						knowledge: async (topic: string) => {
-							const session = reader.start({ repo: resolveRepoSlug(cwd) });
-							try {
-								return (await session.read(topic)).lookup;
-							} finally {
-								session.close();
-							}
-						},
+			return {
+				knowledge:
+					reader &&
+					(async (topic: string) => {
+						const session = reader.start({ repo: resolveRepoSlug(cwd) });
+						try {
+							return (await session.read(topic)).lookup;
+						} finally {
+							session.close();
+						}
 					}),
-					lessons: async (topic: string) =>
-						lessonsLookup(await recallLessons({ query: topic }, teachCtx, { countUse: false })),
-					skills: async (topic: string) =>
-						skillsLookup(await recallSkills({ query: topic }, teachCtx)),
-				},
+				lessons: async (topic: string) =>
+					lessonsLookup(await recallLessons({ query: topic }, teachCtx, { countUse: false })),
+				moments: async (topic: string) => recallMoments(topic, teachCtx, { countUse: false }),
+				skills: async (topic: string, key: SkillKey = {}) =>
+					skillsLookup(await recallSkills({ query: topic, ...key }, teachCtx)),
+			};
+		};
+		/** The lookups one query reads from the named sources, each bounded by `ms`. A source with no fetcher stays absent. */
+		const boundedLookups = async (
+			cwd: string,
+			sessionId: string,
+			config: UltrathinkConfig,
+			query: string,
+			ms: number,
+			want: { knowledge: boolean; lessons: boolean; moments: boolean; skills?: boolean },
+		): Promise<RecallLookups> => {
+			const fetchers = recallFetchers(cwd, sessionId, config);
+			const [knowledge, lessons, moments, skills] = await Promise.all([
+				want.knowledge
+					? boundedLookup(() => fetchers.knowledge?.(query), failedKnowledge, ms)
+					: undefined,
+				want.lessons ? boundedLookup(() => fetchers.lessons(query), failedLessons, ms) : undefined,
+				want.moments ? boundedLookup(() => fetchers.moments(query), failedLessons, ms) : undefined,
+				// A failure's skills lookup is keyed by its error text, with the working directory as scope.
+				want.skills
+					? boundedLookup(
+							() => fetchers.skills(query, { error: query, scope: cwd }),
+							failedSkills,
+							ms,
+						)
+					: undefined,
+			]);
+			return { knowledge, lessons, moments, skills };
+		};
+		/**
+		 * One automatic recall: `read` fetches the lookups the trigger needs, then the planner plans from the state the
+		 * session's earlier steps left and its next state is kept. The caller checks the gates (`recallInjects`) first.
+		 */
+		const planAutoRecall = (
+			sessionId: string,
+			settings: RecallSettings,
+			event: RecallEvent,
+			read: (state: RecallRuntimeState, ms: number) => Promise<RecallLookups>,
+		): Promise<RecallPlan> =>
+			serialRecall(sessionId, async () => {
+				const session = recallSessionOf(sessionId);
+				const lookups = await read(session.runtime, settings.recall.timeoutMs);
+				const plan = planRecall({
+					trigger: event,
+					nowMs: Date.now(),
+					settings,
+					state: session.runtime,
+					lookups,
+				});
+				if (plan.ok) session.runtime = plan.next;
+				return plan;
+			});
+		/** A display-only card for an automatic recall that produced panels: the explicit card's shape, no model turn. */
+		const deliverRecall = (
+			sessionId: string,
+			ctx: ExtensionContext | undefined,
+			trigger: RecallEvent["trigger"],
+			plan: RecallPlan,
+		): void => {
+			if (!plan.ok || Object.keys(plan.panels).length === 0) return;
+			if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return;
+			const summary = `Recall (${trigger}): ${plan.audit.map((entry) => `${entry.source} ${entry.outcome}`).join(", ")}`;
+			guard(() =>
+				pi.sendMessage(
+					{ customType: RECALL_TYPE, content: summary, display: true, details: plan.panels },
+					{ triggerTurn: false },
+				),
+			);
+		};
+		// Not wired: phaseBoundary (no step id on this host, only the GSD phase name in omp-phase.ts) and compaction
+		// (no Omp compaction event is registered in this host).
+		/** A turn starts: the turn budget resets, and a repository change fires a scope-change recall when its gates are open. */
+		const recallTurnStart = (ctx: ExtensionContext | undefined): void => {
+			const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
+			if (!sessionId) return;
+			const known = recallSessions.get(sessionId);
+			if (known) known.runtime = { ...known.runtime, budget: resetTurn(known.runtime.budget) };
+			const cwd = ctx?.cwd || process.cwd();
+			const config = flightConfig(cwd);
+			if (!config.recallSettings.recall.enabled) return;
+			const scope = resolveRepoSlug(cwd, timedGitRun) ?? cwd;
+			const tracked = recallSessionOf(sessionId);
+			const previous = tracked.scope;
+			tracked.scope = scope;
+			if (previous === undefined || previous === scope) return;
+			if (!recallInjects(config.recallSettings, "scopeChange")) return;
+			void planAutoRecall(
+				sessionId,
+				config.recallSettings,
+				{ trigger: "scopeChange", scopePath: scope },
+				(_state, ms) =>
+					boundedLookups(cwd, sessionId, config, scope, ms, {
+						knowledge: true,
+						lessons: true,
+						moments: false,
+					}),
+			).then(
+				(plan) => deliverRecall(sessionId, ctx, "scopeChange", plan),
+				() => undefined,
+			);
+		};
+		/** A failed tool result recalls for its error: lessons on the first occurrence, teachable moments on the second, and skills keyed by the error on both. */
+		const recallFailure = (event: ToolResultEvent, ctx: ExtensionContext | undefined): void => {
+			const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
+			const error = event.content
+				.map((part) => part.text ?? "")
+				.join("\n")
+				.trim();
+			if (!sessionId || error === "") return;
+			const cwd = ctx?.cwd || process.cwd();
+			const config = flightConfig(cwd);
+			const settings = config.recallSettings;
+			if (!recallInjects(settings, "failure")) return;
+			void planAutoRecall(sessionId, settings, { trigger: "failure", error }, (state, ms) => {
+				const { occurrence } = recordFailure(
+					state.failures ?? createFailureState(),
+					error,
+					Date.now(),
+					failureWindowMs(settings),
+				);
+				if (occurrence > 2) return Promise.resolve<RecallLookups>({});
+				return boundedLookups(cwd, sessionId, config, error, ms, {
+					knowledge: false,
+					lessons: occurrence === 1,
+					moments: occurrence === 2,
+					skills: settings.recall.sources.skills,
+				}).then(
+					({ lessons, moments, skills }): RecallLookups =>
+						occurrence === 1 ? { lessons, skills } : { moments, skills },
+				);
+			}).then(
+				(plan) => deliverRecall(sessionId, ctx, "failure", plan),
+				() => undefined,
+			);
+		};
+		/**
+		 * `/ultrathink-recall <query>`: one explicit recall over the knowledge base, lessons and skills. Off unless
+		 * `recall.enabled` is set. The panels go to the transcript as a display-only card, never a model turn. The
+		 * reply is computed across awaits, so it is dropped when the session changed or the extension shut down.
+		 */
+		const runRecallCommand = async (
+			args: string,
+			ctx: ExtensionContext | undefined,
+		): Promise<void> => {
+			const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
+			const cwd = ctx?.cwd || process.cwd();
+			const config = flightConfig(cwd);
+			const fetchers = recallFetchers(cwd, sessionId, config);
+			const result = await serialRecall(sessionId, async () => {
+				const session = recallSessionOf(sessionId);
+				const outcome = await runExplicitRecall({
+					query: args,
+					nowMs: Date.now(),
+					settings: config.recallSettings,
+					state: session.runtime,
+					fetch: {
+						...(fetchers.knowledge && { knowledge: fetchers.knowledge }),
+						lessons: fetchers.lessons,
+						skills: fetchers.skills,
+					},
+				});
+				if (outcome.ok) session.runtime = outcome.next;
+				return outcome;
 			});
 			if (!result.ok) {
 				if (result.reason === "empty_query") return ctx?.ui?.notify?.(RECALL_USAGE, "info");
@@ -2949,12 +3210,42 @@ export function createOmpExtension(
 			const note = changeNotice(flight);
 			return note === undefined ? undefined : { message: planMessage(note) };
 		};
+		/**
+		 * Uncertainty (SPE-34394): a settled plan with open clarifications recalls the knowledge base for them, bounded by
+		 * recall.timeoutMs, and the knowledge panel joins the plan view. It returns the view as is, synchronously, unless the
+		 * gates are open and the view has open clarifications and no knowledge panel yet.
+		 */
+		const withUncertaintyPanel = (flight: Flight, view: PlanView): PlanView | Promise<PlanView> => {
+			const open = view.clarifications.filter((item) => (item.answer ?? "").trim() === "");
+			if (open.length === 0 || view.panels?.knowledge !== undefined) return view;
+			const config = flightConfig(flight.cwd);
+			if (!recallInjects(config.recallSettings, "uncertainty")) return view;
+			const topic = open.map((item) => item.question).join("\n");
+			return planAutoRecall(
+				flight.sessionId,
+				config.recallSettings,
+				{ trigger: "uncertainty", topic },
+				(_state, ms) =>
+					boundedLookups(flight.cwd, flight.sessionId, config, topic, ms, {
+						knowledge: true,
+						lessons: false,
+						moments: false,
+					}),
+			).then(
+				(plan) =>
+					plan.ok && plan.panels.knowledge !== undefined
+						? { ...view, panels: { ...view.panels, knowledge: plan.panels.knowledge } }
+						: view,
+				() => view,
+			);
+		};
 		/** Delivery once the plan settles: only a still-current flight on an unchanged live model shows or sends anything. */
 		const settle = async (flight: Flight, result: OmpPlan): Promise<void> => {
 			flight.settled = true;
 			flight.content = result?.context ?? "";
 			flight.skipped = result?.skipped;
-			flight.view = result?.view;
+			const settledView = result?.view && withUncertaintyPanel(flight, result.view);
+			flight.view = settledView instanceof Promise ? await settledView : settledView;
 			flight.prd = result?.prd;
 			const gate = flight.gate;
 			if (gate?.state === "generating") {

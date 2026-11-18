@@ -16,12 +16,8 @@ type CooldownTrigger = Exclude<RecallTrigger, "explicit">;
 /** A recall source, named as the settings name it. */
 export type RecallSource = keyof RecallSettings["recall"]["sources"];
 export type BudgetCaps = RecallSettings["recall"]["budget"];
-/**
- * Cooldown window per automatic trigger, in ms. The settings carry no `phaseBoundary` window, so the caller supplies it.
- */
-export type CooldownWindows = RecallSettings["recall"]["cooldownMs"] & {
-	readonly phaseBoundary: number;
-};
+/** Cooldown window per windowed automatic trigger, in ms. A phase boundary has no window: it fires once per session. */
+export type CooldownWindows = RecallSettings["recall"]["cooldownMs"];
 
 /** The subject a cooldown is keyed on. Each trigger has exactly one subject shape. */
 interface CooldownSubjects {
@@ -39,8 +35,14 @@ export type CooldownRequest = {
 	[T in CooldownTrigger]: { source: RecallSource; trigger: T; subject: CooldownSubjects[T] };
 }[CooldownTrigger];
 
-/** Last fire time per cooldown key, in ms. Immutable: a fire produces a new map. */
-export type CooldownState = ReadonlyMap<string, number>;
+/** The fire recorded for one cooldown key. A phase boundary fires once per session and never ages out. */
+interface CooldownFire {
+	readonly atMs: number;
+	readonly oncePerSession: boolean;
+}
+
+/** Last fire per cooldown key. Immutable: a fire produces a new map. */
+export type CooldownState = ReadonlyMap<string, CooldownFire>;
 
 export type CooldownDecision =
 	| { allowed: true; key: string }
@@ -60,7 +62,11 @@ interface BudgetSpend {
 }
 
 export interface BudgetState {
+	/** The turn counter: `resetTurn` advances it at each turn boundary. */
+	readonly turnIndex: number;
+	/** Spend in the current turn. `resetTurn` clears it. */
 	readonly turn: BudgetSpend;
+	/** Spend in the session. It carries over every turn. */
 	readonly session: BudgetSpend;
 }
 
@@ -192,7 +198,8 @@ export function createCooldownState(): CooldownState {
 
 /**
  * Allowed only when the last fire for this key is at least the trigger's window old. The window is a minimum gap, so a
- * fire exactly one window ago is allowed. A last fire in the future (clock moved back) counts as inside the window.
+ * fire exactly one window ago is allowed. A last fire in the future (clock moved back) counts as inside the window. A
+ * phase boundary has an infinite window, so its key stays refused for the rest of the session.
  */
 export function checkCooldown(
 	state: CooldownState,
@@ -201,35 +208,54 @@ export function checkCooldown(
 	nowMs: number,
 ): CooldownDecision {
 	const key = cooldownKey(request);
-	const last = state.get(key);
-	if (last === undefined) return { allowed: true, key };
-	const windowMs = windowsMs[request.trigger];
-	const elapsed = nowMs - last;
+	const fire = state.get(key);
+	if (fire === undefined) return { allowed: true, key };
+	const windowMs =
+		request.trigger === "phaseBoundary" ? Number.POSITIVE_INFINITY : windowsMs[request.trigger];
+	const elapsed = nowMs - fire.atMs;
 	if (elapsed >= windowMs) return { allowed: true, key };
 	return { allowed: false, reason: "cooldown_active", key, remainingMs: windowMs - elapsed };
 }
 
-/** Records a fire for a key. Returns a new state; the input is unchanged. */
+/** Records a fire for a request's key at `nowMs`. Returns a new state; the input is unchanged. */
 export function recordCooldownFire(
 	state: CooldownState,
-	key: string,
+	request: CooldownRequest,
 	nowMs: number,
 ): CooldownState {
-	return new Map(state).set(key, nowMs);
+	const fire: CooldownFire = { atMs: nowMs, oncePerSession: request.trigger === "phaseBoundary" };
+	return new Map(state).set(cooldownKey(request), fire);
+}
+
+/**
+ * Drops the fires older than `maxAgeMs`. Each is already allowed at that age, so dropping one changes no decision. A
+ * once-per-session fire never ages out. Returns a new state; the input is unchanged.
+ */
+export function pruneCooldown(
+	state: CooldownState,
+	nowMs: number,
+	maxAgeMs: number,
+): CooldownState {
+	const kept = new Map<string, CooldownFire>();
+	for (const [key, fire] of state) {
+		if (fire.oncePerSession || nowMs - fire.atMs < maxAgeMs) kept.set(key, fire);
+	}
+	return kept;
 }
 
 export function createBudgetState(): BudgetState {
-	return { turn: { calls: 0, tokens: 0 }, session: { calls: 0, tokens: 0 } };
+	return { turnIndex: 0, turn: { calls: 0, tokens: 0 }, session: { calls: 0, tokens: 0 } };
 }
 
-/** Starts a new turn: the turn counters reset, the session counters carry over. */
-export function startTurn(state: BudgetState): BudgetState {
-	return { turn: { calls: 0, tokens: 0 }, session: state.session };
+/** Starts a new turn: the turn counter advances and the turn counters reset; the session counters carry over. */
+export function resetTurn(state: BudgetState): BudgetState {
+	return { turnIndex: state.turnIndex + 1, turn: { calls: 0, tokens: 0 }, session: state.session };
 }
 
 /** Records one recall call that injected `tokens` tokens against both the turn and the session. */
 export function recordSpend(state: BudgetState, tokens: number): BudgetState {
 	return {
+		turnIndex: state.turnIndex,
 		turn: { calls: state.turn.calls + 1, tokens: state.turn.tokens + tokens },
 		session: { calls: state.session.calls + 1, tokens: state.session.tokens + tokens },
 	};
@@ -335,4 +361,43 @@ export function recordInjected(state: DedupeState, keys: readonly string[]): Ded
 /** Context compaction: starts a new epoch with nothing injected, so earlier items may be injected again. */
 export function resetDedupeEpoch(state: DedupeState): DedupeState {
 	return { epoch: state.epoch + 1, injected: new Set() };
+}
+
+/** Occurrences of one normalized error signature: how many came up while recent, and when the last one did. */
+interface FailureRecord {
+	readonly count: number;
+	readonly lastMs: number;
+}
+
+/** Failure occurrences per error signature. Immutable: a record produces a new map. */
+export type FailureState = ReadonlyMap<string, FailureRecord>;
+
+export function createFailureState(): FailureState {
+	return new Map();
+}
+
+/**
+ * Counts one occurrence of an error. An earlier occurrence counts only while it is within `maxAgeMs`, so an error that
+ * has gone quiet starts again at its first occurrence. Returns that occurrence's number (1 for the first) and a new state.
+ */
+export function recordFailure(
+	state: FailureState,
+	error: string,
+	nowMs: number,
+	maxAgeMs: number,
+): { occurrence: number; state: FailureState } {
+	const signature = normalizeErrorSignature(error);
+	const prior = state.get(signature);
+	const recent = prior !== undefined && nowMs - prior.lastMs < maxAgeMs ? prior.count : 0;
+	const occurrence = recent + 1;
+	return { occurrence, state: new Map(state).set(signature, { count: occurrence, lastMs: nowMs }) };
+}
+
+/** Drops the records that have aged past `maxAgeMs`. Returns a new state; the input is unchanged. */
+export function pruneFailures(state: FailureState, nowMs: number, maxAgeMs: number): FailureState {
+	const kept = new Map<string, FailureRecord>();
+	for (const [signature, record] of state) {
+		if (nowMs - record.lastMs < maxAgeMs) kept.set(signature, record);
+	}
+	return kept;
 }

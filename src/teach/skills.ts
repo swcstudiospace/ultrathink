@@ -12,19 +12,26 @@
  * draft. The section carries pointers (name, trigger, path), never skill bodies, because the lesson text recalls
  * separately. The scan is async, bounded and abortable, and never throws: a plan must not wait on, or fail because of,
  * a memory lookup.
+ * A keyed lookup (a phase boundary's task type, or a failure's error text) also injects the generated skills whose
+ * manifest entry is active, matches the key and passes its scope globs. A draft, a disabled entry or an out-of-scope
+ * entry is never injected: it is returned as an excluded item, so the panel can show it.
  */
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { PanelBody } from "../recall/panel-model.ts";
 import { teachEnabled, tryStore } from "./context.ts";
 import { projectOf } from "./mapping.ts";
 import { CONTENT_MAX_BYTES, markerIds } from "./promote.ts";
 import { redactLine } from "./redact.ts";
 import { clean, queryTokens, tokenOverlap } from "./recall.ts";
+import { normalizeSignature } from "./skill-author.ts";
+import { listGenerated } from "./skill-store.ts";
 import { listRecentMoments, readMoment, storeDir } from "./store.ts";
 import type {
 	RecalledSkill,
 	RecallRequest,
 	SkillRecallOutcome,
+	SkillRow,
 	SkillsLookup,
 	SkillTarget,
 	TeachableMoment,
@@ -49,6 +56,10 @@ const FRAMING =
 const SKILL_TARGETS: readonly string[] = ["hermes", "omp", "claude", "prime-agent", "drafts"];
 /** A path is printed verbatim on its own line: control characters would break the line, `</` could close a wrapper. */
 const UNSAFE_PATH = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]|<\//;
+/** The generated-skill store under the state directory: `omp.ts` writes it there. */
+const GENERATED_DIR = "generated-skills";
+/** Score of a keyed match: a positive floor, so a keyed match is recalled whatever its query overlap. */
+const KEYED_SCORE = 1;
 
 function nowOf(ctx: TeachContext): number {
 	return (ctx.now ?? Date.now)();
@@ -71,6 +82,60 @@ interface DraftSkill {
 	path: string;
 	sourceIds: string[];
 	occurrences: number;
+}
+
+/** The manifest fields a keyed lookup reads (`skill-store.ts` writes the rest). `status` is the manifest's status string. */
+export interface GeneratedSkill {
+	name: string;
+	status: string;
+	description: string;
+	source_ids: string[];
+	applies_when: { task_types: string[]; scope_globs: string[]; error_signatures: string[] };
+}
+
+/**
+ * The key of a keyed lookup. `taskType` is a phase boundary's task type; `error` is a failure's raw error text, which is
+ * normalized with `normalizeSignature` before it is matched.
+ */
+export interface SkillKey {
+	taskType?: string;
+	error?: string;
+	/** The path the work is in, matched against a generated skill's `scope_globs`. Absent: scope filters nothing. */
+	scope?: string;
+}
+
+/** A panel exclusion (the shape `recall/panel-model.ts` gives an excluded row), with the manifest status and description. */
+export type GeneratedExclusion = PanelBody["excluded"][number] & {
+	status: string;
+	description: string;
+};
+
+/** Whether the key's task type or error signature matches an entry's trigger. An error signature matches as whole words. */
+function triggerMatches(entry: GeneratedSkill, key: SkillKey): boolean {
+	const taskType = key.taskType?.trim() ?? "";
+	if (taskType !== "" && entry.applies_when.task_types.includes(taskType)) return true;
+	const error = normalizeSignature(key.error ?? "");
+	if (error === "") return false;
+	return entry.applies_when.error_signatures.some((pattern) => {
+		const signature = normalizeSignature(pattern);
+		return signature !== "" && ` ${error} `.includes(` ${signature} `);
+	});
+}
+
+/** Whether the scope passes an entry's `scope_globs`: one glob matches the scope. No globs, or no scope, is no restriction. */
+function scopePasses(entry: GeneratedSkill, scope: string | undefined): boolean {
+	const path = scope?.trim() ?? "";
+	const globs = entry.applies_when.scope_globs;
+	if (globs.length === 0 || path === "") return true;
+	return globs.some((glob) => new Bun.Glob(glob).match(path));
+}
+
+/**
+ * Whether a manifest entry is eligible for injection by a keyed lookup: it is active, its trigger matches the key, and
+ * its scope passes. A draft or a disabled entry never is, whatever it matches.
+ */
+export function matchesGeneratedSkill(entry: GeneratedSkill, key: SkillKey): boolean {
+	return entry.status === "active" && triggerMatches(entry, key) && scopePasses(entry, key.scope);
 }
 
 /** Frontmatter `name:`/`description:` from the first lines; the description may be JSON-quoted (it contains `#`). */
@@ -144,8 +209,13 @@ async function readDraft(path: string): Promise<DraftSkill | undefined> {
 	}
 }
 
+/** A recalled skill and whether its row is injected: a promotion or an active generated skill is, a SKILL.md draft is not. */
+interface PlannedSkill extends RecalledSkill {
+	injected: boolean;
+}
+
 interface Candidate {
-	skill: RecalledSkill;
+	skill: PlannedSkill;
 	/** Extra match text beyond the skill name and description: the lesson text of its moment(s), never generated sections. */
 	body: string;
 	/**
@@ -158,7 +228,7 @@ interface Candidate {
 }
 
 interface Ranked {
-	skill: RecalledSkill;
+	skill: PlannedSkill;
 	/** Score of the candidate `skill` came from. */
 	score: number;
 	/** Best score of any matching candidate with this skill name. */
@@ -178,6 +248,7 @@ function promotedCandidates(moments: TeachableMoment[]): Candidate[] {
 				target: asTarget(moment.promoted.target),
 				sourceIds: [moment.id],
 				occurrences: moment.occurrences,
+				injected: true,
 			},
 			body: `${moment.name}\n${moment.body}`,
 			projects: moment.project ? [moment.project] : [],
@@ -188,16 +259,67 @@ function promotedCandidates(moments: TeachableMoment[]): Candidate[] {
 }
 
 /**
+ * What a keyed lookup makes of the generated skills. An entry whose trigger matches the key is a candidate when it is
+ * eligible (active, in scope) and its SKILL.md is a regular file. Any other matching entry (a draft, a disabled one, or
+ * an active one out of scope) is excluded as filtered, so the panel can show it. The manifest is read only here, so a
+ * query-only lookup never touches it. A missing or refused manifest yields nothing.
+ */
+async function generatedCandidates(
+	ctx: TeachContext,
+	key: SkillKey,
+): Promise<{ candidates: Candidate[]; excluded: GeneratedExclusion[] }> {
+	const dir = join(ctx.stateDir, GENERATED_DIR);
+	const listed = await listGenerated(dir);
+	const candidates: Candidate[] = [];
+	const excluded: GeneratedExclusion[] = [];
+	if (!listed.ok) return { candidates, excluded };
+	for (const entry of listed.entries) {
+		if (!triggerMatches(entry, key)) continue;
+		if (!matchesGeneratedSkill(entry, key)) {
+			excluded.push({
+				ref: entry.name,
+				reason: "filtered",
+				status: entry.status,
+				description: entry.description,
+			});
+			continue;
+		}
+		const path = join(dir, entry.name, "SKILL.md");
+		const present = await lstat(path).then(
+			(stat) => stat.isFile(),
+			() => false,
+		);
+		if (!present) continue;
+		candidates.push({
+			skill: {
+				name: entry.name,
+				description: entry.description,
+				path,
+				// Not installed into a host, so it carries the target a draft carries.
+				target: "drafts",
+				sourceIds: [...entry.source_ids],
+				occurrences: Math.max(1, entry.source_ids.length),
+				injected: true,
+			},
+			body: "",
+			projects: [],
+			promoted: false,
+		});
+	}
+	return { candidates, excluded };
+}
+
+/**
  * Entries in rank order while they fit `maxChars`, at most `limit`. An entry whose path is unsafe to print, or that
  * does not fit, is left out whole: the pointer either names the real SKILL.md exactly or is not shown.
  */
-function fitSkills(
-	skills: readonly RecalledSkill[],
+function fitSkills<T extends RecalledSkill>(
+	skills: readonly T[],
 	maxChars: number,
 	limit = skills.length,
-): { text: string; used: RecalledSkill[] } {
+): { text: string; used: T[] } {
 	const prefix = `${HEADER}\n\n${FRAMING}\n\n`;
-	const used: RecalledSkill[] = [];
+	const used: T[] = [];
 	let text = "";
 	for (const skill of skills) {
 		if (used.length >= limit) break;
@@ -218,16 +340,42 @@ export function formatSkillsSection(outcome: SkillRecallOutcome, maxChars: numbe
 	return fitSkills(outcome.skills, maxChars).text;
 }
 
-export function skillsLookup(outcome: SkillRecallOutcome): SkillsLookup {
+/** A recall outcome plus the generated skills a keyed lookup kept out of injection, for the panel. */
+export interface SkillRecallResult extends Omit<SkillRecallOutcome, "skills"> {
+	skills: PlannedSkill[];
+	excluded: GeneratedExclusion[];
+}
+
+/** A skill as a lookup reads it. `recallSkills` sets `injected` on every skill it returns; a skill without it is not injected. */
+type LookupSkill = RecalledSkill & { injected?: boolean };
+
+export function skillsLookup(
+	outcome: Omit<SkillRecallOutcome, "skills"> & {
+		skills: readonly LookupSkill[];
+		excluded?: readonly GeneratedExclusion[];
+	},
+): SkillsLookup {
+	const excluded = outcome.excluded ?? [];
+	const rows: SkillRow[] = [
+		...outcome.skills.map((skill) => ({
+			name: skill.name,
+			description: skill.description,
+			target: skill.target,
+			injected: skill.injected === true,
+		})),
+		// An excluded entry is a row of the drafts target, which the panel shows as excluded, never as an item.
+		...excluded.map((entry) => ({
+			name: entry.ref,
+			description: entry.description,
+			target: "drafts" as const,
+			injected: false,
+		})),
+	];
 	const lookup: SkillsLookup = {
 		outcome: outcome.status,
 		count: outcome.skills.length,
 		names: outcome.skills.map((skill) => skill.name),
-		rows: outcome.skills.map((skill) => ({
-			name: skill.name,
-			description: skill.description,
-			target: skill.target,
-		})),
+		rows,
 		chars: outcome.chars,
 		ms: outcome.ms,
 	};
@@ -235,37 +383,45 @@ export function skillsLookup(outcome: SkillRecallOutcome): SkillsLookup {
 	return lookup;
 }
 
+/**
+ * Recalls for one query. A keyed lookup adds `taskType` (a phase boundary) or `error` (a failure); it also injects the
+ * active generated skills whose manifest entry matches the key and passes its scope, and reports the other matching
+ * entries as excluded. The query rules are unchanged.
+ */
 export const recallSkills = async (
-	request: RecallRequest,
+	request: RecallRequest & SkillKey,
 	ctx: TeachContext,
-): Promise<SkillRecallOutcome> => {
+): Promise<SkillRecallResult> => {
 	const started = nowOf(ctx);
 	const outcome = (
 		status: SkillRecallOutcome["status"],
-		rest: Partial<SkillRecallOutcome> = {},
-	): SkillRecallOutcome => ({
+		rest: Partial<SkillRecallResult> = {},
+	): SkillRecallResult => ({
 		status,
 		skills: [],
 		chars: 0,
 		ms: Math.max(0, nowOf(ctx) - started),
+		excluded: [],
 		...rest,
 	});
-	const aborted = (): SkillRecallOutcome => outcome("error", { reason: "aborted" });
+	const aborted = (): SkillRecallResult => outcome("error", { reason: "aborted" });
 	if (!teachEnabled(ctx)) return outcome("off", { reason: "teach is off" });
 	if (!ctx.config.teach.recall) return outcome("off", { reason: "recall is off" });
-	if (typeof request.query !== "string" || request.query.trim() === "") return outcome("none");
+	const keyed = Boolean(request.taskType?.trim() || request.error?.trim());
+	const text = typeof request.query === "string" ? request.query.trim() : "";
+	if (text === "" && !keyed) return outcome("none");
 	// Yield to the event loop before any file work: the caller's deadline timers run, and an abort is seen first.
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	try {
 		if (ctx.signal?.aborted) return aborted();
-		const query = request.query.trim().slice(0, MAX_QUERY_CHARS);
+		const query = text.slice(0, MAX_QUERY_CHARS);
 		const project = request.project?.trim() || projectOf(ctx.cwd);
 		const limit = Math.min(
 			MAX_SKILLS,
 			Math.max(1, Math.floor(request.limit ?? ctx.config.teach.recallLimit)),
 		);
 		const wanted = queryTokens(query);
-		if (wanted.length === 0) return outcome("none");
+		if (wanted.length === 0 && !keyed) return outcome("none");
 
 		const best = new Map<string, Ranked>();
 		// Project and score first, then one entry per skill name: a sibling that belongs elsewhere or does not match never
@@ -364,6 +520,7 @@ export const recallSkills = async (
 					target: "drafts",
 					sourceIds: draft.sourceIds,
 					occurrences: draft.occurrences,
+					injected: false,
 				},
 				body: lessons.join("\n"),
 				projects: [...projects],
@@ -371,21 +528,30 @@ export const recallSkills = async (
 			};
 			consider(candidate, scoreOf(candidate));
 		}
+		const generated = keyed
+			? await generatedCandidates(ctx, request)
+			: { candidates: [], excluded: [] };
+		for (const candidate of generated.candidates) consider(candidate, KEYED_SCORE);
 		if (ctx.signal?.aborted) return aborted();
 
 		// Equal ranks put a promotion record first; Array.prototype.sort is stable, so then newest-scanned first.
 		const ranked = [...best.values()].sort(
 			(a, b) => b.rank - a.rank || Number(b.promoted) - Number(a.promoted),
 		);
-		if (ranked.length === 0) return outcome("none");
+		// A keyed match that was excluded is still found: the panel shows it, though nothing is injected for it.
+		if (ranked.length === 0 && generated.excluded.length === 0) return outcome("none");
 		const fit = fitSkills(
 			ranked.map(({ skill }) => skill),
 			request.chars ?? SKILL_SECTION_CHARS,
 			limit,
 		);
-		if (fit.used.length === 0)
+		if (fit.used.length === 0 && generated.excluded.length === 0)
 			return outcome("none", { reason: "skills do not fit the character budget" });
-		return outcome("used", { skills: fit.used, chars: fit.text.length });
+		return outcome("used", {
+			skills: fit.used,
+			chars: fit.text.length,
+			excluded: generated.excluded,
+		});
 	} catch (error) {
 		return outcome("error", {
 			reason: redactLine(error instanceof Error ? error.message : String(error)),
