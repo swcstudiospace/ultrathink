@@ -18,6 +18,7 @@ describe("checkServiceUrl", () => {
 	test("accepts plain http only on loopback, *.ts.net and the Tailscale CGNAT range", () => {
 		for (const url of [
 			"http://localhost:8888",
+			"http://LOCALHOST:8888",
 			"http://127.0.0.1:8888/",
 			"http://[::1]:8888",
 			"http://box.tail1234.ts.net:8888",
@@ -34,6 +35,7 @@ describe("checkServiceUrl", () => {
 			"http://hindsight.railway.internal:8888",
 			"http://constructor",
 			"http://toString",
+			"http://localhost.:8888",
 		]) {
 			expect(checkServiceUrl(url).ok).toBe(false);
 		}

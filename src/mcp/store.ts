@@ -248,7 +248,13 @@ function breakStaleLock(lock: string, owner: string | undefined, mtimeMs: number
 		}
 		return;
 	}
-	restoreLock(aside, lock, moved);
+	try {
+		restoreLock(aside, lock, moved);
+	} catch (error) {
+		// reason: EEXIST means a successor took the lock path in the window; the moved dir stays under its stale name
+		// (nothing is removed) and the caller's loop retries acquiring. Any other failure is the caller's to see.
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	}
 }
 
 /** The interval port the lock heartbeat runs on. */

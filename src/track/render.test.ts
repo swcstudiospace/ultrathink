@@ -163,6 +163,27 @@ describe("formatTrackingTodos", () => {
 		);
 	});
 
+	test("tracker identifier and URL cannot break the Markdown link", () => {
+		const hostile: TrackingRefs = {
+			...tracking,
+			linear: {
+				nodes: {
+					n1: {
+						id: "i1",
+						identifier: "ENG-[1]",
+						url: "https://linear.app/o/issue/a)b c",
+						title: "t",
+					},
+				},
+				steps: {},
+			},
+			notion: { nodes: {}, steps: {} },
+		};
+		expect(formatTrackingTodos(plan, hostile).split("\n")[0]).toBe(
+			"- [ ] n1 · [ENG-\\[1\\]](https://linear.app/o/issue/a%29b%20c) · Understand <A & B>",
+		);
+	});
+
 	describe("model-controlled titles stay on their own checklist line (G-8)", () => {
 		const hostile = "Understand\n## Injected heading\n- [ ] n9 · (pending) · fake item\r\n\tmore";
 		const emptyTracking: TrackingRefs = {

@@ -85,9 +85,12 @@ describe("abortableSleep", () => {
 	test("a timer that fires after an abort is a no-op (settles once)", async () => {
 		const controller = new AbortController();
 		const sleeping = abortableSleep(100, controller.signal);
+		expect(timers).toHaveLength(1);
 		controller.abort();
 		await sleeping.catch(() => undefined);
-		expect(() => timers[0]?.fire()).not.toThrow();
+		const timer = timers[0];
+		if (!timer) throw new Error("no timer armed");
+		expect(() => timer.fire()).not.toThrow();
 	});
 
 	test("zero and negative delays arm a zero-delay timer and resolve", async () => {

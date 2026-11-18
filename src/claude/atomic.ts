@@ -234,11 +234,31 @@ export function errorCode(error: unknown): string | undefined {
 		: undefined;
 }
 
-function discardGuard(path: string, owner: string): void {
+/** Writes a lock message to stderr when the caller routed none, in the same line format as `state.ts` unlocked writes. */
+function stderrLog(message: string): void {
+	process.stderr.write(`[ultrathink] ${message}\n`);
+}
+
+/** Why a lock step gave up: the error code when it has one, otherwise the message. */
+function describeError(error: unknown): string {
+	return errorCode(error) ?? (error instanceof Error ? error.message : String(error));
+}
+
+function discardGuard(path: string, owner: string, log: (message: string) => void): void {
 	try {
 		unlinkSync(join(path, owner));
-	} catch {
-		return;
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return;
+		try {
+			unlinkSync(join(path, owner));
+		} catch (retryError) {
+			if (errorCode(retryError) !== "ENOENT") {
+				log(
+					`lock guard ${basename(path)} not released (${describeError(retryError)}); this process still holds it`,
+				);
+			}
+			return;
+		}
 	}
 	try {
 		rmdirSync(path);
@@ -264,7 +284,7 @@ function reclaimDeadGuard(path: string): void {
 		const owners = readdirSync(path);
 		const owner = owners[0];
 		if (owners.length !== 1 || !owner || !deadGuardOwner(owner)) return;
-		discardGuard(path, owner);
+		discardGuard(path, owner, stderrLog);
 	} catch {
 		// reason: An unverifiable owner remains held.
 	}
@@ -297,8 +317,13 @@ export function removeDeadLockCandidate(path: string, dryRun = false): boolean {
  * directory is renamed into the guard name atomically; it cannot replace another owner's nonempty directory.
  * Dead-owner recovery unlinks only that owner's unique entry, so a delayed recovery cannot remove a successor.
  * Returns undefined when busy; other filesystem errors and callback errors propagate to the caller's policy.
+ * A guard that cannot be released is reported through `log`, which defaults to stderr.
  */
-export function withLockMutation<T>(lockPath: string, fn: () => T): T | undefined {
+export function withLockMutation<T>(
+	lockPath: string,
+	fn: () => T,
+	log: (message: string) => void = stderrLog,
+): T | undefined {
 	const guard = `${lockPath}.guard`;
 	const owner = `${process.pid}.${randomBytes(16).toString("hex")}`;
 	const candidate = `${guard}.${owner}.tmp`;
@@ -336,7 +361,7 @@ export function withLockMutation<T>(lockPath: string, fn: () => T): T | undefine
 				/* reason: best effort after a preparation error */
 			}
 		}
-		if (claimed) discardGuard(guard, owner);
+		if (claimed) discardGuard(guard, owner, log);
 		else if (prepared) {
 			try {
 				unlinkSync(join(candidate, owner));
@@ -461,29 +486,33 @@ function acquire(lockPath: string, options: LockOptions): string | undefined {
 		try {
 			// Only a caller that opts in creates the lock's directory; every other writer keeps the missing-dir failure.
 			if (options.createParent) mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
-			retry = withLockMutation(lockPath, () => {
-				try {
-					const fd = openSync(lockPath, "wx", 0o600);
+			retry = withLockMutation(
+				lockPath,
+				() => {
 					try {
-						// The create mode is filtered by the umask; the explicit mode is not.
-						fchmodSync(fd, 0o600);
-						writeSync(fd, record);
-					} catch (error) {
+						const fd = openSync(lockPath, "wx", 0o600);
 						try {
-							unlinkSync(lockPath);
-						} catch {
-							/* reason: the lock file may already be gone; the original write error is rethrown */
+							// The create mode is filtered by the umask; the explicit mode is not.
+							fchmodSync(fd, 0o600);
+							writeSync(fd, record);
+						} catch (error) {
+							try {
+								unlinkSync(lockPath);
+							} catch {
+								/* reason: the lock file may already be gone; the original write error is rethrown */
+							}
+							throw error;
+						} finally {
+							closeSync(fd);
 						}
-						throw error;
-					} finally {
-						closeSync(fd);
+						return token;
+					} catch (error) {
+						if (errorCode(error) !== "EEXIST") throw error;
 					}
-					return token;
-				} catch (error) {
-					if (errorCode(error) !== "EEXIST") throw error;
-				}
-				return reclaimStale(lockPath, staleMs, now, options.liveness) !== "fresh";
-			});
+					return reclaimStale(lockPath, staleMs, now, options.liveness) !== "fresh";
+				},
+				options.log,
+			);
 		} catch (error) {
 			options.log?.(
 				`lock unavailable for ${basename(lockPath)}, writing unlocked: ${error instanceof Error ? error.message : String(error)}`,
@@ -507,11 +536,15 @@ function acquire(lockPath: string, options: LockOptions): string | undefined {
 function release(lockPath: string, token: string, options: LockOptions): void {
 	const now = options.now ?? Date.now;
 	const sleep = options.sleep ?? blockingSleep;
+	const timeoutMs = options.timeoutMs ?? 2_000;
+	const log = options.log ?? stderrLog;
 	const started = now();
 	for (let attempt = 0; attempt < 1_000; attempt++) {
+		let released: boolean | undefined;
 		try {
-			if (
-				withLockMutation(lockPath, () => {
+			released = withLockMutation(
+				lockPath,
+				() => {
 					try {
 						const holder = parseHolder(readFileSync(lockPath, "utf8"));
 						if (holder?.token === token) unlinkSync(lockPath);
@@ -519,15 +552,27 @@ function release(lockPath: string, token: string, options: LockOptions): void {
 						// reason: The lock is already gone or no longer ours.
 					}
 					return true;
-				})
-			)
-				return;
-		} catch {
+				},
+				log,
+			);
+		} catch (error) {
+			log(
+				`lock ${basename(lockPath)} not released (${describeError(error)}); the lock may stay held by this process`,
+			);
 			return;
 		}
-		if (now() - started >= (options.timeoutMs ?? 2_000)) return;
+		if (released) return;
+		if (now() - started >= timeoutMs) {
+			log(
+				`lock ${basename(lockPath)} not released: still busy after ${timeoutMs} ms; the lock may stay held by this process`,
+			);
+			return;
+		}
 		sleep(options.pollMs ?? 15);
 	}
+	log(
+		`lock ${basename(lockPath)} not released: still busy after 1000 attempts; the lock may stay held by this process`,
+	);
 }
 
 /**

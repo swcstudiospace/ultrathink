@@ -25,13 +25,16 @@ function sh(script: string): string[] {
 // The fixtures are real OS processes: polling a marker file (or a pid) is the only way to learn
 // that a child reached a known state, and fake timers cannot drive another process. Assertions
 // never depend on how long a poll took, only on the observed state.
-async function pollUntil(done: () => boolean): Promise<void> {
-	for (let i = 0; i < 1500 && !done(); i++) await Bun.sleep(10);
+async function pollUntil(done: () => boolean, what: string): Promise<void> {
+	for (let i = 0; !done(); i++) {
+		if (i === 1500) throw new Error(`timed out after 1500 polls waiting for ${what}`);
+		await Bun.sleep(10);
+	}
 }
 
 /** Poll for a marker file the fixture writes once its signal disposition is installed. */
 async function waitForFile(path: string): Promise<void> {
-	await pollUntil(() => existsSync(path));
+	await pollUntil(() => existsSync(path), `file ${path}`);
 	expect(existsSync(path)).toBe(true);
 }
 
@@ -62,9 +65,22 @@ async function waitDead(pid: number): Promise<boolean> {
 	await pollUntil(() => {
 		dead = !alive(pid);
 		return dead;
-	});
+	}, `pid ${pid} to exit`);
 	return dead;
 }
+
+describe("pollUntil", () => {
+	// Real time on purpose: the 1500-poll budget is only observable by spending it, and pollUntil polls real processes.
+	test(
+		"rejects naming the condition once its 1500 polls are spent",
+		async () => {
+			await expect(pollUntil(() => false, "a condition that never holds")).rejects.toThrow(
+				"a condition that never holds",
+			);
+		},
+		SLOW,
+	);
+});
 
 describe("runChild basics", () => {
 	test("surfaces exit codes and stdout/stderr text", async () => {

@@ -644,6 +644,91 @@ describe("withFileLock", () => {
 		expect(logs).toHaveLength(1);
 		expect(statSync(blocker).isFile()).toBe(true);
 	});
+
+	test("a guard whose owner marker cannot be unlinked logs one line naming it and still returns the value", () => {
+		const lock = join(dir, "state.json.lock");
+		const guard = `${lock}.guard`;
+		const logs: string[] = [];
+		const value = withLockMutation(
+			lock,
+			() => {
+				const [owner = ""] = readdirSync(guard);
+				// A directory cannot be unlinked as an owner marker, so every removal attempt fails with a non-ENOENT error.
+				rmSync(join(guard, owner));
+				mkdirSync(join(guard, owner));
+				writeFileSync(join(guard, owner, "held"), "");
+				return 42;
+			},
+			(message) => logs.push(message),
+		);
+		expect(value).toBe(42);
+		expect(logs).toHaveLength(1);
+		expect(logs[0]).toContain("state.json.lock.guard");
+		expect(existsSync(guard)).toBe(true);
+	});
+
+	test("a guard whose owner marker is already gone is discarded without a log line", () => {
+		const lock = join(dir, "state.json.lock");
+		const guard = `${lock}.guard`;
+		const logs: string[] = [];
+		withLockMutation(
+			lock,
+			() => {
+				const [owner = ""] = readdirSync(guard);
+				rmSync(join(guard, owner));
+			},
+			(message) => logs.push(message),
+		);
+		expect(logs).toEqual([]);
+	});
+
+	test("a release that stays blocked past timeoutMs logs one give-up line, names the lock and leaves the lock file", () => {
+		const target = join(dir, "state.json");
+		const lock = `${target}.lock`;
+		const guard = `${lock}.guard`;
+		let clock = NOW;
+		let held = "";
+		const logs: string[] = [];
+		withFileLock(
+			target,
+			() => {
+				// A live owner keeps the guard busy for every release attempt.
+				mkdirSync(guard);
+				writeFileSync(join(guard, `${process.pid}.${"c".repeat(32)}`), "");
+				held = readFileSync(lock, "utf8");
+			},
+			{
+				now: () => clock,
+				sleep: (ms) => {
+					clock += ms;
+				},
+				timeoutMs: 100,
+				pollMs: 50,
+				log: (message) => logs.push(message),
+			},
+		);
+		expect(logs).toHaveLength(1);
+		expect(logs[0]).toContain("state.json.lock");
+		expect(readFileSync(lock, "utf8")).toBe(held);
+	});
+
+	test("a release that never gets the guard gives up after 1000 attempts with one log line", () => {
+		const target = join(dir, "state.json");
+		const lock = `${target}.lock`;
+		const guard = `${lock}.guard`;
+		const logs: string[] = [];
+		withFileLock(
+			target,
+			() => {
+				mkdirSync(guard);
+				writeFileSync(join(guard, `${process.pid}.${"d".repeat(32)}`), "");
+			},
+			{ now: () => NOW, sleep: () => undefined, log: (message) => logs.push(message) },
+		);
+		expect(logs).toHaveLength(1);
+		expect(logs[0]).toContain("1000 attempts");
+		expect(existsSync(lock)).toBe(true);
+	});
 });
 
 describe("updateJsonAtomic", () => {

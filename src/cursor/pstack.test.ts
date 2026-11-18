@@ -5,7 +5,7 @@
 // against synthetic fixture caches under a temp dir (never the live ~/.cursor),
 // plus one injected-fs failure.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -49,6 +49,23 @@ function mkPlugin(
 	writeFileSync(join(pluginDir, "skills", "how", "SKILL.md"), "# how\n");
 	if (completeMarker) writeFileSync(join(pluginDir, ".cache-complete"), "");
 	return pluginDir;
+}
+
+/** Resolve a cache holding one completed pstack per version, with each marker's mtime (seconds). */
+function resolveAmong(entries: Array<{ version: string; mtime: number }>): string {
+	const root = mkdtempSync(join(tmpdir(), "pstack-semver-"));
+	try {
+		const cache = join(root, "plugins", "cache", "cursor-public", "pstack");
+		mkdirSync(cache, { recursive: true });
+		entries.forEach((entry, index) => {
+			const pluginDir = mkPlugin(cache, `ref-${index}`, entry.version, true);
+			const marker = join(pluginDir, ".cache-complete");
+			utimesSync(marker, entry.mtime, entry.mtime);
+		});
+		return resolvedOrThrow(resolvePstack(root)).version;
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 }
 
 function resolvedOrThrow(resolution: PstackResolution): {
@@ -121,6 +138,24 @@ describe("resolvePstack", () => {
 		const failed = resolvePstack(cursorDir, boom);
 		if (!("reason" in failed)) throw new Error("expected a reason");
 		expect(failed.reason).toBe("resolution failed: disk unavailable");
+	});
+
+	test("a version with fewer than three parts ranks by its release numbers", () => {
+		expect(
+			resolveAmong([
+				{ version: "1.2", mtime: 2000 },
+				{ version: "1.2.1", mtime: 1000 },
+			]),
+		).toBe("1.2.1");
+	});
+
+	test("a prerelease ranks below its release even when the release marker is older", () => {
+		expect(
+			resolveAmong([
+				{ version: "1.2.0", mtime: 1000 },
+				{ version: "1.2.0-rc.1", mtime: 2000 },
+			]),
+		).toBe("1.2.0");
 	});
 });
 
@@ -208,6 +243,12 @@ describe("detectStage", () => {
 	test("a command at the start of a later line is still an invocation", () => {
 		expect(detectStage("notes about the milestone\n/gsd-plan-phase 23").stage).toBe("plan");
 		expect(detectStage("/gsd-plan-phase 23\nWhat does `/gsd-ship` do?").stage).toBe("plan");
+	});
+
+	test("a long run of unmatched curly quotes still finds a later invocation", () => {
+		const prompt = `${"\u201c".repeat(200000)}\n/gsd-ship`;
+		expect(detectStage(prompt).stage).toBe("review");
+		expect(detectStage(prompt)).toEqual(detectStage("\u201c\n/gsd-ship"));
 	});
 });
 

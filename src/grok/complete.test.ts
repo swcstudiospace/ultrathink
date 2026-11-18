@@ -90,12 +90,19 @@ interface Captured {
 	init: RequestInit;
 }
 
+/** The one cast the grok tests need: a hand-written fetch stand-in, typed as the global. */
+function asFetch(
+	impl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
+): typeof fetch {
+	return impl as typeof fetch;
+}
+
 function fakeFetch(respond: () => Response): { fetch: typeof fetch; calls: Captured[] } {
 	const calls: Captured[] = [];
-	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+	const fetchImpl = asFetch(async (input, init) => {
 		calls.push({ url: String(input), init: init ?? {} });
 		return respond();
-	}) as typeof fetch;
+	});
 	return { fetch: fetchImpl, calls };
 }
 
@@ -173,21 +180,27 @@ describe("parseResponsesText", () => {
 	});
 });
 
-/** Fetch whose reply has `status` but a body that never arrives; `text()` rejects with an AbortError when the call's signal fires. */
-function stalledBodyFetch(status: number, onText?: () => void): typeof fetch {
-	return (async (_input: string | URL | Request, init?: RequestInit) => ({
-		status,
-		ok: false,
-		body: null,
-		text: () => {
-			const { promise, reject } = Promise.withResolvers<string>();
-			const fail = (): void => reject(new DOMException("Aborted", "AbortError"));
-			if (init?.signal?.aborted) fail();
-			else init?.signal?.addEventListener("abort", fail, { once: true });
-			onText?.();
-			return promise;
-		},
-	})) as unknown as typeof fetch;
+/**
+ * Fetch whose reply has `status` but a body that never arrives. Reading it rejects with an AbortError when the
+ * call's signal fires, as a real fetch body does; `onRead` runs on the first read.
+ */
+function stalledBodyFetch(status: number, onRead?: () => void): typeof fetch {
+	return asFetch(async (_input, init) => {
+		const body = new ReadableStream<Uint8Array>(
+			{
+				start(controller) {
+					const fail = (): void => controller.error(new DOMException("Aborted", "AbortError"));
+					if (init?.signal?.aborted) fail();
+					else init?.signal?.addEventListener("abort", fail, { once: true });
+				},
+				pull() {
+					onRead?.();
+				},
+			},
+			{ highWaterMark: 0 },
+		);
+		return new Response(body, { status });
+	});
 }
 
 describe("grokComplete (http)", () => {
@@ -225,6 +238,7 @@ describe("grokComplete (http)", () => {
 		const { fetch, calls } = fakeFetch(() => responsesReply("ok"));
 		const complete = createGrokCompleter({ home: tempHome(), fetch });
 		await complete("S", "U");
+		expect(calls).toHaveLength(1);
 		const body = JSON.parse(String(calls[0]!.init.body));
 		expect(body.model).toBe(ROUTE_DEFAULT_MODELS.grok);
 		expect(body.model).toBe("grok-build-0.1");
@@ -235,6 +249,7 @@ describe("grokComplete (http)", () => {
 	test("grok-4.7 sends reasoning xhigh", async () => {
 		const { fetch, calls } = fakeFetch(() => responsesReply("ok"));
 		await grokComplete("S", "U", { home: tempHome(), fetch, model: "grok-4.7" });
+		expect(calls).toHaveLength(1);
 		const body = JSON.parse(String(calls[0]!.init.body));
 		expect(body.reasoning).toEqual({ effort: "xhigh" });
 	});
@@ -447,16 +462,35 @@ describe("grokComplete (http)", () => {
 	test("a non-timeout failure reading a 403 body leaves the body empty (GrokAuthError)", async () => {
 		const home = tempHome();
 		const { refresh } = fakeRefresh(home, () => undefined);
-		const fetch = (async () => ({
-			status: 403,
-			ok: false,
-			body: null,
-			text: async () => {
-				throw new Error("socket closed");
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.error(new Error("socket closed"));
 			},
-		})) as unknown as typeof globalThis.fetch;
+		});
+		const fetch = asFetch(async () => new Response(body, { status: 403 }));
 		const error = await rejection(grokComplete("S", "U", { home, refresh, fetch }));
 		expect(error).toBeInstanceOf(GrokAuthError);
+	});
+
+	test("an oversized HTTP reply is rejected before buffering", async () => {
+		let pulled = 0;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (pulled === 10) {
+					controller.close();
+					return;
+				}
+				pulled++;
+				controller.enqueue(new Uint8Array(1024 * 1024));
+			},
+		});
+		const fetch = asFetch(async () => new Response(body, { status: 200 }));
+		const error = await rejection(
+			grokComplete("S", "U", { home: tempHome(), fetch, ...retrySeams().seams }),
+		);
+		expect(error.message).toBe("grok output exceeded the 4 MB cap");
+		expect(readReport(error)?.attempts).toBe(1);
+		expect(pulled).toBeLessThan(10);
 	});
 });
 
@@ -692,6 +726,15 @@ describe("grokComplete (cli)", () => {
 			"ok",
 		);
 	});
+
+	test("a model name that starts with '-' is rejected before the CLI is spawned", async () => {
+		const { bin, argsPath } = fakeGrok('{ text: "ok" }');
+		const error = await rejection(
+			grokComplete("S", "U", { transport: "cli", bin, home: tempHome(), model: "-x" }),
+		);
+		expect(error.message).toBe('grok model must not start with "-": -x');
+		expect(existsSync(argsPath)).toBe(false);
+	});
 });
 
 describe("isGrokAuthError", () => {
@@ -787,11 +830,11 @@ describe("grokComplete retries (97-02)", () => {
 	test("a rejected fetch (fetch failed) is retried on the same model", async () => {
 		const { seams } = retrySeams();
 		let calls = 0;
-		const fetch = (async () => {
+		const fetch = asFetch(async () => {
 			calls++;
 			if (calls === 1) throw new TypeError("fetch failed");
 			return responsesReply("ok");
-		}) as unknown as typeof globalThis.fetch;
+		});
 		expect(await grokComplete("S", "U", { home: tempHome(), fetch, ...seams })).toBe("ok");
 		expect(calls).toBe(2);
 	});
@@ -952,6 +995,25 @@ describe("grokComplete (cli) resilience (97-02)", () => {
 		);
 	}
 
+	/**
+	 * Polls `ready` every 20 ms for up to 10 s, then throws `what`. The wait is on a child process writing the
+	 * filesystem, which no fake clock can observe; it is counted, not timed, since the file pins the system clock.
+	 */
+	async function pollUntil(what: string, ready: () => boolean): Promise<void> {
+		for (let i = 0; i < 500; i++) {
+			if (ready()) return;
+			await Bun.sleep(20);
+		}
+		throw new Error(`${what} within 10 s`);
+	}
+
+	/** The positive pid the test child wrote to `file`; 0 while the file is missing or does not hold one yet. */
+	function pidOf(file: string): number {
+		if (!existsSync(file)) return 0;
+		const pid = Number(readFileSync(file, "utf8").trim());
+		return Number.isInteger(pid) && pid > 0 ? pid : 0;
+	}
+
 	test("transient stderr (fetch failed) is retried on the same model and succeeds on attempt 2", async () => {
 		const { seams } = retrySeams();
 		const counter = join(mkdtempSync(join(tmpdir(), "ultrathink-grok-count-")), "n");
@@ -987,36 +1049,45 @@ describe("grokComplete (cli) resilience (97-02)", () => {
 		expect(readReport(error)?.attempts).toBe(1);
 	});
 
-	test("an abort kills the child and its grandchild", async () => {
-		const pidFile = join(mkdtempSync(join(tmpdir(), "ultrathink-grok-pid-")), "pids");
-		dirs.push(dirname(pidFile));
-		const bin = scriptGrok(
-			`const child = Bun.spawn(["sleep", "300"], { stdio: ["ignore", "ignore", "ignore"] });\nawait Bun.write(${JSON.stringify(pidFile)}, String(child.pid));\nsetInterval(() => {}, 1000);`,
-		);
-		const controller = new AbortController();
-		const pending = rejection(
-			grokComplete("S", "U", {
-				transport: "cli",
-				bin,
-				home: tempHome(),
-				signal: controller.signal,
-			}),
-		);
-		for (let i = 0; i < 400 && !existsSync(pidFile); i++) await Bun.sleep(25);
-		const grandchild = Number(readFileSync(pidFile, "utf8"));
-		controller.abort();
-		const error = await pending;
-		expect(error.name).toBe("AbortError");
-		const alive = (): boolean => {
+	test.skipIf(process.platform !== "linux")(
+		"an abort kills the child and its grandchild",
+		async () => {
+			const pidFile = join(mkdtempSync(join(tmpdir(), "ultrathink-grok-pid-")), "pids");
+			dirs.push(dirname(pidFile));
+			const bin = scriptGrok(
+				`const child = Bun.spawn(["sleep", "300"], { stdio: ["ignore", "ignore", "ignore"] });\nawait Bun.write(${JSON.stringify(pidFile)}, String(child.pid));\nsetInterval(() => {}, 1000);`,
+			);
+			const controller = new AbortController();
+			const pending = rejection(
+				grokComplete("S", "U", {
+					transport: "cli",
+					bin,
+					home: tempHome(),
+					signal: controller.signal,
+				}),
+			);
 			try {
-				return !readFileSync(`/proc/${grandchild}/stat`, "utf8").includes(") Z ");
-			} catch {
-				return false;
+				await pollUntil("grandchild pid not written", () => pidOf(pidFile) > 0);
+			} catch (error) {
+				controller.abort();
+				await pending;
+				throw error;
 			}
-		};
-		for (let i = 0; i < 100 && alive(); i++) await Bun.sleep(20);
-		expect(alive()).toBe(false);
-	});
+			const grandchild = pidOf(pidFile);
+			expect(grandchild).toBeGreaterThan(0);
+			controller.abort();
+			const error = await pending;
+			expect(error.name).toBe("AbortError");
+			const alive = (): boolean => {
+				try {
+					return !readFileSync(`/proc/${grandchild}/stat`, "utf8").includes(") Z ");
+				} catch {
+					return false;
+				}
+			};
+			await pollUntil("grandchild still alive after abort", () => !alive());
+		},
+	);
 
 	test("an already-aborted signal rejects without spawning", async () => {
 		const controller = new AbortController();

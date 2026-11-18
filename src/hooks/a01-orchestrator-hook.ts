@@ -15,8 +15,8 @@
  * No breaking changes to existing hooks, config, or call sites.
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { resolveStateDir } from "../host/paths.ts";
 
 const ORCHESTRATOR_TIMEOUT_MS = 120_000;
@@ -44,6 +44,12 @@ const TOKEN_FORMS: readonly RegExp[] = [
 	/\b(?:ntn|secret)_[A-Za-z0-9]{20,}/g,
 ];
 
+/** True when `path` is `repo` or lies beneath it, compared by path segments: `/a/app-old` is not inside `/a/app`. */
+function isInsideRepo(path: string, repo: string): boolean {
+	const rel = relative(repo, path);
+	return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
+}
+
 /** Simple redaction for logs/state (shared pattern with teachable hooks). */
 function redactForLog(input: string): string {
 	let s = String(input);
@@ -55,7 +61,7 @@ function redactForLog(input: string): string {
 	const repo = process.cwd();
 	const homeEsc = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	s = s.replace(new RegExp(`${homeEsc}/[^\\s"']+`, "g"), (m) =>
-		m.startsWith(repo) ? m : "[REDACTED_PATH_OUTSIDE_REPO]",
+		isInsideRepo(m, repo) ? m : "[REDACTED_PATH_OUTSIDE_REPO]",
 	);
 	return s;
 }
@@ -63,13 +69,27 @@ function redactForLog(input: string): string {
 /** Maximum failure text per event: one event must never grow the log without bound. */
 const A01_LOG_MESSAGE_MAX = 500;
 
-/** Append a redacted failure line to `<stateDir>/a01-failures.log` (dir 0700, file 0600; best effort, never throws). One event is one line, however long or broken the failure text is. */
+/** Rotate the failure log to `<file>.1` once it exceeds this size, keeping one previous generation. */
+const A01_LOG_MAX_BYTES = 256 * 1024;
+
+/** Move an oversized failure log aside, overwriting the older generation. Best effort: a missing file or failed rename leaves the log in place. */
+function rotateA01LogIfOversized(file: string): void {
+	try {
+		if (statSync(file).size > A01_LOG_MAX_BYTES) renameSync(file, `${file}.1`);
+	} catch {
+		// reason: missing log or failed rename: append anyway, fail-open
+	}
+}
+
+/** Append a redacted failure line to `<stateDir>/a01-failures.log` (dir 0700, file 0600, rotated to `.1` past 256 KiB; best effort, never throws). One event is one line, however long or broken the failure text is. */
 function markA01FailureInState(logMsg: string, stateDir?: string): void {
 	try {
 		const base = stateDir || resolveStateDir(process.env);
 		mkdirSync(base, { recursive: true, mode: 0o700 });
 		const line = `${new Date().toISOString()} ${redactForLog(logMsg).replace(/\s+/g, " ").trim().slice(0, A01_LOG_MESSAGE_MAX)}\n`;
-		appendFileSync(join(base, "a01-failures.log"), line, { encoding: "utf8", mode: 0o600 });
+		const file = join(base, "a01-failures.log");
+		rotateA01LogIfOversized(file);
+		appendFileSync(file, line, { encoding: "utf8", mode: 0o600 });
 	} catch {
 		// reason: fail-open: never block caller
 	}
@@ -151,14 +171,9 @@ export async function invokeA01OrchestratorWithGraceful<T = unknown>(
 
 // For tests: expose a simple fault injector (test seam).
 export function __injectFaultForTest(
-	mode: "timeout" | "error" | "success",
+	mode: "error" | "success",
 	delayMs = 10,
 ): () => Promise<string> {
-	if (mode === "timeout") {
-		const { promise, reject } = Promise.withResolvers<string>();
-		setTimeout(() => reject(new Error("sim-timeout")), 999999);
-		return () => promise;
-	}
 	if (mode === "error") {
 		return () => Promise.reject(new Error("sim-error-in-a01"));
 	}

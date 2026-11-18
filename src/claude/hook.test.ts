@@ -46,6 +46,7 @@ import {
 	armSkipOnce,
 	readSession,
 	readSkipOnce,
+	readSkipOnceStamp,
 	type SessionRecord,
 	sessionPath,
 	updateSession,
@@ -868,6 +869,14 @@ describe("substrate brief", () => {
 		}
 	});
 
+	test("a brief seam that rejects reads as unreachable, not as no brief", async () => {
+		const { summary, context } = await plan(async () => {
+			throw new Error("ECONNREFUSED");
+		});
+		expect(summary).toContain("Substrate · brief unavailable (unreachable)");
+		expect(context).not.toContain("brief unavailable");
+	});
+
 	test("no segment for a usable brief, an empty answer without a reason, a substrate that is off, or a hidden summary", async () => {
 		const silent: BriefResult[] = [
 			briefOf("## Substrate brief: acme/widgets\n- earlier work"),
@@ -896,11 +905,11 @@ describe("substrate brief", () => {
 		expect(hidden.summary).toBe("");
 	});
 
-	test("a rejected brief seam reads as no brief with no segment", async () => {
+	test("a rejected brief seam reads as an unreachable substrate with no brief context", async () => {
 		const { summary, context } = await plan(async () => {
 			throw new Error("ECONNREFUSED");
 		});
-		expect(summary).not.toContain("brief unavailable");
+		expect(summary).toContain("Substrate · brief unavailable (unreachable)");
 		expect(context).not.toContain("## Agent Substrate brief");
 	});
 
@@ -4550,6 +4559,22 @@ describe("honest degradation (98-04)", () => {
 			expect(real).toEqual({ skipped: "skip", reason: "skip-once" });
 			expect(readSkipOnce(deps.stateDir, "s1")).toBe(false);
 			expect(engineCalls).toBe(0);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a skip re-armed after the prompt read its flag survives the prompt that spends the earlier one", async () => {
+		const { deps, cleanup } = baseDeps({ complete: async () => "" });
+		try {
+			armSkipOnce(deps.stateDir, "s1");
+			const read = readSkipOnceStamp(deps.stateDir, "s1");
+			if (read === undefined) throw new Error("the armed flag was not read");
+			// Re-armed between the read and the prompt's consume: a new flag file, so the stamp no longer matches.
+			armSkipOnce(deps.stateDir, "s1");
+			const real = await runPromptSubmit(input, { ...deps, armedSkip: read });
+			expect(real).toEqual({ skipped: "skip", reason: "skip-once" });
+			expect(readSkipOnce(deps.stateDir, "s1")).toBe(true);
 		} finally {
 			cleanup();
 		}

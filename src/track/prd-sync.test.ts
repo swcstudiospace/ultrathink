@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PrdRecord } from "../think/tot/types.ts";
@@ -360,6 +360,22 @@ describe("syncPrds", () => {
 		expect(report.keys[0]?.linear.outcome).not.toBe("created");
 	});
 
+	test("a Linear description with a start marker and no end marker is never replaced: the sync fails unclosed-region", async () => {
+		const initial = `Human notes\n${START}${"a".repeat(64)} -->\nold PRD text\nhuman text after`;
+		const linear = linearMock(initial);
+		const report = await syncPrds(
+			[prd("new text", "b".repeat(64))],
+			deps({ linear: linear.caller }),
+		);
+		expect(report.keys[0]?.linear).toMatchObject({
+			outcome: "failed",
+			errorClass: "unclosed-region",
+		});
+		expect(report.keys[0]?.state).toBe("failed");
+		expect(linear.count("save_issue")).toBe(0);
+		expect(linear.description).toBe(initial);
+	});
+
 	test("a PRD over the size threshold goes to a linked document, the issue keeps a summary", async () => {
 		const linear = linearMock();
 		const long = `# Big\n\n${"word ".repeat(2000)}`;
@@ -483,6 +499,21 @@ describe("resumePrds", () => {
 		rmSync(ledger.entries[0].localPath);
 		const report = await resumePrds(d);
 		expect(report.keys[0]?.notion.errorClass).toBe("local-missing");
+		expect(report.summary.failed).toBe(1);
+	});
+
+	test("a local copy that cannot be read is local-read, not local-missing", async () => {
+		const notion = notionMock();
+		notion.fail.set("API-get-block-children", [httpError(500), httpError(500), httpError(500)]);
+		const d = deps({ notion: notion.caller });
+		const first = await syncPrds([prd("x")], d);
+		const { localPath } = JSON.parse(readFileSync(first.ledgerPath, "utf8")).entries[0];
+		// A directory where the copy should be: the read fails with something other than ENOENT.
+		rmSync(localPath);
+		mkdirSync(localPath);
+		const report = await resumePrds(d);
+		expect(report.keys[0]?.notion.errorClass).toBe("local-read");
+		expect(report.keys[0]?.notion.error).not.toContain("is missing");
 		expect(report.summary.failed).toBe(1);
 	});
 

@@ -329,7 +329,11 @@ export function planRecall(input: RecallInput): RecallPlan {
 		);
 		panels[source] = markItems(admitted.panel, fresh);
 
-		if (request !== undefined) cooldown = recordCooldownFire(cooldown, request, nowMs);
+		// A panel whose every item was already injected surfaced nothing new, so it does not arm the cooldown: a later
+		// fresh item on the same scope may still fire. An empty or unavailable panel still arms it, as before.
+		const exhausted = listed.length > 0 && outcome.fresh.length === 0;
+		if (request !== undefined && !exhausted)
+			cooldown = recordCooldownFire(cooldown, request, nowMs);
 		budget = recordSpend(budget, tokens);
 		audit.push({
 			...pair,

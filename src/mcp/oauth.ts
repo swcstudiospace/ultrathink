@@ -92,6 +92,9 @@ function isHttps(url: unknown): boolean {
 	}
 }
 
+/** A server's OAuth error code, kept only when it is a short lowercase token (RFC 6749 §5.2); anything else never reaches the store or a status line. */
+const OAUTH_ERROR_CODE = /^[a-z_]{1,64}$/;
+
 /** A JSON object from a bounded read: undefined when the body is unreadable, longer than the cap, or not a JSON object. */
 async function readJsonObject(response: Response): Promise<Record<string, unknown> | undefined> {
 	try {
@@ -159,10 +162,9 @@ async function tokenRequest(
 	// A body that is not a JSON object, or is longer than the cap, leaves json empty: the status decides.
 	const json = (await readJsonObject(response)) ?? {};
 	if (!response.ok || typeof json.access_token !== "string") {
-		throw new TokenEndpointError(
-			response.status,
-			typeof json.error === "string" ? json.error : undefined,
-		);
+		const code =
+			typeof json.error === "string" && OAUTH_ERROR_CODE.test(json.error) ? json.error : undefined;
+		throw new TokenEndpointError(response.status, code);
 	}
 	// The token must fit the header limit that recovery applies, or a token could be accepted and then never recovered.
 	const header = AUTH_HEADER.validate(`Bearer ${json.access_token}`);
@@ -212,17 +214,21 @@ async function refreshLocked(
 	}
 }
 
-export async function beginLogin(
+/** Endpoints discovered for one MCP server; each one was checked to be https, and the metadata names its issuer. */
+interface DiscoveredEndpoints {
+	issuer: string;
+	scopes: string[];
+	authorizationEndpoint: string;
+	tokenEndpoint: string;
+	registrationEndpoint: string | undefined;
+}
+
+/** Protected-resource and authorization-server discovery (RFC 9728, RFC 8414). Throws unless every endpoint is https and the metadata names the issuer it was fetched for. */
+async function discoverEndpoints(
 	provider: McpProviderId,
-	deps: AuthDeps & { redirectUri: string },
-): Promise<PendingLogin> {
-	const providerCheck = PROVIDER_ID.validate(provider);
-	if (!providerCheck.valid) {
-		refused("provider", providerCheck.errors[0]?.code ?? "INVALID");
-		throw new Error("unknown MCP provider");
-	}
+	deps: AuthDeps,
+): Promise<DiscoveredEndpoints> {
 	const info = MCP_PROVIDERS[provider];
-	if (!info.oauth) throw new Error(`${provider} does not support OAuth`);
 	const prm = await getJson(info.protectedResourceMetadata, deps);
 	const servers = prm?.authorization_servers;
 	const issuer = (
@@ -260,73 +266,130 @@ export async function beginLogin(
 	if (typeof asMeta.issuer !== "string" || asMeta.issuer.replace(/\/$/, "") !== issuer) {
 		throw new Error(`${provider}: authorization server metadata issuer mismatch at ${issuer}`);
 	}
+	return {
+		issuer,
+		scopes,
+		authorizationEndpoint,
+		tokenEndpoint,
+		registrationEndpoint:
+			typeof registrationEndpoint === "string" ? registrationEndpoint : undefined,
+	};
+}
 
-	const client = await mutateStore(deps, async (store) => {
-		const existing = store.providers[provider];
-		if (
-			existing?.kind === "oauth" &&
-			existing.client.redirectUri === deps.redirectUri &&
-			existing.client.authorizationEndpoint === authorizationEndpoint &&
-			isHttps(existing.client.tokenEndpoint)
-		) {
-			return existing.client;
-		}
-		if (typeof registrationEndpoint !== "string") {
-			throw new Error(
-				`${provider}: authorization server does not support dynamic client registration`,
-			);
-		}
-		const response = await (deps.fetch ?? fetch)(registrationEndpoint, {
-			method: "POST",
-			headers: {
-				Accept: "application/json",
-				"Content-Type": "application/json",
-				"User-Agent": USER_AGENT,
-			},
-			body: JSON.stringify({
-				client_name: "ultrathink",
-				redirect_uris: [deps.redirectUri],
-				grant_types: ["authorization_code", "refresh_token"],
-				response_types: ["code"],
-				token_endpoint_auth_method: "none",
-			}),
-			signal: AbortSignal.timeout(LOCKED_FETCH_TIMEOUT_MS),
-			redirect: "error",
-		});
-		const json = (await readJsonObject(response)) ?? {};
-		if (!response.ok || typeof json.client_id !== "string") {
-			throw new Error(
-				`${provider}: client registration failed: HTTP ${response.status}${typeof json.error === "string" ? ` (${json.error})` : ""}`,
-			);
-		}
-		const now = (deps.now ?? Date.now)();
-		const registered: OAuthClient = {
-			clientId: json.client_id,
-			clientSecret: typeof json.client_secret === "string" ? json.client_secret : undefined,
-			redirectUri: deps.redirectUri,
-			issuer,
-			authorizationEndpoint,
-			tokenEndpoint,
-			registeredAt: now,
-		};
-		if (!existing || (existing.kind === "oauth" && !existing.tokens)) {
-			store.providers[provider] = { kind: "oauth", client: registered, updatedAt: now };
-		}
-		return registered;
+/**
+ * The client already registered for this server and redirect, or a new registration stored in `store`. Runs inside the
+ * store lock, so two concurrent logins cannot both register.
+ */
+async function clientFor(
+	provider: McpProviderId,
+	endpoints: DiscoveredEndpoints,
+	store: CredentialStore,
+	deps: AuthDeps & { redirectUri: string },
+): Promise<OAuthClient> {
+	const existing = store.providers[provider];
+	if (
+		existing?.kind === "oauth" &&
+		existing.client.redirectUri === deps.redirectUri &&
+		existing.client.authorizationEndpoint === endpoints.authorizationEndpoint &&
+		isHttps(existing.client.tokenEndpoint)
+	) {
+		return existing.client;
+	}
+	if (endpoints.registrationEndpoint === undefined) {
+		throw new Error(
+			`${provider}: authorization server does not support dynamic client registration`,
+		);
+	}
+	const response = await (deps.fetch ?? fetch)(endpoints.registrationEndpoint, {
+		method: "POST",
+		headers: {
+			Accept: "application/json",
+			"Content-Type": "application/json",
+			"User-Agent": USER_AGENT,
+		},
+		body: JSON.stringify({
+			client_name: "ultrathink",
+			redirect_uris: [deps.redirectUri],
+			grant_types: ["authorization_code", "refresh_token"],
+			response_types: ["code"],
+			token_endpoint_auth_method: "none",
+		}),
+		signal: AbortSignal.timeout(LOCKED_FETCH_TIMEOUT_MS),
+		redirect: "error",
 	});
+	const json = (await readJsonObject(response)) ?? {};
+	if (!response.ok || typeof json.client_id !== "string") {
+		const code =
+			typeof json.error === "string" && OAUTH_ERROR_CODE.test(json.error) ? json.error : undefined;
+		throw new Error(
+			`${provider}: client registration failed: HTTP ${response.status}${code ? ` (${code})` : ""}`,
+		);
+	}
+	const now = (deps.now ?? Date.now)();
+	const registered: OAuthClient = {
+		clientId: json.client_id,
+		clientSecret: typeof json.client_secret === "string" ? json.client_secret : undefined,
+		redirectUri: deps.redirectUri,
+		issuer: endpoints.issuer,
+		authorizationEndpoint: endpoints.authorizationEndpoint,
+		tokenEndpoint: endpoints.tokenEndpoint,
+		registeredAt: now,
+	};
+	if (!existing || (existing.kind === "oauth" && !existing.tokens)) {
+		store.providers[provider] = { kind: "oauth", client: registered, updatedAt: now };
+	}
+	return registered;
+}
 
-	const verifier = randomBytes(32).toString("base64url");
-	const state = randomBytes(16).toString("base64url");
+/** The S256 authorization URL: the challenge is derived from the verifier, and the state comes back in the callback. */
+function authorizationUrl(
+	client: OAuthClient,
+	login: {
+		redirectUri: string;
+		scopes: string[];
+		resource: string;
+		state: string;
+		verifier: string;
+	},
+): string {
 	const url = new URL(client.authorizationEndpoint);
 	url.searchParams.set("response_type", "code");
 	url.searchParams.set("client_id", client.clientId);
-	url.searchParams.set("redirect_uri", deps.redirectUri);
-	url.searchParams.set("code_challenge", createHash("sha256").update(verifier).digest("base64url"));
+	url.searchParams.set("redirect_uri", login.redirectUri);
+	url.searchParams.set(
+		"code_challenge",
+		createHash("sha256").update(login.verifier).digest("base64url"),
+	);
 	url.searchParams.set("code_challenge_method", "S256");
-	url.searchParams.set("state", state);
-	url.searchParams.set("scope", scopes.join(" "));
-	url.searchParams.set("resource", info.resource);
-	return { provider, url: url.toString(), state, verifier, redirectUri: deps.redirectUri, client };
+	url.searchParams.set("state", login.state);
+	url.searchParams.set("scope", login.scopes.join(" "));
+	url.searchParams.set("resource", login.resource);
+	return url.toString();
+}
+
+export async function beginLogin(
+	provider: McpProviderId,
+	deps: AuthDeps & { redirectUri: string },
+): Promise<PendingLogin> {
+	const providerCheck = PROVIDER_ID.validate(provider);
+	if (!providerCheck.valid) {
+		refused("provider", providerCheck.errors[0]?.code ?? "INVALID");
+		throw new Error("unknown MCP provider");
+	}
+	const info = MCP_PROVIDERS[provider];
+	if (!info.oauth) throw new Error(`${provider} does not support OAuth`);
+	const endpoints = await discoverEndpoints(provider, deps);
+	const client = await mutateStore(deps, (store) => clientFor(provider, endpoints, store, deps));
+	const verifier = randomBytes(32).toString("base64url");
+	const state = randomBytes(16).toString("base64url");
+	const url = authorizationUrl(client, {
+		redirectUri: deps.redirectUri,
+		scopes: endpoints.scopes,
+		resource: info.resource,
+		state,
+		verifier,
+	});
+	return { provider, url, state, verifier, redirectUri: deps.redirectUri, client };
 }
 
 function parseCallback(input: string): {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import {
 	existsSync,
 	mkdirSync,
@@ -188,6 +189,57 @@ describe("withStoreLock takeover", () => {
 		expect(probes).toBeGreaterThan(1);
 		expect(readFileSync(join(lock, "owner"), "utf8")).toBe(owner);
 		expect(readdirSync(dir).filter((name) => name.includes(".stale-"))).toEqual([]);
+	});
+
+	test("a takeover restore that loses to a successor keeps the moved owner and retries acquire", async () => {
+		const lock = `${path}.lock`;
+		mkdirSync(lock);
+		const owner = JSON.stringify({ pid: 4242, startTime: "s", token: "moved-token" });
+		writeFileSync(join(lock, "owner"), owner);
+		const old = new Date(Date.now() - 3_600_000);
+		utimesSync(lock, old, old);
+		const successor = JSON.stringify({ pid: 5151, startTime: "s", token: "successor-token" });
+		const original = fs.renameSync;
+		let raced = false;
+		const racing = spyOn(fs, "renameSync").mockImplementation(((
+			...args: Parameters<typeof original>
+		) => {
+			if (!raced && args[0] === lock) {
+				raced = true;
+				// The live holder heartbeats so the moved dir no longer matches the judged stamp, forcing a restore.
+				const stamp = new Date();
+				utimesSync(lock, stamp, stamp);
+				(original as (...rest: unknown[]) => unknown)(...args);
+				// A successor takes the lock path in the window between the takeover rename and the restore.
+				mkdirSync(lock);
+				writeFileSync(join(lock, "owner"), successor);
+				return;
+			}
+			(original as (...rest: unknown[]) => unknown)(...args);
+		}) as typeof fs.renameSync);
+		try {
+			await expect(
+				withStoreLock(path, async () => "got", {
+					staleMs: 10_000,
+					waitMs: 5_000,
+					pollMs: 5,
+					holder: {
+						alive: (pid) => pid !== 4242,
+						identity: () => "s",
+					},
+					// The successor holds the lock until the retrying acquirer waits on it; then it lets go.
+					sleep: async () => {
+						rmSync(lock, { recursive: true, force: true });
+					},
+				}),
+			).resolves.toBe("got");
+		} finally {
+			racing.mockRestore();
+		}
+		expect(raced).toBe(true);
+		const kept = readdirSync(dir).filter((name) => name.includes(".stale-"));
+		expect(kept).toHaveLength(1);
+		expect(readFileSync(join(dir, kept[0] as string, "owner"), "utf8")).toBe(owner);
 	});
 
 	test("an owner-file write that fails leaves no lock directory behind", async () => {

@@ -11,13 +11,15 @@ import {
 	TEST_STATE_DIR_PREFIX,
 } from "./test.state-dir.ts";
 
-// Planning, failover cooldowns, carriers and trackers write under the state directory. A test process gets a fresh
-// scratch one inside the home directory (the only place the state resolver accepts), unless the caller set its own, so
-// no suite can touch the operator's real state, e.g. failover-cooldowns.json.
+// Planning, failover cooldowns, carriers and trackers write under the state directory. Unless the caller exported
+// ULTRATHINK_STATE_DIR, a test process gets a fresh scratch one inside the home directory (the only place the state
+// resolver accepts), so no suite touches the operator's real state, e.g. failover-cooldowns.json. A directory the caller
+// exported is used as is: the suites write to it, and this preload neither creates nor resets it.
 if (!process.env.ULTRATHINK_STATE_DIR?.trim()) {
-	// Earlier runs leave one empty directory each (see below): drop the ones from yesterday and before.
+	// Earlier runs leave one empty directory each (see below): drop the ones of dead runs from yesterday and before.
 	removeStaleTestStateDirs(homedir());
-	const stateDir = mkdtempSync(join(homedir(), TEST_STATE_DIR_PREFIX));
+	// The PID in the name lets a concurrent run's sweep tell this directory is still in use.
+	const stateDir = mkdtempSync(join(homedir(), `${TEST_STATE_DIR_PREFIX}${process.pid}-`));
 	process.env.ULTRATHINK_STATE_DIR = stateDir;
 	// Measured with a preload that logs: `process.on("exit")` and `beforeExit` handlers never fire under `bun test`
 	// (Bun 1.2.23 and 1.4.0), and a preload's global afterAll runs after EVERY test file on Bun 1.2.23 (3 files, 3 calls)

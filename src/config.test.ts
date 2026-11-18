@@ -16,9 +16,11 @@ import {
 } from "./config.ts";
 import type { DecisionsConfig } from "./decisions/types.ts";
 import { DEFAULT_GROK_CONFIG } from "./grok/types.ts";
+import { HOSTS } from "./host/types.ts";
 import {
 	ROUTE_DEFAULT_MODELS,
 	TOT_BREAKER_THRESHOLD,
+	TOT_HOST_PER_CALL_MODEL,
 	TOT_PRD_CANDIDATES,
 } from "./route-defaults.ts";
 
@@ -183,6 +185,18 @@ describe("mergeConfig", () => {
 		expect(mergeConfig({ grok: { baseUrl: 7 } }, base).grok.baseUrl).toBe(base.grok.baseUrl);
 		expect(mergeConfig({ grok: { baseUrl: "http://127.0.0.1:8080/v1/" } }, base).grok.baseUrl).toBe(
 			"http://127.0.0.1:8080/v1",
+		);
+	});
+	test("grok baseUrl takes the bearer-key URL policy: cleartext to RFC 1918 falls back", () => {
+		const base = defaultConfig();
+		expect(mergeConfig({ grok: { baseUrl: "http://10.1.2.3:8080/v1" } }, base).grok.baseUrl).toBe(
+			base.grok.baseUrl,
+		);
+		expect(mergeConfig({ grok: { baseUrl: "http://192.168.1.5/v1" } }, base).grok.baseUrl).toBe(
+			base.grok.baseUrl,
+		);
+		expect(mergeConfig({ grok: { baseUrl: "http://100.100.1.2/v1" } }, base).grok.baseUrl).toBe(
+			"http://100.100.1.2/v1",
 		);
 	});
 
@@ -512,6 +526,19 @@ describe("ship config", () => {
 			"",
 		);
 	});
+	test("a project layer fills ship.greptileOrganization only where no earlier layer sets it", () => {
+		const base = defaultConfig();
+		const empty = mergeConfig({}, base);
+		expect(
+			mergeConfig({ ship: { greptileOrganization: "repo-org" } }, empty, { project: true }).ship
+				.greptileOrganization,
+		).toBe("repo-org");
+		const set = mergeConfig({ ship: { greptileOrganization: "mine" } }, base);
+		expect(
+			mergeConfig({ ship: { greptileOrganization: "repo-org" } }, set, { project: true }).ship
+				.greptileOrganization,
+		).toBe("mine");
+	});
 	test("valid overrides apply", () => {
 		const ship = mergeConfig(
 			{
@@ -596,6 +623,19 @@ describe("substrate config", () => {
 		const set = mergeConfig({ substrate: { url: "https://substrate.example" } }, base);
 		expect(mergeConfig({ substrate: { url: "" } }, set).substrate.url).toBe(
 			"https://substrate.example",
+		);
+	});
+	test("a URL with a query or a fragment keeps the default; a user name is kept as written", () => {
+		expect(mergeConfig({ substrate: { url: "https://user:pass@host/" } }, base).substrate.url).toBe(
+			"https://user:pass@host",
+		);
+		expect(mergeConfig({ substrate: { url: "https://host/?k=v" } }, base).substrate.url).toBe("");
+		expect(mergeConfig({ substrate: { url: "https://host/#f" } }, base).substrate.url).toBe("");
+		expect(mergeConfig({ substrate: { url: "https://host/" } }, base).substrate.url).toBe(
+			"https://host",
+		);
+		expect(mergeConfig({ substrate: { url: "http://192.168.1.5/" } }, base).substrate.url).toBe(
+			"http://192.168.1.5",
 		);
 	});
 	test("a project layer cannot set the URL that receives the bearer token", () => {
@@ -2509,6 +2549,10 @@ describe("project files: tighten, fill and timers", () => {
 });
 
 describe("models.tot (cheapest-model routing for ToT)", () => {
+	test("TOT_HOST_PER_CALL_MODEL has exactly one boolean per host in HOSTS", () => {
+		expect(Object.keys(TOT_HOST_PER_CALL_MODEL).sort()).toEqual([...HOSTS].sort());
+		for (const host of HOSTS) expect(typeof TOT_HOST_PER_CALL_MODEL[host]).toBe("boolean");
+	});
 	test("defaults carry the built-in candidates, no override and the breaker threshold", () => {
 		const { tot } = defaultConfig().models;
 		expect(tot.model).toBe("");

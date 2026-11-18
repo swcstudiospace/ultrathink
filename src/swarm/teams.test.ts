@@ -561,7 +561,7 @@ describe("spawnLanes", () => {
 		expect(calls.length).toBe(3);
 		expect(handles[1]).toMatchObject({ laneId: "lane-2", error: "boom" });
 		expect(handles[0]).toMatchObject({ laneId: "lane-1", pid: 1001 });
-		expect(handles[2]!.pid).toBeDefined();
+		expect(handles[2]).toMatchObject({ laneId: "lane-3", pid: 1003 });
 		rmSync(stateDir, { recursive: true, force: true });
 	});
 
@@ -2116,6 +2116,14 @@ describe("resolveStopTargets", () => {
 		expect(resolveStopTargets("all", [live, dead, bare], deps)).toEqual({ targets: [live] });
 		expect(resolveStopTargets("all", [dead, bare], deps)).toEqual({
 			reason: "no live swarm lanes to stop",
+		});
+	});
+
+	test("a cut lane-written target never ends in a lone high surrogate", () => {
+		// 59 units then a surrogate pair: the 60-unit cut would otherwise keep only the high half.
+		const target = `${"a".repeat(59)}\u{1F600}`;
+		expect(resolveStopTargets(target, [], deps)).toEqual({
+			reason: `no swarm lane matches ${"a".repeat(59)}`,
 		});
 	});
 

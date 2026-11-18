@@ -88,10 +88,14 @@ const cacheComplete = (dir: string, fs: PstackFs): boolean => {
 	}
 };
 
-const semver = (version: string): number[] =>
-	String(version)
-		.split(".")
-		.map((part) => Number.parseInt(part, 10) || 0);
+const semver = (version: string): { release: number[]; prerelease: boolean } => {
+	const dash = version.indexOf("-");
+	const core = dash < 0 ? version : version.slice(0, dash);
+	return {
+		release: core.split(".").map((part) => Number.parseInt(part, 10) || 0),
+		prerelease: dash >= 0,
+	};
+};
 
 /**
  * Find the newest completed pstack plugin under
@@ -134,10 +138,11 @@ export function resolvePstack(cursorDir: string, fs: PstackFs = defaultFs): Psta
 			const va = semver(a.version);
 			const vb = semver(b.version);
 			for (let i = 0; i < 3; i++) {
-				const na = va[i];
-				const nb = vb[i];
-				if (na !== nb) return Number(nb) - Number(na);
+				const na = va.release[i] ?? 0;
+				const nb = vb.release[i] ?? 0;
+				if (na !== nb) return nb - na;
 			}
+			if (va.prerelease !== vb.prerelease) return va.prerelease ? 1 : -1;
 			return b.mtime - a.mtime;
 		});
 		const winner = candidates[0]!;
@@ -210,6 +215,7 @@ function quoteCloser(opener: string): string {
 function withoutQuotedCommands(prompt: string): string {
 	let out = "";
 	let i = 0;
+	const absentClosers = new Set<string>();
 	while (i < prompt.length) {
 		if (prompt.startsWith("```", i)) {
 			const end = prompt.indexOf("```", i + 3);
@@ -225,8 +231,10 @@ function withoutQuotedCommands(prompt: string): string {
 		const quoted = isOpeningDoubleQuote(prompt, i) || isOpeningQuote(prompt, i);
 		if (ch === "`" || quoted) {
 			const closer = ch === "`" ? "`" : quoteCloser(ch);
-			const end = prompt.indexOf(closer, i + 1);
+			// Searches only move forward, so a closer missing from one index is missing from every later one.
+			const end = absentClosers.has(closer) ? -1 : prompt.indexOf(closer, i + 1);
 			if (end < 0) {
+				absentClosers.add(closer);
 				out += ch;
 				i += 1;
 				continue;

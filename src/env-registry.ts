@@ -32,6 +32,9 @@ import { checkServiceUrl } from "./net/safe-url.ts";
 type EnvKind = "url" | "int" | "bool01" | "bool1" | "enum" | "path" | "string";
 export type EnvScope = "plugin" | "service" | "stack";
 
+/** How a `url` row is checked; see `EnvVarDef.urlPolicy`. */
+type UrlPolicy = "http" | "service" | "decisions" | "substrate";
+
 export interface EnvVarDef {
 	name: string;
 	/** Other names read for the same setting; the canonical `name` wins when both are set. */
@@ -55,13 +58,27 @@ export interface EnvVarDef {
 	default?: string;
 	min?: number;
 	max?: number;
+	/**
+	 * For a `url` row: the policy its reader applies, which {@link validateEnv} reports with. `http` is an absolute
+	 * http(s) URL with no host rule; `service` is the service-URL rule of `checkServiceUrl`; `decisions` is the Jev
+	 * decisions endpoint rule; `substrate` is the service-URL rule only while a Substrate bearer is sent.
+	 */
+	urlPolicy?: UrlPolicy;
 }
 
 /** The optional parts of a row; `secret` defaults to false. */
 type RowExtra = Partial<
 	Pick<
 		EnvVarDef,
-		"secret" | "aliases" | "disableValue" | "reader" | "values" | "default" | "min" | "max"
+		| "secret"
+		| "aliases"
+		| "disableValue"
+		| "reader"
+		| "values"
+		| "default"
+		| "min"
+		| "max"
+		| "urlPolicy"
 	>
 >;
 
@@ -188,6 +205,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"url",
 		"SUBSTRATE_URL",
 		"Agent Substrate base URL. It wins over substrate.url in the config file.",
+		{ urlPolicy: "substrate" },
 	),
 	row(
 		"stack",
@@ -228,7 +246,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"url",
 		"HINDSIGHT_API_URL",
 		"Hindsight base URL, used only when hindsight.url is empty. HINDSIGHT_URL is read when this one is empty.",
-		{ aliases: ["HINDSIGHT_URL"] },
+		{ aliases: ["HINDSIGHT_URL"], urlPolicy: "service" },
 	),
 	row(
 		"stack",
@@ -254,6 +272,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"url",
 		"RAGFLOW_URL",
 		"RAGFlow base URL, used only when ragflow.url is empty.",
+		{ urlPolicy: "service" },
 	),
 	row(
 		"plugin",
@@ -271,6 +290,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"url",
 		"DESK_GATEWAY_URL",
 		"Desk gateway base URL. It wins over gateway.url in the config file.",
+		{ urlPolicy: "service" },
 	),
 	row(
 		"plugin",
@@ -311,7 +331,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"url",
 		"ULTRATHINK_DECISIONS_URL",
 		"Decisions endpoint. Only an https://openrouter.ai URL or a loopback URL is accepted; anything else is ignored.",
-		{ default: "https://openrouter.ai/api/alpha/decisions" },
+		{ default: "https://openrouter.ai/api/alpha/decisions", urlPolicy: "decisions" },
 	),
 
 	// Swarm: src/swarm/teams.ts. A non-empty ULTRATHINK_SWARM_ROOT wins over SWARM_ROOT.
@@ -357,6 +377,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"url",
 		"ULTRATHINK_OAUTH_REDIRECT",
 		"OAuth callback URL for ultrathink-mcp auth login; the --redirect flag wins over it.",
+		{ urlPolicy: "http" },
 	),
 	row(
 		"plugin",
@@ -521,6 +542,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"url",
 		"ULTRATHINK_PUBLIC_ORIGIN",
 		"Public origin of the hosted service: https, or http for localhost and 127.0.0.1; scheme, host and port only. Required.",
+		{ urlPolicy: "http" },
 	),
 	row(
 		"service",
@@ -858,6 +880,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"url",
 		"ULTRATHINK_AUDIT_HTTP_URL",
 		"HTTP audit sink endpoint: https, or http to 127.0.0.1 or localhost.",
+		{ urlPolicy: "http" },
 	),
 	row(
 		"service",
@@ -880,6 +903,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"url",
 		"ULTRATHINK_AUDIT_KAFKA_REST_URL",
 		"Kafka REST proxy endpoint of the audit sink; set together with the topic.",
+		{ urlPolicy: "http" },
 	),
 	row(
 		"service",
@@ -894,6 +918,7 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"url",
 		"ULTRATHINK_OTLP_ENDPOINT",
 		"OTLP/JSON trace collector base URL: https, or http to loopback. Unset disables span export.",
+		{ urlPolicy: "http" },
 	),
 	row(
 		"service",
@@ -960,13 +985,6 @@ export interface EnvFinding {
 
 type Env = Record<string, string | undefined>;
 
-/** The variables whose reader applies `checkServiceUrl` (hindsight/settings.ts, ragflow/settings.ts, gateway/settings.ts). */
-const SERVICE_URL_VARIABLES: readonly string[] = [
-	"HINDSIGHT_API_URL",
-	"RAGFLOW_URL",
-	"DESK_GATEWAY_URL",
-];
-
 const INTEGER = /^-?\d+$/;
 
 function nonEmpty(env: Env, name: string): string | undefined {
@@ -984,18 +1002,42 @@ function isHttpUrl(value: string): boolean {
 	}
 }
 
-function urlProblem(def: EnvVarDef, name: string, value: string): string | undefined {
-	if (def.name === "ULTRATHINK_DECISIONS_URL") {
-		return resolveDecisionsUrl({ ULTRATHINK_DECISIONS_URL: value }).ignored
-			? `${name} must be an https://openrouter.ai URL or a loopback URL without credentials; it is ignored as set`
-			: undefined;
-	}
-	if (SERVICE_URL_VARIABLES.includes(def.name)) {
-		const checked = checkServiceUrl(value);
-		// The reason is one of the checker's fixed strings; it never repeats the URL.
-		return checked.ok ? undefined : `${name} is not accepted as a service URL: ${checked.reason}`;
-	}
+/**
+ * Whether the Substrate reader can attach a bearer: SUBSTRATE_TOKEN, SUBSTRATE_TOKEN_FILE or
+ * SUBSTRATE_TOKENS_DIR is set. A token file under the default directory is not looked up here.
+ */
+function substrateTokenMayBeSent(env: Env): boolean {
+	return ["SUBSTRATE_TOKEN", "SUBSTRATE_TOKEN_FILE", "SUBSTRATE_TOKENS_DIR"].some(
+		(name) => nonEmpty(env, name) !== undefined,
+	);
+}
+
+function absoluteHttpProblem(name: string, value: string): string | undefined {
 	return isHttpUrl(value) ? undefined : `${name} must be an absolute http(s) URL`;
+}
+
+function urlProblem(def: EnvVarDef, name: string, value: string, env: Env): string | undefined {
+	switch (def.urlPolicy ?? "http") {
+		case "decisions":
+			return resolveDecisionsUrl({ ULTRATHINK_DECISIONS_URL: value }).ignored
+				? `${name} must be an https://openrouter.ai URL or a loopback URL without credentials; it is ignored as set`
+				: undefined;
+		case "service": {
+			const checked = checkServiceUrl(value);
+			// The reason is one of the checker's fixed strings; it never repeats the URL.
+			return checked.ok ? undefined : `${name} is not accepted as a service URL: ${checked.reason}`;
+		}
+		case "substrate": {
+			// Service-URL rule only with a bearer; without one the reader uses the URL as is.
+			if (!substrateTokenMayBeSent(env)) return absoluteHttpProblem(name, value);
+			const checked = checkServiceUrl(value);
+			return checked.ok
+				? undefined
+				: `${name} is not accepted as a service URL while a Substrate token is sent: ${checked.reason}`;
+		}
+		case "http":
+			return absoluteHttpProblem(name, value);
+	}
 }
 
 function rangeMessage(name: string, min: number | undefined, max: number | undefined): string {
@@ -1006,11 +1048,11 @@ function rangeMessage(name: string, min: number | undefined, max: number | undef
 }
 
 /** Checks one value of one name against the definition; `undefined` when it is fine. */
-function checkValue(def: EnvVarDef, name: string, value: string): EnvFinding | undefined {
+function checkValue(def: EnvVarDef, name: string, value: string, env: Env): EnvFinding | undefined {
 	const bad = (problem: EnvProblem, message: string): EnvFinding => ({ name, problem, message });
 	switch (def.kind) {
 		case "url": {
-			const message = urlProblem(def, name, value);
+			const message = urlProblem(def, name, value, env);
 			return message === undefined ? undefined : bad("bad-kind", message);
 		}
 		case "int": {
@@ -1048,12 +1090,13 @@ function paddedFinding(
 	def: EnvVarDef,
 	raw: string | undefined,
 	trimmed: string,
+	env: Env,
 ): EnvFinding | undefined {
 	if (def.reader !== "raw" || raw === undefined || raw === trimmed) return undefined;
 	const accepted =
 		def.disableValue !== undefined
 			? trimmed.toLowerCase() === def.disableValue.toLowerCase()
-			: checkValue(def, def.name, trimmed) === undefined;
+			: checkValue(def, def.name, trimmed, env) === undefined;
 	if (!accepted) return undefined;
 	return {
 		name: def.name,
@@ -1080,20 +1123,21 @@ export function validateEnv(env: Env): EnvFinding[] {
 						message: `${def.name} is set but only the value ${def.disableValue} has an effect, so it disables nothing`,
 					});
 				} else {
-					const padded = paddedFinding(def, env[def.name], value);
+					const padded = paddedFinding(def, env[def.name], value, env);
 					if (padded) findings.push(padded);
 				}
 			}
 			continue;
 		}
 		if (value !== undefined) {
-			const finding = checkValue(def, def.name, value) ?? paddedFinding(def, env[def.name], value);
+			const finding =
+				checkValue(def, def.name, value, env) ?? paddedFinding(def, env[def.name], value, env);
 			if (finding) findings.push(finding);
 		}
 		for (const alias of def.aliases ?? []) {
 			const aliasValue = nonEmpty(env, alias);
 			if (aliasValue === undefined) continue;
-			const finding = checkValue(def, alias, aliasValue);
+			const finding = checkValue(def, alias, aliasValue, env);
 			if (finding) findings.push(finding);
 			if (value !== undefined && aliasValue !== value) {
 				findings.push({

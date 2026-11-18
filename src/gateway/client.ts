@@ -3,10 +3,12 @@
 /**
  * One JSON-RPC `tools/call` per desk tool. The desk contract is a single POST to
  * `<url>/mcp/<seat>`, not the streaming MCP session in `src/mcp/client.ts` (initialize,
- * notifications, SSE relay). This client reuses that session's tool envelope and the
- * shared HTTP helper (`requestJson`: hard budget, no redirects, redacted errors).
+ * notifications, SSE relay). The SSE event parser is shared with that session (`src/mcp/sse.ts`). The tool
+ * envelope is parsed here, not shared: `src/mcp/client.ts` `unwrapToolResult` throws on `isError`, while this
+ * client classifies it. Both use the shared HTTP helper (`requestJson`: hard budget, no redirects, redacted errors).
  */
 import { requestJson } from "../net/http.ts";
+import { createSseParser } from "../mcp/sse.ts";
 import { redactSecrets } from "../redact.ts";
 import type { GatewayCallResult, GatewayFailure } from "./types.ts";
 import { isRecord } from "../shared.ts";
@@ -42,17 +44,17 @@ function jsonRecord(text: string): Record<string, unknown> | undefined {
 	}
 }
 
-/** A JSON body, or the last SSE `data:` record from a streamable-HTTP response. */
+/** A JSON body, or the last SSE event's `data:` record from a streamable-HTTP response. */
 function rpcMessage(json: unknown, text: string): Record<string, unknown> | undefined {
 	if (isRecord(json)) return json;
-	const data = text
-		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line.startsWith("data:"))
-		.map((line) => line.slice(5).trim())
-		.filter((line) => line !== "" && line !== "[DONE]");
-	const last = data.at(-1);
-	return last ? jsonRecord(last) : undefined;
+	const events: string[] = [];
+	const parser = createSseParser((data) => {
+		events.push(data);
+	});
+	parser.push(text);
+	parser.end();
+	const last = events.filter((data) => data !== "[DONE]").at(-1);
+	return last === undefined ? undefined : jsonRecord(last);
 }
 
 function toolPayload(

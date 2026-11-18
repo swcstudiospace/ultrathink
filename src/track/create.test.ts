@@ -2076,3 +2076,60 @@ describe("createTracking provider branches are independent (greptile r5 #0)", ()
 		expect(Object.keys(refs.linear.nodes)).toEqual([]);
 	});
 });
+
+describe("createTracking Linear read-back pages (R4-A-13)", () => {
+	test("a read-back follows hasNextPage and the cursor to the page that holds the row, and the create is not repeated", async () => {
+		const { plan, graph } = independentNodes(1);
+		const inner = statefulLinear({
+			afterCreate: (_args, attempt) => (attempt === 1 ? timedOut() : undefined),
+		});
+		const cursors: unknown[] = [];
+		const linear: typeof inner = {
+			calls: inner.calls,
+			rows: inner.rows,
+			async call(name, args, signal) {
+				if (name !== "list_issues") return inner.call(name, args, signal);
+				cursors.push(args.cursor);
+				// The row sits on page two, reached only through the cursor page one hands out.
+				const listed = (await inner.call(name, args, signal)) as { issues: unknown[] };
+				return args.cursor === undefined
+					? { issues: [], hasNextPage: true, cursor: "page-2" }
+					: { issues: listed.issues, hasNextPage: false };
+			},
+		};
+		const refs = await createTracking(
+			plan,
+			graph,
+			undefined,
+			deps({ linear, notionDataSource: undefined, concurrency: 1 }),
+		);
+		expect(cursors).toEqual([undefined, "page-2"]);
+		expect(linear.calls.filter((call) => call.name === "save_issue")).toHaveLength(1);
+		expect(refs.linear.nodes.r1?.identifier).toBe("ENG-1");
+		expect(refs.errors).toEqual([]);
+	});
+
+	test("a tracker that always reports another page fails the read-back, and the create is not repeated", async () => {
+		const { plan, graph } = independentNodes(1);
+		const calls: Call[] = [];
+		const linear: ToolCaller & { calls: Call[] } = {
+			calls,
+			async call(name, args) {
+				calls.push({ name, args });
+				if (name === "list_issues") return { issues: [], hasNextPage: true, cursor: "more" };
+				throw timedOut();
+			},
+		};
+		const refs = await createTracking(
+			plan,
+			graph,
+			undefined,
+			deps({ linear, notionDataSource: undefined, concurrency: 1 }),
+		);
+		expect(calls.filter((call) => call.name === "save_issue")).toHaveLength(1);
+		expect(refs.linear.nodes.r1).toBeUndefined();
+		expect(
+			refs.errors.some((error) => error.startsWith("linear r1:") && error.includes("read-back")),
+		).toBe(true);
+	});
+});

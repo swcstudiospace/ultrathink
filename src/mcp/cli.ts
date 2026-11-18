@@ -8,7 +8,7 @@ import { CLI_LOCK, degradedNodeIds, readControl, trackingCheckpoint } from "../c
 import type { SessionRecord } from "../claude/state.ts";
 import { createGatewayTracker, type Tracker } from "../track/gateway.ts";
 import { formatTrackingTodos, injectTrackingXml } from "../track/render.ts";
-import { createMcpClient, loginHint, MAX_TOOL_PAGES } from "./client.ts";
+import { createMcpClient, loginHint } from "./client.ts";
 import {
 	DEFAULT_TASK_GRAPH_TITLE,
 	initTaskGraphDatabase,
@@ -43,7 +43,7 @@ import {
 	unmountTailscale,
 } from "./redirect.ts";
 import type { RedirectPlan, Run } from "./redirect.ts";
-import { createRelay, runStdioRelay } from "./relay.ts";
+import { runStdioRelay } from "./relay.ts";
 import type { RelayAuth } from "./relay.ts";
 import { storePath } from "./store.ts";
 
@@ -305,53 +305,14 @@ async function setKey(id: ProviderId, args: string[], deps: AuthDeps): Promise<v
 		out("Jev reads it from the credential store first, then ULTRATHINK_OPENROUTER_KEY.");
 }
 
-interface RpcMessage {
-	id?: number | string;
-	result?: { tools?: unknown[]; nextCursor?: string; protocolVersion?: string };
-	error?: { message?: string };
-}
-
-async function checkOne(id: McpProviderId, deps: AuthDeps): Promise<number> {
-	const responses = new Map<number | string, RpcMessage>();
-	const relay = createRelay({
-		url: MCP_PROVIDERS[id].url,
-		userAgent: USER_AGENT,
-		loginHint: loginHint(id),
-		auth: relayAuth(id, deps),
-		write(line) {
-			const message = JSON.parse(line) as RpcMessage;
-			if (message.id !== undefined) responses.set(message.id, message);
-		},
-	});
-	let nextId = 1;
-	const request = async (
-		method: string,
-		params: Record<string, unknown>,
-	): Promise<NonNullable<RpcMessage["result"]>> => {
-		const id = nextId++;
-		await relay.handle({ jsonrpc: "2.0", id, method, params });
-		const response = responses.get(id);
-		if (!response) throw new Error(`no response to ${method}`);
-		if (response.error) throw new Error(response.error.message ?? `${method} failed`);
-		return response.result ?? {};
-	};
-	await request("initialize", {
-		protocolVersion: "2025-06-18",
-		capabilities: {},
-		clientInfo: { name: "ultrathink-mcp-check", version: "0.2.0" },
-	});
-	await relay.handle({ jsonrpc: "2.0", method: "notifications/initialized" });
-	let count = 0;
-	let cursor: string | undefined;
-	for (let page = 0; ; page++) {
-		if (page >= MAX_TOOL_PAGES) throw new Error("tools/list: pagination did not terminate");
-		const result = await request("tools/list", cursor ? { cursor } : {});
-		count += result.tools?.length ?? 0;
-		if (!result.nextCursor) break;
-		if (result.nextCursor === cursor) throw new Error("tools/list: pagination did not terminate");
-		cursor = result.nextCursor;
+/** One provider's check through the real client: initialize, list every tools/list page, close. Returns the tool count. */
+export async function checkOne(id: McpProviderId, deps: AuthDeps): Promise<number> {
+	const client = createMcpClient(id, { storePath: deps.storePath, fetch: deps.fetch });
+	try {
+		return (await client.listTools()).length;
+	} finally {
+		client.close();
 	}
-	return count;
 }
 
 async function trackComplete(args: string[], seams: CliSeams): Promise<number> {

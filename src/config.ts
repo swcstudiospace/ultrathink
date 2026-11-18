@@ -37,6 +37,7 @@ import {
 	type MuseConfig,
 	type MuseEffort,
 } from "./muse/types.ts";
+import { checkServiceUrl } from "./net/safe-url.ts";
 import {
 	defaultRecallSettings,
 	parseRecallSettings,
@@ -522,7 +523,7 @@ function mergeGrok(
 	if (!grok) return defaults;
 	return {
 		enabled: typeof grok.enabled === "boolean" ? grok.enabled : defaults.enabled,
-		baseUrl: project ? defaults.baseUrl : httpUrl(grok.baseUrl, defaults.baseUrl),
+		baseUrl: project ? defaults.baseUrl : grokBaseUrl(grok.baseUrl, defaults.baseUrl),
 		model: selectorField(grok.model) || defaults.model,
 		reasoningEffort: GROK_EFFORTS.includes(grok.reasoningEffort as GrokEffort)
 			? (grok.reasoningEffort as GrokEffort)
@@ -697,13 +698,18 @@ function modelPin(
 	return blankClears ? "explicit-blank" : lower;
 }
 
-/** A non-empty http(s) URL with trailing slashes stripped; anything else falls back. */
+/**
+ * A non-empty http(s) URL with trailing slashes stripped; anything else falls back. A URL with a query or a fragment
+ * falls back too. A user name or password is kept: the doctor shows the URL with it removed, and a bearer-carrying
+ * request is refused by the service-URL policy at use.
+ */
 function httpUrl(value: unknown, fallback: string): string {
 	if (typeof value !== "string") return fallback;
 	const trimmed = value.trim().replace(/\/+$/, "");
 	if (!trimmed) return fallback;
 	try {
 		const url = new URL(trimmed);
+		if (url.search || url.hash) return fallback;
 		if (url.protocol === "https:") return trimmed;
 		// Cleartext is allowed only to loopback and private (RFC 1918) addresses, which do not route on the public internet.
 		return url.protocol === "http:" &&
@@ -715,6 +721,15 @@ function httpUrl(value: unknown, fallback: string): string {
 	} catch {
 		return fallback;
 	}
+}
+
+/**
+ * `grok.baseUrl` receives the Grok key as a bearer token, so it takes the service-URL policy of `checkServiceUrl`
+ * (https, or http only to loopback, `*.ts.net` or 100.64.0.0/10), not the wider rule of `httpUrl`.
+ */
+function grokBaseUrl(value: unknown, fallback: string): string {
+	const checked = checkServiceUrl(value);
+	return checked.ok ? checked.url : fallback;
 }
 
 function mergeHitl(hitl: Record<string, unknown> | undefined, defaults: HitlConfig): HitlConfig {
@@ -1192,8 +1207,10 @@ function mergeUi(
 
 /**
  * Project layers are repository-controlled, so they may only tighten these sections (default-deny, K5). Each helper
- * lets a project move a key toward the safer side and nothing else. Notion and Linear are the one exception: a project file
- * fills them only where no earlier file sets them. Think is user-only.
+ * lets a project move a key toward the safer side and nothing else. `ship.greptileOrganization` is the one other key a
+ * project file fills: only where no earlier file sets it. It names an organization the user's own Greptile account
+ * already belongs to, and the repository's code goes to Greptile for review either way. Notion and Linear are user-only
+ * (see `mergeConfig`). Think is user-only.
  */
 function tightenShip(ship: Record<string, unknown> | undefined, base: ShipConfig): ShipConfig {
 	if (!ship) return base;

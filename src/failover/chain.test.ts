@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { abortError } from "../claude/complete.ts";
 import { attachReport, readReport } from "../types.ts";
-import { createFailoverCompleter, type FailoverCandidate } from "./chain.ts";
-import { classifyFailure } from "./classify.ts";
+import { createCooldownLedger, createFailoverCompleter, type FailoverCandidate } from "./chain.ts";
+import { classifyFailure, type FailureClass, failureCooldownMs } from "./classify.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -575,6 +575,58 @@ describe("persisted cooldowns", () => {
 		);
 		expect(await again.complete("s", "u")).toBe("ok-b");
 		expect(same.calls()).toBe(0);
+	});
+
+	test("a persisted entry is kept only for a class the writer can store", () => {
+		const time = clock();
+		const path = persistPath();
+		const classes: FailureClass[] = [
+			"auth",
+			"billing",
+			"plan-limit",
+			"rate-limit",
+			"overloaded",
+			"model-unavailable",
+			"unavailable",
+			"network",
+			"timeout",
+			"aborted",
+			"other",
+		];
+		const until: Record<string, number> = {};
+		const failure: Record<string, string> = {};
+		for (const cls of classes) {
+			until[cls] = time.now() + 600_000;
+			failure[cls] = cls;
+		}
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, JSON.stringify({ until, failure }));
+		const ledger = createCooldownLedger(
+			classes.map((id) => scripted(id, [])),
+			time.now,
+			path,
+		);
+		for (const cls of classes) {
+			const cooling = failureCooldownMs(cls) > 0;
+			expect(ledger.until(cls)).toBe(cooling ? time.now() + 600_000 : 0);
+		}
+	});
+
+	test("a cooldown write keeps a later entry another process wrote and entries it does not own", () => {
+		const time = clock();
+		const path = persistPath();
+		const later = time.now() + 600_000;
+		const shared = { until: { a: later, z: later }, failure: { a: "auth", z: "billing" } };
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, JSON.stringify(shared));
+		const ledger = createCooldownLedger([scripted("a", []), scripted("b", [])], time.now, path);
+		ledger.cool("a", "network", 30_000);
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(shared);
+		ledger.cool("b", "timeout", 30_000);
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+			until: { a: later, b: time.now() + 30_000, z: later },
+			failure: { a: "auth", b: "timeout", z: "billing" },
+		});
 	});
 });
 

@@ -135,6 +135,14 @@ const CORPUS: readonly [string, Error, FailureClass][] = [
 	["grok timeout", err("grok timed out after 1000ms"), "timeout"],
 	["status 408 is a hung route", err("request timeout", { status: 408 }), "timeout"],
 	["status 408 with plain text", err("body read stalled", { status: 408 }), "timeout"],
+	["omp native call timed out in ms", err("native call timed out after 1000 ms"), "timeout"],
+	["invalid timeout setting is not a timeout", err("invalid timeout setting"), "other"],
+	[
+		"TimeoutError by name, plain text",
+		err("The operation timed out", { name: "TimeoutError" }),
+		"timeout",
+	],
+	["ETIMEDOUT code, plain text", err("connect failed", { code: "ETIMEDOUT" }), "network"],
 	// spawn resources and killed children
 	["EAGAIN code", err("spawn failed", { code: "EAGAIN" }), "network"],
 	["ENOMEM code", err("cannot allocate", { code: "ENOMEM" }), "network"],
@@ -233,6 +241,12 @@ describe("classifyFailure precedence", () => {
 	test("ETIMEDOUT is a network failure, a bare timeout is not", () => {
 		expect(classifyFailure(err("connect ETIMEDOUT 1.2.3.4:443"))).toBe("network");
 		expect(classifyFailure(err("request timeout"))).toBe("timeout");
+	});
+
+	test("a runtime TimeoutError is a timeout whatever its message says", () => {
+		expect(
+			classifyFailure(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+		).toBe("timeout");
 	});
 
 	test("a long message repeating the plan phrase without 'limit' classifies quickly", () => {

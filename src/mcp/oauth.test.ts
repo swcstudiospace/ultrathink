@@ -759,6 +759,34 @@ describe("recoverUnauthorized", () => {
 		expect(status(deps).find((s) => s.provider === "notion")).toMatchObject({ ready: false });
 	});
 
+	test.each([
+		["control characters", "bad\u001b[31m"],
+		["4 KiB of text", "a".repeat(4096)],
+		["uppercase letters", "INVALID_GRANT"],
+	])("an error code of %s is not stored; the HTTP status stands in", async (_label, error) => {
+		seedOAuth(NOW + 3_600_000);
+		const fake = fakeFetch({
+			"https://mcp.notion.com/token": () => json({ error }, 400),
+		});
+		const deps = { fetch: fake.fetch, now: () => NOW, storePath: path };
+		expect(await recoverUnauthorized("notion", "Bearer at-old", deps)).toBe(false);
+		const cred = readStore(path).providers.notion;
+		expect(cred?.kind === "oauth" && cred.needsLogin).toBe("HTTP 400");
+		const detail = status(deps).find((s) => s.provider === "notion")?.detail ?? "";
+		expect(detail).toBe("login required: HTTP 400");
+		expect(detail).not.toMatch(/[\x00-\x1f\x7f]/);
+	});
+
+	test("a registration error code that is not a token is left out of the error", async () => {
+		const fake = fakeFetch({
+			...notionRoutes(),
+			"https://mcp.notion.com/register": () => json({ error: "bad\u001b[31m" }, 400),
+		});
+		const deps = { fetch: fake.fetch, now: () => NOW, storePath: path, redirectUri: REDIRECT };
+		const error = await beginLogin("notion", deps).catch((e: Error) => e);
+		expect((error as Error).message).toBe("notion: client registration failed: HTTP 400");
+	});
+
 	test("api key -> false", async () => {
 		await setApiKey("greptile", "g", { storePath: path });
 		expect(await recoverUnauthorized("greptile", "Bearer g", { storePath: path })).toBe(false);

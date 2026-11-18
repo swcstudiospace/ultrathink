@@ -267,6 +267,9 @@ const LOCK_OWNER_FILE = "owner";
 /** The `owner` file's marker for a holder whose start time could not be read. */
 const UNKNOWN_IDENTITY = "-";
 
+/** How many reads of this process's own start time are tried before its owner file is stamped without one. */
+const OWN_IDENTITY_ATTEMPTS = 3;
+
 /** How long the `ps` fallback of {@link processIdentity} may run before it is abandoned. */
 const PS_TIMEOUT_MS = 1_000;
 
@@ -350,7 +353,7 @@ export type LaneLockResult<T> = { held: true; value: T } | { held: false; reason
 /** Minimal fs seam for the lane lock, so tests can force races and failures without touching real state. */
 interface LaneLockFs {
 	mkdirSync(path: string, options: { mode?: number; recursive?: boolean }): void;
-	writeFileSync(path: string, data: string, options: { mode: number }): void;
+	writeFileSync(path: string, data: string, options: { mode: number; flag?: "wx" }): void;
 	readFileSync(path: string, encoding: "utf8"): string;
 	statSync(path: string): { mtimeMs: number };
 	renameSync(from: string, to: string): void;
@@ -424,6 +427,8 @@ function errorCode(error: unknown): string {
  * `TAKEOVER_STALE_MS` belongs to a crashed recoverer and is cleared). Inside it the condition is judged again and
  * the lock directory is renamed to a unique tombstone only if the SAME condition still holds. A lock this call
  * took is released only while its `owner` file still names this process (pid and token).
+ * The owner file is created exclusively, so a holder that resumes after a waiter re-took its path is refused rather
+ * than stamping over the other holder; a refusal removes the directory only while no owner names it.
  */
 export function withLaneLock<T>(
 	stateDir: string,
@@ -554,16 +559,27 @@ export function withLaneLock<T>(
 	let ownIdentity: string | undefined;
 	try {
 		try {
-			ownIdentity = identityOf(process.pid);
+			for (
+				let attempt = 0;
+				ownIdentity === undefined && attempt < OWN_IDENTITY_ATTEMPTS;
+				attempt++
+			) {
+				ownIdentity = identityOf(process.pid);
+			}
+			// reason: exclusive create. A holder that resumes after a waiter recovered this path and re-took it finds
+			// the other holder's owner file and is refused, instead of stamping over it.
 			fs.writeFileSync(
 				join(lockPath, LOCK_OWNER_FILE),
 				`${process.pid} ${ownIdentity ?? UNKNOWN_IDENTITY}`,
-				{ mode: 0o600 },
+				{ mode: 0o600, flag: "wx" },
 			);
 		} catch (error) {
-			// reason: without an owner file a waiter would treat this lock as ownerless and recover it from a live holder
+			// reason: without an owner file a waiter would treat this lock as ownerless and recover it from a live holder.
+			// Remove the directory only while no owner names it: a stamped lock belongs to another holder.
 			try {
-				fs.rmSync(lockPath, { recursive: true, force: true });
+				if (readOwner(lockPath) === undefined) {
+					fs.rmSync(lockPath, { recursive: true, force: true });
+				}
 			} catch {
 				// reason: an unstamped lock that cannot be removed is recovered by age; the refusal below still stands
 			}

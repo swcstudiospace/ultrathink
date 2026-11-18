@@ -2,12 +2,15 @@
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	symlinkSync,
+	truncateSync,
 	writeFileSync,
 } from "node:fs";
 import { join, relative } from "node:path";
@@ -200,6 +203,16 @@ describe("installRuntime", () => {
 		expect(readFileSync(file, "utf8")).toContain("ultrathink-managed");
 	});
 
+	test("backup copies are created owner-only (0600 file, 0700 dirs)", async () => {
+		const file = join(SKILLS_ROOT(), "skills/ultrathink-plan/SKILL.md");
+		put(file, "mine\n");
+		chmodSync(file, 0o600);
+		await install();
+		const original = manifestOf(SKILLS_ROOT()).files[0]?.original ?? "missing";
+		expect(statSync(join(SKILLS_ROOT(), original)).mode & 0o777).toBe(0o600);
+		expect(statSync(join(SKILLS_ROOT(), "ultrathink-backups")).mode & 0o777).toBe(0o700);
+	});
+
 	test("an untracked file at a managed path is backed up, and uninstall puts it back", async () => {
 		const file = join(SKILLS_ROOT(), "skills/ultrathink-plan/SKILL.md");
 		put(file, "mine\n");
@@ -280,7 +293,7 @@ describe("layouts", () => {
 		]);
 		const off = readFileSync(join(root, "prompts/ultrathink-off.toml"), "utf8");
 		expect(off).toContain('description = "Turn it off"');
-		expect(off).toContain("prompt = '''\nRun off $ARGUMENTS\n'''");
+		expect(off).toContain("prompt = '''Run off $ARGUMENTS\n'''");
 	});
 
 	test("a workspace-only workflows layout installs below the workspace with --local", async () => {
@@ -469,6 +482,29 @@ describe("refusals and rollback", () => {
 		expect(snapshot(SKILLS_ROOT())).toEqual(before);
 	});
 
+	test("a symbolic link at the backup store is refused and nothing is written through it", async () => {
+		const outside = join(scratch, "outside");
+		mkdirSync(outside);
+		const file = join(SKILLS_ROOT(), "skills/ultrathink-plan/SKILL.md");
+		put(file, "mine\n");
+		symlinkSync(outside, join(SKILLS_ROOT(), "ultrathink-backups"));
+		const [item] = await install();
+		expect(item?.status).toBe("failed");
+		expect(item?.notes.join(" ")).toContain("refusing to write through it");
+		expect(readdirSync(outside)).toEqual([]);
+		expect(readFileSync(file, "utf8")).toBe("mine\n");
+	});
+
+	test("a managed file over 16 MiB is refused without being read", async () => {
+		const file = join(SKILLS_ROOT(), "skills/ultrathink-plan/SKILL.md");
+		put(file, "");
+		truncateSync(file, 16 * 1024 * 1024 + 1);
+		const [item] = await install();
+		expect(item?.status).toBe("failed");
+		expect(item?.notes.join(" ")).toContain("is larger than 16 MiB");
+		expect(statSync(file).size).toBe(16 * 1024 * 1024 + 1);
+	});
+
 	test("a config root that is a file makes the install fail and is left alone", async () => {
 		put(join(home, ".fx-skills"), "a file where the root should be\n");
 		const [item] = await install();
@@ -565,6 +601,18 @@ describe("keyed edits", () => {
 		expect(readFileSync(join(root, "settings.json"), "utf8")).toBe(settings);
 		expect(existsSync(join(root, "config.toml"))).toBe(false);
 		expect(Object.keys(snapshot(root)).filter((path) => path.includes("ultrathink"))).toEqual([]);
+	});
+
+	test("place replaces a config through a temp file, keeps its mode, and leaves no temp file", async () => {
+		const root = SKILLS_ROOT();
+		const file = join(root, "settings.json");
+		put(file, settings);
+		chmodSync(file, 0o640);
+		const inode = statSync(file).ino;
+		await install({ edits: [edits[0] as KeyedEdit] });
+		expect(statSync(file).ino).not.toBe(inode);
+		expect(statSync(file).mode & 0o777).toBe(0o640);
+		expect(Object.keys(snapshot(root)).filter((path) => path.endsWith(".tmp"))).toEqual([]);
 	});
 
 	test("an install that passes no edits leaves recorded ones alone, an empty list removes them", async () => {

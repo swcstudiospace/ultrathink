@@ -10,19 +10,12 @@ import { resolveAuthHeader } from "../mcp/oauth.ts";
 import { storePath as defaultStorePath } from "../mcp/store.ts";
 import type { ProgressSink } from "../host/progress.ts";
 import type { ThoughtGraph } from "../think/types.ts";
-import { createTracking } from "./create.ts";
+import { abortableSleep } from "../resilience/sleep.ts";
+import { createTracking, platformTimers, type TimerPort } from "./create.ts";
 import type { TrackingRefs, TrackPlan } from "./types.ts";
 
-/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
-type TimerPort = {
-	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
-	clearTimeout(handle: NodeJS.Timeout | undefined): void;
-};
-
-const platformTimers: TimerPort = {
-	setTimeout: (fn, ms) => setTimeout(fn, ms),
-	clearTimeout: (handle) => clearTimeout(handle),
-};
+/** A Notion data source id: a UUID, dashed or not. Any other value never reaches a Notion query. */
+const NOTION_DATA_SOURCE_ID = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
 
 export type Tracker = (input: {
 	plan: TrackPlan;
@@ -63,9 +56,13 @@ export function createGatewayTracker(
 	} = {},
 ): Tracker | undefined {
 	const linearTeam = config.linear.team.trim();
-	const notionDataSource = config.notion.dataSourceUrl.trim().replace(/^collection:\/\//, "");
 	const timers = deps.timers ?? platformTimers;
 	const log = deps.log ?? (() => undefined);
+	const dataSource = config.notion.dataSourceUrl.trim().replace(/^collection:\/\//, "");
+	// The id is interpolated into the Notion query, so a value that is not a UUID is refused here, before any Notion call.
+	const notionDataSource = NOTION_DATA_SOURCE_ID.test(dataSource) ? dataSource : "";
+	if (dataSource !== "" && notionDataSource === "")
+		log("tracker: notion.dataSourceUrl is not a Notion data source id; Notion tracking is off");
 	if (!linearTeam && !notionDataSource) return undefined;
 	return async ({ plan, graph, existing, degradedNodes, signal, progress, onRef }) => {
 		if (signal?.aborted) return undefined;
@@ -74,10 +71,14 @@ export function createGatewayTracker(
 		// Credential resolution can wait on the store lock and a token refresh; bound it by the
 		// budget (none when `track.budgetMs` is 0) and the caller's signal so a set budget is never exceeded.
 		const stop = Promise.withResolvers<"stop">();
+		// Ending the wait also ends every credential step still in flight: no lock polls, no token refresh afterwards.
+		const lookups = new AbortController();
 		const budgetMs = config.track.budgetMs;
-		const timer =
-			budgetMs > 0 ? timers.setTimeout(() => stop.resolve("stop"), budgetMs) : undefined;
-		const onAbort = () => stop.resolve("stop");
+		const onAbort = () => {
+			stop.resolve("stop");
+			lookups.abort();
+		};
+		const timer = budgetMs > 0 ? timers.setTimeout(onAbort, budgetMs) : undefined;
 		// Both abort listeners are named so the finally removes them: a long-lived signal must not collect one per call.
 		const closeClients = () => {
 			for (const client of clients) client.close();
@@ -85,8 +86,18 @@ export function createGatewayTracker(
 		signal?.addEventListener("abort", onAbort, { once: true });
 		signal?.addEventListener("abort", closeClients, { once: true });
 		const startedAt = Date.now();
+		// Only the credential lookups get these seams: their token requests and lock waits end with the wait above.
+		const authDeps = {
+			storePath: clientDeps.storePath,
+			fetch: ((input: string | URL | Request, init?: RequestInit) =>
+				(deps.fetch ?? fetch)(input, {
+					...init,
+					signal: init?.signal ? AbortSignal.any([init.signal, lookups.signal]) : lookups.signal,
+				})) as typeof fetch,
+			sleep: (ms: number) => abortableSleep(ms, lookups.signal),
+		};
 		const lookup = (provider: "linear" | "notion"): Promise<Lookup> =>
-			resolveAuthHeader(provider, clientDeps).then(
+			resolveAuthHeader(provider, authDeps).then(
 				(header) => ({ header }),
 				(error: unknown) => ({ header: undefined, error: lookupError(error) }),
 			);

@@ -302,13 +302,47 @@ export function armSkipOnce(dir: string, sessionId: string): void {
 	);
 }
 
-/** Clears the session's armed skip; an already clear session is left as it is. */
-export function clearSkipOnce(dir: string, sessionId: string): void {
+/**
+ * Clears the session's armed skip. With the `stamp` of the flag the caller consumed, only that flag is removed: a flag
+ * armed since is a new file and stays. The check and the delete run under the session record lock armSkipOnce takes.
+ * An already clear session is left as it is.
+ */
+export function clearSkipOnce(dir: string, sessionId: string, stamp?: SkipOnceStamp): void {
+	withFileLock(
+		sessionPath(dir, sessionId),
+		() => {
+			const current = readSkipOnceStamp(dir, sessionId);
+			if (current === undefined) return;
+			if (stamp !== undefined && !sameSkipOnce(stamp, current)) return;
+			try {
+				unlinkSync(skipOncePath(dir, sessionId));
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+		},
+		{ createParent: true },
+	);
+}
+
+/** Identity of an armed flag file. Arming writes a new file over the old one, so a different identity is a different arm. */
+export interface SkipOnceStamp {
+	dev: number;
+	ino: number;
+	mtimeMs: number;
+}
+
+/** The identity of the session's armed flag as it is now, or undefined when no flag is armed. */
+export function readSkipOnceStamp(dir: string, sessionId: string): SkipOnceStamp | undefined {
 	try {
-		unlinkSync(skipOncePath(dir, sessionId));
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		const flag = statSync(skipOncePath(dir, sessionId));
+		return { dev: flag.dev, ino: flag.ino, mtimeMs: flag.mtimeMs };
+	} catch {
+		return undefined;
 	}
+}
+
+function sameSkipOnce(a: SkipOnceStamp, b: SkipOnceStamp): boolean {
+	return a.dev === b.dev && a.ino === b.ino && a.mtimeMs === b.mtimeMs;
 }
 
 /** `engineFailover` is only ever a string; a hand-edited or corrupt record loses a non-string value. */
@@ -368,8 +402,9 @@ export function lastLockHeld(lockPath: string): boolean {
 /**
  * Exclusive lock for `last.json`. A busy lock does not run `body`: replacing the current plan is worse than
  * leaving the previous copy, so this does not degrade to an unlocked write the way `withFileLock` does.
- * Returns false when the lock cannot be taken within 3 s of wall-clock time. A dead pid is reclaimed immediately and
- * an empty lock after 5s; a live pid stays protected regardless of the lock's age.
+ * Returns false when the lock cannot be taken within 3 s of wall-clock time; any other failure to take it throws, so a
+ * caller can tell contention from a broken lock directory. A dead pid is reclaimed immediately and an empty lock after
+ * 5s; a live pid stays protected regardless of the lock's age.
  */
 export function withLastLock(
 	lastPath: string,
@@ -400,8 +435,11 @@ export function withLastLock(
 					throw error;
 				}
 			});
-		} catch {
-			return false;
+		} catch (error) {
+			// Only a contended guard means "not acquired"; other failures (e.g. an unwritable directory) are the caller's to report.
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "EEXIST" || code === "ENOTEMPTY") return false;
+			throw error;
 		}
 		if (fd !== undefined) break;
 		waiting = now() < deadline;

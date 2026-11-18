@@ -46,12 +46,12 @@ function trackingMap<T>(entries: Readonly<Record<string, T>> | undefined): Recor
 }
 
 /** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
-type TimerPort = {
+export type TimerPort = {
 	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
 	clearTimeout(handle: NodeJS.Timeout | undefined): void;
 };
 
-const platformTimers: TimerPort = {
+export const platformTimers: TimerPort = {
 	setTimeout: (fn, ms) => setTimeout(fn, ms),
 	clearTimeout: (handle) => clearTimeout(handle),
 };
@@ -609,38 +609,67 @@ interface LinearRow {
 	issue: Record<string, unknown>;
 }
 
-/** Every Linear issue that carries this graph's description footer. A failure is the caller's to record. */
+/** Pages one Linear lookup may read. A tracker that keeps reporting more pages fails the lookup rather than looping. */
+const LINEAR_LOOKUP_MAX_PAGES = 20;
+
+/** The cursor of the page after this one when the tracker says more follow; undefined on the last page. */
+function nextCursor(result: unknown): string | undefined {
+	let value = result;
+	if (typeof value === "string") {
+		try {
+			value = JSON.parse(value);
+		} catch {
+			return undefined;
+		}
+	}
+	const record = asRecord(value);
+	if (record?.hasNextPage !== true) return undefined;
+	const cursor = nonEmpty(record.cursor);
+	if (cursor === undefined) throw new Error("linear list_issues: hasNextPage without a cursor");
+	return cursor;
+}
+
+/** Every Linear issue that carries this graph's description footer, read page by page. A failure is the caller's to record. */
 async function lookupLinear(
 	plan: TrackPlan,
 	linear: ToolCaller,
 	signal: AbortSignal,
 ): Promise<LinearRow[]> {
-	const result = await linear.call(
-		"list_issues",
-		{ query: `ultrathink graph ${plan.graphId}`, limit: 250 },
-		signal,
-	);
 	const graphPattern = plan.graphId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const re = new RegExp(
 		`ultrathink graph ${graphPattern} · node (\\S+?)(?: · step (\\d+))?\\s*$`,
 		"m",
 	);
 	const rows: LinearRow[] = [];
-	for (const issue of listEntries(result)) {
-		const match = nonEmpty(issue.description)?.match(re);
-		if (!match) continue;
-		const title = nonEmpty(issue.title) ?? "";
-		const ref = extractIssueRef(issue, title);
-		if (!ref) continue;
-		rows.push({
-			nodeId: match[1] as string,
-			step: match[2] === undefined ? undefined : Number(match[2]),
-			title,
-			ref,
-			issue,
-		});
+	let cursor: string | undefined;
+	for (let page = 0; page < LINEAR_LOOKUP_MAX_PAGES; page++) {
+		const result = await linear.call(
+			"list_issues",
+			{
+				query: `ultrathink graph ${plan.graphId}`,
+				limit: 250,
+				...(cursor === undefined ? {} : { cursor }),
+			},
+			signal,
+		);
+		for (const issue of listEntries(result)) {
+			const match = nonEmpty(issue.description)?.match(re);
+			if (!match) continue;
+			const title = nonEmpty(issue.title) ?? "";
+			const ref = extractIssueRef(issue, title);
+			if (!ref) continue;
+			rows.push({
+				nodeId: match[1] as string,
+				step: match[2] === undefined ? undefined : Number(match[2]),
+				title,
+				ref,
+				issue,
+			});
+		}
+		cursor = nextCursor(result);
+		if (cursor === undefined) return rows;
 	}
-	return rows;
+	throw new Error(`linear list_issues: more than ${LINEAR_LOOKUP_MAX_PAGES} pages`);
 }
 
 /**

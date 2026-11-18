@@ -78,7 +78,29 @@ function parseObject(text: string | undefined, file: string): Record<string, unk
 		throw new Error(`${file} is not plain JSON (comments are not supported): ${reason}`);
 	}
 	if (!isRecord(parsed)) throw new Error(`${file} does not hold a JSON object`);
+	assertExactNumbers(parsed, file);
 	return parsed;
+}
+
+/**
+ * Throws when a number would not survive JSON.parse then JSON.stringify unchanged: NaN and the infinities serialize as
+ * null, and an integer past the safe range keeps only some of its digits. Decimals with more than 17 significant digits
+ * are still rounded silently; catching those needs a check of the source text.
+ */
+function assertExactNumbers(value: unknown, file: string): void {
+	if (typeof value === "number") {
+		if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
+			throw new Error(
+				`${file}: refusing to rewrite the number ${value}, which JSON cannot round-trip exactly`,
+			);
+		}
+		return;
+	}
+	if (Array.isArray(value)) {
+		for (const item of value) assertExactNumbers(item, file);
+	} else if (isRecord(value)) {
+		for (const item of Object.values(value)) assertExactNumbers(item, file);
+	}
 }
 
 function serialize(root: Record<string, unknown>, original: string | undefined): string {
@@ -98,6 +120,7 @@ function applyJson(
 		throw new Error(`${file}: the JSON edit key must be a non-empty path without __proto__`);
 	}
 	const root = parseObject(text, file);
+	assertExactNumbers(edit.value, file);
 	let node = root;
 	let creating = false;
 	let existing = 0;

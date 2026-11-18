@@ -160,6 +160,26 @@ describe("ensureFreshGrokAuth", () => {
 		expect(calls[1]?.env.UT_TEST_PLANTED).toBeUndefined();
 	});
 
+	test("reads and refreshes the home the given env names, not process.env's GROK_HOME", async () => {
+		const homeA = tempHome(fixture({ expires_at: PAST }));
+		const homeB = tempHome(fixture({ expires_at: PAST }));
+		const { spawn, calls } = fakeSpawn(homeA);
+		const saved = process.env.GROK_HOME;
+		process.env.GROK_HOME = homeB;
+		try {
+			const auth = await ensureFreshGrokAuth({
+				env: { GROK_HOME: homeA, PATH: "/usr/bin" },
+				spawn,
+			});
+			expect(calls.map((call) => call.env.GROK_HOME)).toEqual([homeA]);
+			expect(auth?.token).toBe(`${TOKEN}x`);
+		} finally {
+			if (saved === undefined) delete process.env.GROK_HOME;
+			else process.env.GROK_HOME = saved;
+		}
+		expect(readGrokAuth(homeB)?.token).toBe(TOKEN);
+	});
+
 	test("the refresh child gets HOME and PATH but no unrelated provider key", async () => {
 		const home = tempHome(fixture({ expires_at: PAST }));
 		const { spawn, calls } = fakeSpawn(home);

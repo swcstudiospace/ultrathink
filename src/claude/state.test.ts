@@ -977,6 +977,13 @@ describe("last.json refresh waits by wall clock", () => {
 		expect(clock).toBeGreaterThanOrEqual(3_000);
 		expect(existsSync(last)).toBe(false);
 	});
+
+	test("a guard that cannot be created is an error, not a busy lock", () => {
+		const dir = tempDir();
+		mkdirSync(dir, { recursive: true });
+		// The lock's directory does not exist: the guard cannot be made, which is not contention.
+		expect(() => withLastLock(join(dir, "missing", "last.json"), () => undefined)).toThrow();
+	});
 });
 
 describe("writeFileAtomic orphan temp sweep", () => {

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { randomUUID } from "node:crypto";
 import type { Clarification } from "../hitl/types.ts";
+import { clip } from "../resilience/limits.ts";
 import { MAX_STEPS, type ThoughtGraph, type ThoughtNode } from "../think/types.ts";
 import type { UpliftResult } from "../types.ts";
 import type {
@@ -23,13 +24,6 @@ export const MAX_UPLIFTED_PROMPT_CHARS = 1900;
 
 const TRUNCATION_MARKER = "\n<!-- truncated — full spec in the session's .xml file -->";
 
-/** Truncates the uplifted XML for the Notion `Uplifted Prompt` property; the full XML is always persisted to sessions/<id>.xml. */
-function truncateUpliftedPrompt(xml: string): string {
-	if (xml.length <= MAX_UPLIFTED_PROMPT_CHARS) return xml;
-	const cut = MAX_UPLIFTED_PROMPT_CHARS - TRUNCATION_MARKER.length;
-	return `${xml.slice(0, cut)}${TRUNCATION_MARKER}`;
-}
-
 export function generateGraphId(now: () => number = Date.now): string {
 	return `ut-${now().toString(36)}-${randomUUID().slice(0, 8)}`;
 }
@@ -37,7 +31,7 @@ export function generateGraphId(now: () => number = Date.now): string {
 function taskTitle(original: string): string {
 	const trimmed = original.trim().replace(/\s+/g, " ");
 	if (!trimmed) return "Untitled task";
-	return trimmed.length > MAX_TITLE_CHARS ? `${trimmed.slice(0, MAX_TITLE_CHARS - 3)}...` : trimmed;
+	return clip(trimmed, MAX_TITLE_CHARS, "...").text;
 }
 
 function nodeConclusion(node: ThoughtNode): string {
@@ -121,10 +115,9 @@ function nodeSteps(node: ThoughtNode): string[] {
 
 function stepTitle(step: number, text: string): string {
 	const oneLine = text.replace(/\s+/g, " ").trim();
-	const snippet =
-		oneLine.length > MAX_STEP_TITLE_CHARS
-			? `${oneLine.slice(0, MAX_STEP_TITLE_CHARS - 1).trimEnd()}…`
-			: oneLine;
+	const cut = clip(oneLine, MAX_STEP_TITLE_CHARS, "…");
+	// The cut head drops trailing spaces before the ellipsis, as it always has.
+	const snippet = cut.clipped ? `${cut.text.slice(0, -1).trimEnd()}…` : oneLine;
 	return `Step ${step}: ${snippet}`;
 }
 
@@ -172,7 +165,8 @@ export function buildTrackPlan(input: {
 		graphId,
 		item: taskTitle(input.uplift.original),
 		description: input.uplift.original.trim(),
-		upliftedPrompt: truncateUpliftedPrompt(input.uplift.xml),
+		// Notion's Uplifted Prompt property is capped; the full XML is always persisted to sessions/<id>.xml.
+		upliftedPrompt: clip(input.uplift.xml, MAX_UPLIFTED_PROMPT_CHARS, TRUNCATION_MARKER).text,
 		agent: input.agent ?? "claude-code",
 		status: "Planning",
 		linearState: "Todo",

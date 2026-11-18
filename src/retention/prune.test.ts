@@ -352,6 +352,38 @@ describe("pruneSessions", () => {
 		expect(readSkipOnce(state, "race")).toBe(false);
 	});
 
+	test("a session lock that cannot be taken for bookkeeping is recorded as an error and the session is kept", () => {
+		const state = makeState();
+		seed(state, "stuck", 60);
+		// A plain file where the lock's guard directory belongs makes the lock bookkeeping fail; that is not a timeout.
+		writeFileSync(join(state, "sessions", "stuck.json.lock.guard"), "");
+		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now });
+		expect(result.pruned).toEqual([]);
+		expect(result.kept).toBe(1);
+		expect(result.errors).toHaveLength(1);
+		expect(result.errors[0]?.startsWith("stuck.json: ")).toBe(true);
+		expect(sessionFiles(state)).toContain("stuck.json");
+		expect(sessionFiles(state)).toContain("stuck.xml");
+	});
+
+	test("a session lock held by a live writer keeps the session without recording an error", () => {
+		const state = makeState();
+		seed(state, "busy", 60);
+		const lock = join(state, "sessions", "busy.json.lock");
+		const holder = {
+			pid: process.pid,
+			startTime: processIdentity(process.pid) ?? "",
+			token: "held",
+		};
+		writeFileSync(lock, JSON.stringify(holder));
+		const result = pruneSessions({ stateDir: state, olderThanMs: 30 * DAY, now });
+		expect(result.pruned).toEqual([]);
+		expect(result.kept).toBe(1);
+		expect(result.errors).toEqual([]);
+		expect(sessionFiles(state)).toContain("busy.json");
+		expect(existsSync(lock)).toBe(true);
+	});
+
 	test("never follows or removes a symlink", () => {
 		const state = makeState();
 		const outside = makeState();
