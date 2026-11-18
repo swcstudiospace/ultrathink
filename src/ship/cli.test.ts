@@ -11,7 +11,7 @@ import type { DecisionsConfig, DecisionsErrorKind } from "../decisions/types.ts"
 import { engineForSessionModel } from "../host/engine.ts";
 import { hangingFetch, JEV, recordingFetch } from "../test.helpers.ts";
 import { fileStore } from "../workflow/phase-loop-store.ts";
-import { attemptPhase, type PhaseName } from "../workflow/phase-loop.ts";
+import { attemptPhase, open, recordAudit, type PhaseName } from "../workflow/phase-loop.ts";
 import type { Github, LocalBranchDelete, ReviewThreads, ReviewThreadsOptions } from "./github.ts";
 import { assessDone } from "./assess.ts";
 import { judgeSessionModel, runShip } from "./cli.ts";
@@ -214,6 +214,25 @@ function seedPhases(phaseLoopDir: string, phases: PhaseName[]): void {
 
 const ship = (cmd: string, d: ShipDeps) => runShip([cmd, "--state", statePath, "--cwd", dir], d);
 
+/**
+ * Records the review stage's passing audit for the fixture head (`abc`) in the session's phase record, the record a
+ * passing `review` writes (`review:<sha>`). Seeds the phase loop to Verify first so the close can be accepted.
+ */
+function recordPassingAudit(): void {
+	const phaseLoopDir = join(dir, "phase-loop");
+	seedPhases(phaseLoopDir, ["Discuss", "Plan", "Execute", "Verify"]);
+	recordAudit(
+		"s",
+		{
+			id: "review:abc",
+			kind: "validation",
+			result: "pass",
+			recordedAt: new Date(clock).toISOString(),
+		},
+		fileStore(phaseLoopDir),
+	);
+}
+
 describe("state", () => {
 	test("writeShip preserves other record fields and merges patches", () => {
 		writeShip(statePath, { pr: PR }, 5);
@@ -309,6 +328,7 @@ describe("runShip", () => {
 	});
 
 	test("merge with an unwritable state file reports the PR merged and the state write failed", async () => {
+		recordPassingAudit();
 		writeShip(statePath, { pr: PR, phase: "pr-open", rounds: [PASSED] }, 5);
 		const unwritable = join(dir, `${"s".repeat(245)}.json`);
 		writeFileSync(unwritable, readFileSync(statePath));
@@ -565,6 +585,7 @@ describe("runShip", () => {
 	});
 
 	test("a passing review that waits on CI or mergeability is not a failed round, even at maxRounds", async () => {
+		recordPassingAudit();
 		const old: ReviewResult = {
 			source: "cli",
 			status: "completed",
@@ -687,6 +708,7 @@ describe("runShip", () => {
 	});
 
 	test("merge merges, syncs base, marks merged", async () => {
+		recordPassingAudit();
 		writeShip(statePath, {
 			pr: PR,
 			rounds: [
@@ -700,6 +722,7 @@ describe("runShip", () => {
 	});
 
 	test("run chains all steps to merge", async () => {
+		recordPassingAudit();
 		const out = await ship("run", deps());
 		expect(out.output.next).toBe("run ultrathink-sync");
 		expect(calls).toEqual([
@@ -824,6 +847,7 @@ describe("runShip", () => {
 	});
 
 	test("a reused PR round re-reads threads: a resolved finding clears; a failed lookup is not ready and persists nothing", async () => {
+		recordPassingAudit();
 		const open = { body: "intended behavior", path: "a.ts", threadId: "T1" };
 		const round: ReviewResult = {
 			source: "pr",
@@ -858,6 +882,7 @@ describe("runShip", () => {
 	});
 
 	test("a clean stored PR round does not pass review or merge when the threads cannot be read", async () => {
+		recordPassingAudit();
 		const round: ReviewResult = {
 			source: "pr",
 			status: "completed",
@@ -886,6 +911,7 @@ describe("runShip", () => {
 	});
 
 	test("failed fresh thread scans do not spend review retries or restart a completed review", async () => {
+		recordPassingAudit();
 		writeShip(statePath, {
 			pr: PR,
 			phase: "pr-open",
@@ -1247,6 +1273,7 @@ describe("runShip", () => {
 	});
 
 	test("merge substitutes an allowed method", async () => {
+		recordPassingAudit();
 		writeShip(statePath, {
 			pr: PR,
 			rounds: [
@@ -1264,6 +1291,7 @@ describe("runShip", () => {
 		});
 
 		test("deleted: the merged head is passed and the remote branch is left alone", async () => {
+			recordPassingAudit();
 			const out = await ship("merge", deps({ config: { deleteBranch: false } }));
 			expect(out.output).toMatchObject({ merged: true, localBranch: "deleted" });
 			expect(localBranchCalls).toEqual([{ branch: "feat", headSha: "abc" }]);
@@ -1271,6 +1299,7 @@ describe("runShip", () => {
 		});
 
 		test("kept: the reason is recorded and the merge still succeeds", async () => {
+			recordPassingAudit();
 			const out = await ship(
 				"merge",
 				deps({
@@ -1286,6 +1315,7 @@ describe("runShip", () => {
 		});
 
 		test("an error is recorded without failing the merge", async () => {
+			recordPassingAudit();
 			const out = await ship(
 				"merge",
 				deps({
@@ -1301,6 +1331,7 @@ describe("runShip", () => {
 		});
 
 		test("deleteBranch true keeps the existing path and never asks for a local delete", async () => {
+			recordPassingAudit();
 			const out = await ship("merge", deps());
 			expect(out.output).not.toHaveProperty("localBranch");
 			expect(localBranchCalls).toEqual([]);
@@ -1315,6 +1346,7 @@ describe("runShip", () => {
 		});
 
 		test("CI pending on the first polls, then passing: merges within one call", async () => {
+			recordPassingAudit();
 			const out = await ship(
 				"merge",
 				deps({ statuses: [{ checks: "pending" }, { checks: "pending" }] }),
@@ -1327,6 +1359,7 @@ describe("runShip", () => {
 		});
 
 		test("a call that runs out of time waits without blocking; past mergeTimeoutMs on the head it blocks with one comment", async () => {
+			recordPassingAudit();
 			const pending = deps({ status: { checks: "pending" } });
 			const first = await ship("merge", pending);
 			expect(first.output).toMatchObject({
@@ -1369,6 +1402,7 @@ describe("runShip", () => {
 		});
 
 		test("a transient GitHub merge error is retried and merges in the same call", async () => {
+			recordPassingAudit();
 			const out = await ship(
 				"merge",
 				deps({ merges: [{ ok: false, error: "GraphQL: something went wrong" }] }),
@@ -1386,6 +1420,7 @@ describe("runShip", () => {
 		});
 
 		test("an access denial blocks with one comment", async () => {
+			recordPassingAudit();
 			const error = "GraphQL: Resource not accessible by integration (mergePullRequest)";
 			const out = await ship("merge", deps({ merges: [{ ok: false, error }] }));
 			expect(out.output).toMatchObject({
@@ -1398,6 +1433,7 @@ describe("runShip", () => {
 		});
 
 		test("a GitHub refusal only a human can clear blocks with one comment", async () => {
+			recordPassingAudit();
 			const error = "At least 1 approving review is required by reviewers with write access.";
 			const out = await ship("merge", deps({ merges: [{ ok: false, error }] }));
 			const reason = `merge refused by GitHub: ${error}`;
@@ -1415,6 +1451,7 @@ describe("runShip", () => {
 		});
 
 		test("a GitHub merge conflict goes back to the agent without blocking", async () => {
+			recordPassingAudit();
 			const error = "Pull Request has merge conflicts";
 			const out = await ship("merge", deps({ merges: [{ ok: false, error }] }));
 			expect(out.output).toMatchObject({
@@ -1430,6 +1467,7 @@ describe("runShip", () => {
 		});
 
 		test("merge conflicts and failing CI go back to the agent without merging", async () => {
+			recordPassingAudit();
 			const cases: [Partial<PrStatus>, string][] = [
 				[
 					{ mergeable: "CONFLICTING" },
@@ -1448,6 +1486,7 @@ describe("runShip", () => {
 		});
 
 		test("a base branch policy refusal is retried until mergeTimeoutMs, then blocks with one comment", async () => {
+			recordPassingAudit();
 			const error =
 				"X Pull request #7 is not mergeable: the base branch policy prohibits the merge.";
 			const refused = deps({ merges: Array.from({ length: 20 }, () => ({ ok: false, error })) });
@@ -1469,6 +1508,7 @@ describe("runShip", () => {
 		});
 
 		test("network and rate-limit errors are retried, not blocked", async () => {
+			recordPassingAudit();
 			for (const error of [
 				'Post "https://api.github.com/graphql": http2: server sent GOAWAY and closed the connection',
 				"use of closed network connection",
@@ -1484,6 +1524,7 @@ describe("runShip", () => {
 		});
 
 		test("an unreadable PR status never counts against a stale waiting head", async () => {
+			recordPassingAudit();
 			writeShip(statePath, { waiting: { headSha: "old", since: 0 } });
 			clock = 10 * CONFIG.mergeTimeoutMs;
 			const out = await ship("merge", deps({ statuses: [null] }));
@@ -1492,6 +1533,7 @@ describe("runShip", () => {
 		});
 
 		test("after a timeout block, a new review and merge start a fresh bound instead of blocking again", async () => {
+			recordPassingAudit();
 			const pending = deps({ status: { checks: "pending" } });
 			await ship("merge", pending);
 			clock += CONFIG.mergeTimeoutMs;
@@ -1521,6 +1563,7 @@ describe("runShip", () => {
 		});
 
 		test("run merges once CI passes when the review passed while CI was pending", async () => {
+			recordPassingAudit();
 			writeShip(statePath, { pr: undefined, rounds: [], phase: "not-done" });
 			const out = await ship(
 				"run",
@@ -1922,6 +1965,7 @@ describe("merge approval for the Claude reviewer", () => {
 	});
 
 	test("with --approve, a passing Claude review merges", async () => {
+		recordPassingAudit();
 		writeShip(statePath, { pr: PR, phase: "ready", rounds: [passed()] });
 		const out = await merge(deps({ config: { reviewer: "claude" } }), "--approve");
 		expect(out.output).toMatchObject({ ok: true, merged: true });
@@ -1929,6 +1973,7 @@ describe("merge approval for the Claude reviewer", () => {
 	});
 
 	test("Greptile reviewer merges a passing review without any approval flag", async () => {
+		recordPassingAudit();
 		writeShip(statePath, { pr: PR, phase: "ready", rounds: [passed()] });
 		const out = await merge(deps({ config: { reviewer: "greptile" } }));
 		expect(out.output).toMatchObject({ ok: true, merged: true });
@@ -1943,6 +1988,8 @@ describe("merge phase gate", () => {
 		return outcome.status === "found" ? outcome.record : undefined;
 	};
 	const mergeCalls = () => calls.filter((call) => call.startsWith("merge:"));
+	/** The fake clock's reading before any sleep: the time every audit, override and resolution is recorded at. */
+	const CLOCK_AT = "1970-01-01T00:00:01.000Z";
 	/** A merge whose one GitHub call fails transiently, with no poll budget left: confirmed, not merged. */
 	const transientMerge = () =>
 		ship(
@@ -1952,13 +1999,20 @@ describe("merge phase gate", () => {
 				merges: [{ ok: false, error: "GraphQL: something went wrong" }],
 			}),
 		);
+	/** The review stage on the stored head, which records that head's audit in the phase record. */
+	const reviewStage = (d: ShipDeps = deps()) => ship("review", d);
+	/** Runs a ship command on the session's state file with extra flags. */
+	const withFlags = (command: string, d: ShipDeps, ...flags: string[]) =>
+		runShip([command, "--state", statePath, "--cwd", dir, ...flags], d);
 
 	beforeEach(() => {
 		writeShip(statePath, { pr: PR, phase: "pr-open", rounds: [PASSED] });
 	});
 
 	test("without a recorded Verify the merge is refused and GitHub is not asked to merge", async () => {
-		const out = await ship("merge", deps({ phases: ["Discuss", "Plan", "Execute"] }));
+		const current = deps({ phases: ["Discuss", "Plan", "Execute"] });
+		await reviewStage(current);
+		const out = await ship("merge", current);
 		expect(out.output).toMatchObject({ ok: false, merged: false });
 		expect(String(out.output.reason)).toContain("Verify is not the last recorded phase");
 		expect(mergeCalls()).toEqual([]);
@@ -1966,7 +2020,54 @@ describe("merge phase gate", () => {
 		expect(phaseRecord()?.closedBy).toBeUndefined();
 	});
 
+	test("a merge is refused until the review stage has recorded an audit for the head", async () => {
+		const out = await ship("merge", deps());
+		expect(out.output).toMatchObject({
+			ok: false,
+			merged: false,
+			reason: "no recorded audit for review:abc",
+		});
+		expect(String(out.output.next)).toContain("run review again");
+		expect(mergeCalls()).toEqual([]);
+		expect(phaseRecord()?.audits).toBeUndefined();
+		expect(phaseRecord()?.closedBy).toBeUndefined();
+	});
+
+	test("the review stage records a passing audit for the head, and the merge cites it", async () => {
+		const review = await reviewStage();
+		expect(review.output).toMatchObject({ ok: true, status: "completed" });
+		expect(phaseRecord()?.audits).toEqual([
+			{ id: "review:abc", kind: "validation", result: "pass", recordedAt: CLOCK_AT },
+		]);
+		const out = await ship("merge", deps());
+		expect(out.output).toMatchObject({ ok: true, merged: true });
+		expect(phaseRecord()?.closedBy).toEqual({
+			kind: "validation",
+			recordId: "review:abc",
+			recordedAt: CLOCK_AT,
+		});
+	});
+
+	test("a review whose audit cannot be recorded reports it, and the merge stays refused", async () => {
+		const review = await reviewStage({
+			...deps(),
+			phaseLoopDir: join(dir, "missing", "phase-loop"),
+		});
+		expect(review.output).toMatchObject({
+			ok: false,
+			error: "phase record lock not taken; nothing recorded",
+		});
+		const out = await ship("merge", deps());
+		expect(out.output).toMatchObject({
+			ok: false,
+			merged: false,
+			reason: "no recorded audit for review:abc",
+		});
+		expect(mergeCalls()).toEqual([]);
+	});
+
 	test("with a recorded Verify and a passing review the merge closes the phase on the review's head", async () => {
+		await reviewStage();
 		const out = await ship("merge", deps());
 		expect(out.output).toMatchObject({ ok: true, merged: true });
 		expect(mergeCalls()).toEqual(["merge:squash:abc"]);
@@ -1976,7 +2077,53 @@ describe("merge phase gate", () => {
 		});
 	});
 
+	test("an owner override with a reason lets the merge proceed without an audit, and the record keeps the reason", async () => {
+		const out = await withFlags(
+			"merge",
+			deps(),
+			"--owner",
+			"alice",
+			"--owner-override",
+			"GitHub audit is down",
+		);
+		expect(out.output).toMatchObject({ ok: true, merged: true });
+		expect(mergeCalls()).toEqual(["merge:squash:abc"]);
+		expect(phaseRecord()).toMatchObject({
+			closedBy: { kind: "override", recordId: "override:abc", recordedAt: CLOCK_AT },
+			overrides: [
+				{
+					decisionId: "override:abc",
+					owner: "alice",
+					decidedAt: CLOCK_AT,
+					reason: "GitHub audit is down",
+				},
+			],
+		});
+		expect(phaseRecord()?.audits).toBeUndefined();
+	});
+
+	test("an empty owner-override reason, or one without --owner, is refused: nothing is merged or recorded", async () => {
+		for (const reason of ["", "   "]) {
+			const out = await withFlags("merge", deps(), "--owner", "alice", "--owner-override", reason);
+			expect(out.code).toBe(2);
+			expect(out.output).toMatchObject({
+				ok: false,
+				error: "--owner-override needs a non-empty reason",
+			});
+		}
+		const unowned = await withFlags("merge", deps(), "--owner-override", "GitHub audit is down");
+		expect(unowned.code).toBe(2);
+		expect(unowned.output).toMatchObject({
+			ok: false,
+			error: "--owner-override needs --owner <name>",
+		});
+		expect(mergeCalls()).toEqual([]);
+		expect(phaseRecord()?.closedBy).toBeUndefined();
+		expect(phaseRecord()?.overrides).toBeUndefined();
+	});
+
 	test("a rerun after a transient GitHub failure merges without confirming again", async () => {
+		await reviewStage();
 		const first = await transientMerge();
 		expect(first.output).toMatchObject({ ok: false, merged: false, waiting: true });
 		const rerun = await ship("merge", deps());
@@ -1986,6 +2133,7 @@ describe("merge phase gate", () => {
 	});
 
 	test("a head that moves after the confirmation is blocked for a human and is not merged", async () => {
+		await reviewStage();
 		await transientMerge();
 		writeShip(statePath, { rounds: [{ ...PASSED, headSha: "def" }] });
 		const out = await ship("merge", deps({ status: { headSha: "def" } }));
@@ -2021,5 +2169,92 @@ describe("merge phase gate", () => {
 		expect(mergeCalls()).toEqual([]);
 		expect(phaseRecord()?.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify"]);
 		expect(phaseRecord()?.closedBy).toBeUndefined();
+	});
+
+	test("ship resolve clears the phase's open HTIL entry with the owner's evidence, and the merge then proceeds", async () => {
+		await reviewStage();
+		expect(
+			open("s", { id: "verification:01-core", owner: "human" }, fileStore(phaseDir())).accepted,
+		).toBe(true);
+		const blocked = await ship("merge", deps());
+		expect(blocked.output).toMatchObject({
+			ok: false,
+			merged: false,
+			reason: "open HTIL entry verification:01-core",
+		});
+		expect(mergeCalls()).toEqual([]);
+		const resolved = await withFlags(
+			"resolve",
+			deps(),
+			"01-core",
+			"--owner",
+			"alice",
+			"--evidence",
+			"UAT passed",
+		);
+		expect(resolved.code).toBe(0);
+		expect(resolved.output).toMatchObject({
+			ok: true,
+			entryId: "verification:01-core",
+			resolvedBy: "alice",
+			resolvedAt: CLOCK_AT,
+		});
+		expect(phaseRecord()?.humanItems).toEqual([
+			{
+				id: "verification:01-core",
+				owner: "human",
+				state: "done",
+				evidenceId: "UAT passed",
+				resolvedBy: "alice",
+				resolvedAt: CLOCK_AT,
+			},
+		]);
+		const merged = await ship("merge", deps());
+		expect(merged.output).toMatchObject({ ok: true, merged: true });
+		expect(mergeCalls()).toEqual(["merge:squash:abc"]);
+	});
+
+	test("ship resolve refuses without evidence, and refuses a phase with no open entry; nothing is written", async () => {
+		const noEvidence = await withFlags("resolve", deps(), "01-core", "--owner", "alice");
+		expect(noEvidence.code).toBe(2);
+		expect(noEvidence.output).toMatchObject({
+			ok: false,
+			error: "resolve needs a non-empty --evidence <text>",
+		});
+		const none = await withFlags(
+			"resolve",
+			deps(),
+			"01-core",
+			"--owner",
+			"alice",
+			"--evidence",
+			"UAT passed",
+		);
+		expect(none.output).toMatchObject({ ok: false, entryId: "verification:01-core" });
+		expect(String(none.output.error)).toContain("does not exist");
+		expect(phaseRecord()?.humanItems).toEqual([]);
+		open("s", { id: "verification:01-core", owner: "human" }, fileStore(phaseDir()));
+		const once = await withFlags(
+			"resolve",
+			deps(),
+			"01-core",
+			"--owner",
+			"alice",
+			"--evidence",
+			"UAT passed",
+		);
+		expect(once.output).toMatchObject({ ok: true });
+		const again = await withFlags(
+			"resolve",
+			deps(),
+			"01-core",
+			"--owner",
+			"alice",
+			"--evidence",
+			"second look",
+		);
+		expect(again.output).toMatchObject({ ok: false });
+		expect(String(again.output.error)).toContain("is already done");
+		expect(phaseRecord()?.humanItems).toMatchObject([{ state: "done", evidenceId: "UAT passed" }]);
 	});
 });
