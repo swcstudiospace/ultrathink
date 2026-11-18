@@ -12,6 +12,7 @@
  */
 
 import * as nodeFs from "node:fs";
+import { platformTimers } from "../../../src/shared.ts";
 import { verifyAuditFile } from "./audit.ts";
 import { listSegments } from "./audit-segments.ts";
 import type { ScanReply } from "./audit-watch.ts";
@@ -125,9 +126,8 @@ export function createAuditVerifier(options: AuditVerifierOptions = {}): AuditVe
 	const workerUrl = options.workerUrl ?? new URL("./audit-verify.worker.ts", import.meta.url);
 	const deadlineMs = options.deadlineMs ?? DEFAULT_VERIFY_DEADLINE_MS;
 	const createWorker = options.createWorker ?? ((url: URL) => new Worker(url));
-	const setTimer = options.setTimer ?? ((run: () => void, ms: number) => setTimeout(run, ms));
-	const clearTimer =
-		options.clearTimer ?? ((handle: object) => clearTimeout(handle as NodeJS.Timeout));
+	const setTimer = options.setTimer ?? platformTimers.setTimeout;
+	const clearTimer = options.clearTimer ?? platformTimers.clearTimeout;
 	let worker: Worker | undefined;
 	let closed = false;
 	/** Settles the request in flight; undefined when none is in flight. */

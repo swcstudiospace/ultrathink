@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
+import { platformTimers } from "../../../src/shared.ts";
 import { createLogger, failureLabel, type Logger } from "./log.ts";
 
 const logger = createLogger();
@@ -163,9 +164,8 @@ export function createRuntimeProbe(options: RuntimeProbeOptions): RuntimeProbe {
 	}
 	if (typeof onSample !== "function")
 		throw new TypeError("createRuntimeProbe: onSample must be a function");
-	const setTimer = options.setTimer ?? ((run: () => void, ms: number) => setTimeout(run, ms));
-	const clearTimer =
-		options.clearTimer ?? ((handle: object) => clearTimeout(handle as NodeJS.Timeout));
+	const setTimer = options.setTimer ?? platformTimers.setTimeout;
+	const clearTimer = options.clearTimer ?? platformTimers.clearTimeout;
 	const now = options.now ?? (() => performance.now());
 	const memory = options.memory ?? (() => process.memoryUsage());
 	const uptime = options.uptime ?? (() => process.uptime());

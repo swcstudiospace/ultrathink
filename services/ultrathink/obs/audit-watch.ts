@@ -14,6 +14,8 @@
  * `stat` and `acknowledged` are expected not to throw. `scan` runs off the tick: it resolves later, and one scan is in flight at a time. A full scan due while one is in flight is owed to the next tick.
  */
 
+import { platformTimers } from "../../../src/shared.ts";
+
 /** Identity of the audit file as seen by `stat`. Any change to one field is a change to the file. */
 export interface Fingerprint {
 	readonly size: number;
@@ -86,12 +88,6 @@ const MIN_INTERVAL_MS = 100;
 const MAX_INTERVAL_MS = 1000;
 const DEFAULT_FULL_SCAN_TICKS = 60;
 
-function realSetTimer(run: () => void, intervalMs: number): object {
-	const timer = setInterval(run, intervalMs);
-	timer.unref();
-	return timer;
-}
-
 function sameFingerprint(a: Fingerprint | undefined, b: Fingerprint | undefined): boolean {
 	return (
 		a !== undefined &&
@@ -137,9 +133,8 @@ export function createAuditWatch(options: AuditWatchOptions): AuditWatch {
 	const fullScanEvery = options.fullScanEveryTicks ?? DEFAULT_FULL_SCAN_TICKS;
 	if (!Number.isInteger(fullScanEvery) || fullScanEvery < 1)
 		throw new RangeError("audit watch fullScanEveryTicks must be a positive integer");
-	const setTimer = options.setTimer ?? realSetTimer;
-	const clearTimer =
-		options.clearTimer ?? ((handle: object) => clearInterval(handle as NodeJS.Timeout));
+	const setTimer = options.setTimer ?? platformTimers.setInterval;
+	const clearTimer = options.clearTimer ?? platformTimers.clearInterval;
 
 	let ticks = 0;
 	/** Fingerprint of the file the last time its state was decided. A repeat of it means nothing has changed. */

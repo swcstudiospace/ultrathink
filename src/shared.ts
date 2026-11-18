@@ -92,3 +92,26 @@ export type TimerPort = {
 	setTimeout(fn: () => void, ms: number): unknown;
 	clearTimeout(handle: unknown): void;
 };
+
+/** A platform timer handle. `unref` exists on Node and Bun timers; injected handles may omit it. */
+export type TimerHandle = { unref?: () => unknown };
+
+/** Timer seam: one-shot and repeating timers. `clear*` takes any handle the seam returned. */
+export type TimerSeam = {
+	setTimeout(fn: () => void, ms: number): TimerHandle;
+	clearTimeout(handle: unknown): void;
+	setInterval(fn: () => void, ms: number): TimerHandle;
+	clearInterval(handle: unknown): void;
+};
+
+/** The platform timers. Repeating timers are unref'd, so they never keep the process alive. */
+export const platformTimers: TimerSeam = {
+	setTimeout: (fn, ms) => setTimeout(fn, ms),
+	clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
+	setInterval: (fn, ms) => {
+		const timer = setInterval(fn, ms);
+		timer.unref();
+		return timer;
+	},
+	clearInterval: (handle) => clearInterval(handle as NodeJS.Timeout),
+};
