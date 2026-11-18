@@ -58,7 +58,7 @@ Phases 101–108 (107 verified; 108 closed as accepted tech debt), 30 requiremen
 
 ## Active Milestone: v1.24 Phase lifecycle design and remaining-work decomposition
 
-Approved 2026-11-17; phase 109 complete; phases 110 and 111 deferred for owner verification (verification_deferred_human); phases 112 and 113 in gap closure. Requirements: `.planning/REQUIREMENTS.md`. Drafts: `.planning/v1.24-REQUIREMENTS-DRAFT.md`, `.planning/v1.24-ROADMAP-DRAFT.md`.
+Approved 2026-11-17; phase 109 complete; phases 110, 111 and 112 deferred for owner verification (verification_deferred_human); phase 113 in gap closure (PR #171). Requirements: `.planning/REQUIREMENTS.md`. Drafts: `.planning/v1.24-REQUIREMENTS-DRAFT.md`, `.planning/v1.24-ROADMAP-DRAFT.md`.
 
 ### Phase 109: Design the phase lifecycle
 
@@ -89,7 +89,7 @@ Status: Verified human_needed on 2026-11-18 at origin/main 99ce989. The three in
 
 ### Phase 112: Single guarded writer for STATE and ROADMAP
 
-Status: Gap closure in PR #170 (the contract now matches the guarded writer), pending re-verification. Criterion 1 is met by a four-process contention test. The gsd-core writer is out of repo and still needs the same contract.
+Status: Verified human_needed on 2026-11-18 at origin/main 6eedb14 (PR #170 merged). Criteria 1 and 2 are met in-repo: a four-process contention test, and a contract that matches the writer. Criterion 3, the writer in gsd-core, is out of repo and not counted. Deferred: verification_deferred_human, resume with `/gsd:verify-work 112`.
 
 **Goal:** one guarded writer for STATE.md and ROADMAP.md; concurrent writes fail loudly.
 **Requirements:** LIFE-03.

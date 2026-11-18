@@ -28,7 +28,7 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 | PHASE-109 | phase | Design the phase lifecycle | Complete (ADR and state-machine spec merged in PR #116, 2026-11-17) | closed | - | - | none | - | - | not in sources | not in sources | R:63 | - |
 | PHASE-110 | phase | Persist and checkpoint the phase loop | Verified human_needed on 2026-11-18 at origin/main 99ce989. The three in-repo criteria are met on a production path: restore at `src/host/omp.ts:2314` via `restoreSessionPhases`; pause and SIGINT/SIGTERM checkpoints via `installKillCheckpoint` (PR #159). The hard kill is a stated limit (ADR 0001). Deferred: verification_deferred_human, resume with `/gsd:verify-work 110`; the live Omp restart and Ctrl-C checks need the owner | executable | G0 | PHASE-109 | PHASE-109 | PHASE-112, PHASE-113 | - | not in sources | not in sources | R:72 | - |
 | PHASE-111 | phase | Audit gate and owner override record | Verified human_needed on 2026-11-18 at origin/main 99ce989. The three in-repo criteria are met on a production path: the close refusal and owner-override record (PR #162) and HTIL entries. Deferred: verification_deferred_human, resume with `/gsd:verify-work 111`; the owner identity policy and a live HTIL check need the owner, and the milestone-complete gate is in gsd-core | blocked | G1 | PHASE-110 | PHASE-110; missing: phase 110 must reach Complete (currently: Verified human_needed on 2026-11-18 at origin/main 99ce989. The three in-repo criteria are met on a production path: restore at `src/host/omp.ts:2314` via `restoreSessionPhases`; pause and SIGINT/SIGTERM checkpoints via `installKillCheckpoint` (PR #159). The hard kill is a stated limit (ADR 0001). Deferred: verification_deferred_human, resume with `/gsd:verify-work 110`; the live Omp restart and Ctrl-C checks need the owner) | none | - | not in sources | not in sources | R:81 | - |
-| PHASE-112 | phase | Single guarded writer for STATE and ROADMAP | Gap closure in PR #170 (the contract now matches the guarded writer), pending re-verification. Criterion 1 is met by a four-process contention test. The gsd-core writer is out of repo and still needs the same contract | executable | G0 | PHASE-109 | PHASE-109 | PHASE-110, PHASE-113 | - | not in sources | not in sources | R:90 | - |
+| PHASE-112 | phase | Single guarded writer for STATE and ROADMAP | Verified human_needed on 2026-11-18 at origin/main 6eedb14 (PR #170 merged). Criteria 1 and 2 are met in-repo: a four-process contention test, and a contract that matches the writer. Criterion 3, the writer in gsd-core, is out of repo and not counted. Deferred: verification_deferred_human, resume with `/gsd:verify-work 112` | executable | G0 | PHASE-109 | PHASE-109 | PHASE-110, PHASE-113 | - | not in sources | not in sources | R:90 | - |
 | PHASE-113 | phase | Decomposition task matrix | Matrix written (`docs/roadmap/task-matrix.md`, from `bun run matrix`). Verification gaps_found on 2026-11-18: the generator classified every Backlog bullet as blocked, the header misstated the gitignore state, and some rows copied stale statuses. Gap closure in progress | executable | G0 | - | none | PHASE-110, PHASE-112 | - | not in sources | not in sources | R:99 | - |
 | BACKLOG-01 | backlog | Do not auto-run `graphify extract`. | backlog | constraint | - | - | none | - | - | not in sources | not in sources | R:45 | - |
 | BACKLOG-02 | backlog | Do not inject `cache_control` until a captured Anthropic payload proves the field. | backlog | constraint | - | - | none | - | - | not in sources | not in sources | R:46 | - |
@@ -54,8 +54,9 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 | DEFERRED-76 | deferred | Phase 76 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 76` (verification_deferred_human, S:188) | - | S:188, I:42 | not in sources | /gsd:verify-work 76 | S:188 | I:42 |
 | DEFERRED-110 | deferred | Phase 110 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 110` (verification_deferred_human, S:189) | - | S:189 | not in sources | /gsd:verify-work 110 | S:189 | - |
 | DEFERRED-111 | deferred | Phase 111 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 111` (verification_deferred_human, S:190) | - | S:190 | not in sources | /gsd:verify-work 111 | S:190 | - |
-| DEFERRED-108 | deferred | Phase 108 verification | accepted_tech_debt | closed | - | - | none | - | S:191, I:16 | not in sources | not in sources | S:191 | I:16 |
-| DEFERRED-104 | deferred | Phase 104 verification | withdrawn | closed | - | - | none | - | S:192, I:24 | not in sources | not in sources | S:192 | I:24 |
+| DEFERRED-112 | deferred | Phase 112 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 112` (verification_deferred_human, S:191) | - | S:191 | not in sources | /gsd:verify-work 112 | S:191 | - |
+| DEFERRED-108 | deferred | Phase 108 verification | accepted_tech_debt | closed | - | - | none | - | S:192, I:16 | not in sources | not in sources | S:192 | I:16 |
+| DEFERRED-104 | deferred | Phase 104 verification | withdrawn | closed | - | - | none | - | S:193, I:24 | not in sources | not in sources | S:193 | I:24 |
 | DEFERRED-81 | deferred | Phase 81 verification | gaps_found (owner waiver 2026-10-26 (v1.16 phase 81); scheduled for v1.21 test determinism under load) | blocked | external | - | none; missing: phase 81 gaps_found with no resume command (S:102): owner decision or verification evidence required | - | S:102 | not in sources | not in sources | S:102 | - |
 | DEFERRED-12 | deferred | Phase 12 verification | gaps_found | blocked | external | - | none; missing: phase 12 gaps_found with no resume command (S:106): owner decision or verification evidence required | - | S:106 | not in sources | not in sources | S:106 | - |
 
@@ -85,6 +86,7 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 - DEFERRED-76 (blocked): human verification pending: run `/gsd:verify-work 76` (verification_deferred_human, S:188)
 - DEFERRED-110 (blocked): human verification pending: run `/gsd:verify-work 110` (verification_deferred_human, S:189)
 - DEFERRED-111 (blocked): human verification pending: run `/gsd:verify-work 111` (verification_deferred_human, S:190)
+- DEFERRED-112 (blocked): human verification pending: run `/gsd:verify-work 112` (verification_deferred_human, S:191)
 - DEFERRED-81 (blocked): phase 81 gaps_found with no resume command (S:102): owner decision or verification evidence required
 - DEFERRED-12 (blocked): phase 12 gaps_found with no resume command (S:106): owner decision or verification evidence required
 
@@ -107,7 +109,7 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 ## Conflicts
 
 - BACKLOG-JEV-03: own R:54 says closed ("superseded"); I:95 says open ("needs")
-- BACKLOG-CIMD: own R:57 says closed ("withdrawn"); S:239 says open ("needs", "need")
+- BACKLOG-CIMD: own R:57 says closed ("withdrawn"); S:240 says open ("needs", "need")
 - DEFERRED-76: own S:188 says open ("verification_deferred_human"); I:42 says closed ("passed")
-- DEFERRED-108: own S:191 says closed ("accepted_tech_debt"); I:16 says open ("needs", "pending")
-- DEFERRED-104: own S:192 says closed ("withdrawn"); S:213 says open ("human_needed", "verification_deferred_human")
+- DEFERRED-108: own S:192 says closed ("accepted_tech_debt"); I:16 says open ("needs", "pending")
+- DEFERRED-104: own S:193 says closed ("withdrawn"); S:214 says open ("human_needed", "verification_deferred_human")
