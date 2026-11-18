@@ -477,6 +477,12 @@ A prune also removes regular `*.tmp` and `*.lock` files older than one hour in `
 
 `prune` works on the current host's state directory. To prune another host's, set `ULTRATHINK_HOST=<host>`, for example `ULTRATHINK_HOST=omp bin/ultrathink prune --older-than 30 --dry-run`. The output lists session ids, sizes and ages, never prompt text.
 
+### `ui`: display
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `reducedMotion` | boolean | `false` | Turns off the spinner, flash and pop of the live bar. The final state draws the same. User files only: a project file cannot set it. |
+
 ## Full example
 
 All keys are optional; write only the ones you change. This file shows every key. The values are the defaults, with these exceptions:

@@ -1740,7 +1740,8 @@ export function createOmpExtension(
 					return 40;
 				}
 			};
-			return createBarComponent(store, theme, now, rows);
+			const reducedMotion = flightConfig(process.cwd()).ui.reducedMotion;
+			return createBarComponent(store, theme, now, rows, reducedMotion);
 		};
 		const mountBar = () =>
 			guard(() => ui?.setWidget?.("ultrathink", factory, { placement: "aboveEditor" }));

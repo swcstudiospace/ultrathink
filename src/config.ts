@@ -201,6 +201,19 @@ const DEFAULT_SWARM_CONFIG: SwarmConfig = {
 	autoRun: false,
 };
 
+/**
+ * Display settings (`ui.*`). User files only: a project layer cannot change how the host draws. `reducedMotion` turns
+ * off the live graph's spinner, flash and pop; the final state renders the same.
+ */
+interface UiConfig {
+	/** Whether the live graph draws without motion. Default false. */
+	reducedMotion: boolean;
+}
+
+const DEFAULT_UI_CONFIG: UiConfig = {
+	reducedMotion: false,
+};
+
 /** A per-host planning model override; "" in a field means no override for it. */
 export interface HostModelOverride {
 	/** Exact credential-bearing provider id the planning target must belong to; "" = no provider constraint. */
@@ -278,6 +291,8 @@ export interface UltrathinkConfig {
 	pstack: PstackConfig;
 	/** AgentSwarm auto-run (opt-in; user files only — a project layer cannot enable it). */
 	swarm: SwarmConfig;
+	/** Display settings (`ui.*`). User files only; a project layer is ignored. */
+	ui: UiConfig;
 	/** Recall, knowledge-probe, skill-authoring and information-panel settings. User files only; a project layer is ignored. */
 	recallSettings: RecallSettings;
 	/** Planning model overrides and exact-provider default selectors; built-in `{ hosts: {}, providerDefaults: {} }`. */
@@ -332,6 +347,7 @@ export function defaultConfig(): UltrathinkConfig {
 		state: { ...DEFAULT_STATE_CONFIG },
 		pstack: { ...DEFAULT_PSTACK_CONFIG },
 		swarm: { ...DEFAULT_SWARM_CONFIG },
+		ui: { ...DEFAULT_UI_CONFIG },
 		recallSettings: defaultRecallSettings(),
 		models: { hosts: {}, providerDefaults: providerDictionary({}), tot: defaultTotModels() },
 		modelProvenance: { claude: "route-default", grok: "route-default", muse: "route-default" },
@@ -1162,6 +1178,19 @@ function mergeSwarm(
 }
 
 /**
+ * Motion settings are user-only: a project layer (a file a cloned repository controls) is ignored entirely. A
+ * non-boolean `reducedMotion` keeps the lower layer's value.
+ */
+function mergeUi(
+	ui: Record<string, unknown> | undefined,
+	defaults: UiConfig,
+	project: boolean,
+): UiConfig {
+	if (!ui || project) return defaults;
+	return { reducedMotion: booleanOr(ui.reducedMotion, defaults.reducedMotion) };
+}
+
+/**
  * Project layers are repository-controlled, so they may only tighten these sections (default-deny, K5). Each helper
  * lets a project move a key toward the safer side and nothing else. Notion and Linear are the one exception: a project file
  * fills them only where no earlier file sets them. Think is user-only.
@@ -1244,6 +1273,7 @@ export function mergeConfig(
 		state: mergeState(asRecord(file.state), base.state, options.project === true),
 		pstack: mergePstack(asRecord(file.pstack), base.pstack, options.project === true),
 		swarm: mergeSwarm(asRecord(file.swarm), base.swarm, options.project === true),
+		ui: mergeUi(asRecord(file.ui), base.ui, options.project === true),
 		recallSettings:
 			options.project === true
 				? base.recallSettings

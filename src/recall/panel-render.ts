@@ -10,6 +10,8 @@ import { formatElapsed, truncateToWidth } from "../host/omp-paint.ts";
 import { type PanelBody, type PanelEnvelope, type PanelItem, panelCounts } from "./panel-model.ts";
 
 export interface PanelRenderContext {
+	/** Header label of this panel's source, supplied by the caller: e.g. "Greptile knowledge base", "Lessons", "Skills". */
+	label: string;
 	/** Render time, epoch ms. A loading panel shows elapsed time from its `startedAt`; without it the elapsed time reads "unknown". */
 	now?: number;
 	/** Reference of the record the panel belongs to. Shown on error; envelopes do not carry one. */
@@ -20,7 +22,6 @@ type EmptyReason = Extract<PanelEnvelope, { status: "empty" }>["reason"];
 type PartialReason = Extract<PanelEnvelope, { status: "partial" }>["remainder"];
 type ErrorEnvelope = Extract<PanelEnvelope, { status: "error" }>;
 
-const SOURCE_NAME = "Greptile knowledge base";
 const SKELETON = "░".repeat(12);
 const CONTROL_RUN = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g;
 
@@ -38,7 +39,7 @@ const EMPTY_LABEL: Record<EmptyReason, string> = {
 	filtered: "candidates were filtered out",
 	below_floor: "every candidate scored below the floor",
 	not_generated: "the knowledge base has not been generated",
-	gate_off: "the knowledge lookup is switched off",
+	gate_off: "this source is switched off",
 	source_unavailable: "no credential or login for the knowledge base",
 };
 
@@ -116,7 +117,7 @@ function retryText(retry: ErrorEnvelope["retry"]): string {
 }
 
 function panelLines(panel: PanelEnvelope, context: PanelRenderContext): string[] {
-	const head = `[${STATUS_TAG[panel.status]}] ${SOURCE_NAME}`;
+	const head = `[${STATUS_TAG[panel.status]}] ${oneLine(context.label)}`;
 	switch (panel.status) {
 		case "loading": {
 			const elapsed =
@@ -163,7 +164,7 @@ function panelLines(panel: PanelEnvelope, context: PanelRenderContext): string[]
 export function renderPanel(
 	panel: PanelEnvelope,
 	width: number,
-	context: PanelRenderContext = {},
+	context: PanelRenderContext,
 ): string[] {
 	const columns = Math.floor(width);
 	if (!(columns >= 1)) return [];

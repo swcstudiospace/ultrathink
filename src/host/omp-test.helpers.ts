@@ -46,6 +46,13 @@ const wrap =
 
 type OmpOptions = NonNullable<Parameters<typeof createOmpExtension>[0]>;
 
+/** A message renderer as Omp registers it: a card component for the message, or undefined for Omp's default card. */
+type MessageRenderFn = (
+	message: { content: unknown; details?: unknown },
+	options: { expanded: boolean },
+	theme: unknown,
+) => { render(width: number): readonly string[] } | undefined;
+
 /** The recorded host surface `setup` returns; consumers import this contract instead of `ReturnType`. */
 export interface OmpTestHarness {
 	run: (prompt?: string) => unknown;
@@ -56,6 +63,8 @@ export interface OmpTestHarness {
 		context?: Record<string, unknown>,
 	) => unknown;
 	renderers: string[];
+	/** The render function registered for each message type, keyed by type. */
+	renderFns: Map<string, MessageRenderFn>;
 	commands: Map<
 		string,
 		{
@@ -81,6 +90,7 @@ export function setup(
 	const handlers = new Map<string, AnyHandler[]>();
 	const sent: { message: unknown; options: unknown }[] = [];
 	const renderers: string[] = [];
+	const renderFns = new Map<string, MessageRenderFn>();
 	const commands = new Map<
 		string,
 		{
@@ -106,8 +116,9 @@ export function setup(
 		registerCommand: (name: string, options: { handler: AnyHandler }) => {
 			commands.set(name, options);
 		},
-		registerMessageRenderer: (type: string) => {
+		registerMessageRenderer: (type: string, renderFn: MessageRenderFn) => {
 			renderers.push(type);
+			renderFns.set(type, renderFn);
 		},
 		...apiExtra,
 	} as unknown as ExtensionAPI;
@@ -145,7 +156,7 @@ export function setup(
 				...(((ctx as Record<string, unknown>).ui as Record<string, unknown> | undefined) ?? {}),
 			},
 		});
-	return { run, sent, emit, renderers, commands, command, userMessages, notices };
+	return { run, sent, emit, renderers, renderFns, commands, command, userMessages, notices };
 }
 
 export function tuiCtx(setWidget?: (key: string, factory: unknown, options: unknown) => void) {

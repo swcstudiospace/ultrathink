@@ -117,7 +117,7 @@ describe("buildTurnPanels: one envelope per supplied lookup", () => {
 		expect(Object.keys(panels ?? {})).toEqual(["skills"]);
 		expect(panels?.skills).toMatchObject({
 			status: "success",
-			items: [{ id: "skill:bun-snapshot-tests" }],
+			items: [{ id: "skill:omp:bun-snapshot-tests" }],
 		});
 	});
 

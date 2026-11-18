@@ -883,6 +883,8 @@ export function createBarComponent(
 	theme: unknown,
 	now: () => number = Date.now,
 	rows: () => number = () => process.stdout.rows || 40,
+	/** `ui.reducedMotion`: when true the live graph draws its final state with no spinner, flash or pop. */
+	reducedMotion = false,
 ): { render(width: number): readonly string[]; invalidate(): void; dispose(): void } {
 	let cached: string[] = [];
 	let valid = false;
@@ -901,7 +903,7 @@ export function createBarComponent(
 					panel = renderGraph(state.model, theme, width, {
 						now: at,
 						steps: "active",
-						animate: true,
+						animate: !reducedMotion,
 						maxRows,
 					});
 				} catch {

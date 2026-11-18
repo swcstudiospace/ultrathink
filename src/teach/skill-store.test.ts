@@ -71,6 +71,8 @@ describe("generated skill store", () => {
 
 		expect(result).toEqual({
 			ok: true,
+			action: "created",
+			audit: { ok: true },
 			entry: {
 				name: SKILL,
 				status: "draft",
@@ -80,6 +82,9 @@ describe("generated skill store", () => {
 				generated_at: NOW,
 				source_ids: ["moment-1"],
 				stale: false,
+				description: skill.description,
+				applies_when: skill.applies_when,
+				signature_hash: skill.signature_hash,
 			},
 		});
 		const text = await skillMd(SKILL);
@@ -195,6 +200,7 @@ describe("generated skill store", () => {
 		expect(await removeGeneratedSkill(storeDir, "first-skill")).toEqual({
 			ok: true,
 			name: "first-skill",
+			audit: { ok: true },
 		});
 
 		expect(existsSync(join(storeDir, "first-skill"))).toBe(false);
@@ -264,7 +270,141 @@ describe("generated skill store", () => {
 		);
 		await setGeneratedStatus(storeDir, SKILL, "disabled");
 
-		expect((await readdir(storeDir)).sort()).toEqual(["manifest.json", SKILL]);
+		expect((await readdir(storeDir)).sort()).toEqual(["audit.ndjson", "manifest.json", SKILL]);
 		expect(await readdir(join(storeDir, SKILL))).toEqual(["SKILL.md"]);
+	});
+
+	async function auditLines(): Promise<Array<Record<string, unknown>>> {
+		const text = await readFile(join(storeDir, "audit.ndjson"), "utf8");
+		return text
+			.split("\n")
+			.filter((line) => line !== "")
+			.map((line): Record<string, unknown> => JSON.parse(line));
+	}
+
+	test("a schema 2 entry round-trips with its description, applies_when and signature hash", async () => {
+		const skill = skillFixture();
+		await writeGeneratedSkill(storeDir, skill, NOW);
+
+		expect(JSON.parse(await readFile(join(storeDir, "manifest.json"), "utf8"))).toMatchObject({
+			schema: 2,
+		});
+		expect(await listGenerated(storeDir)).toEqual({
+			ok: true,
+			entries: [
+				{
+					name: SKILL,
+					status: "draft",
+					generated_by: "auto",
+					version: 1,
+					content_hash: skill.content_hash,
+					generated_at: NOW,
+					source_ids: ["moment-1"],
+					stale: false,
+					description: skill.description,
+					applies_when: skill.applies_when,
+					signature_hash: skill.signature_hash,
+				},
+			],
+		});
+	});
+
+	test("a schema 2 entry missing its applies_when is a corrupt manifest, left unchanged", async () => {
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+		const path = join(storeDir, "manifest.json");
+		const manifest = JSON.parse(await readFile(path, "utf8"));
+		delete manifest.skills[0].applies_when;
+		const edited = JSON.stringify(manifest);
+		await writeFile(path, edited);
+
+		expect(await listGenerated(storeDir)).toMatchObject({ ok: false, reason: "manifest_corrupt" });
+		expect(
+			await writeGeneratedSkill(
+				storeDir,
+				skillFixture({ steps: ["Import the type with import type."] }),
+				LATER,
+			),
+		).toMatchObject({ ok: false, reason: "manifest_corrupt" });
+		expect(await readFile(path, "utf8")).toBe(edited);
+	});
+
+	test("a schema 1 manifest is rejected with a clear error and is never replaced", async () => {
+		await mkdir(storeDir, { recursive: true });
+		const schema1 = JSON.stringify({ schema: 1, skills: [] });
+		await writeFile(join(storeDir, "manifest.json"), schema1);
+
+		expect(await listGenerated(storeDir)).toEqual({
+			ok: false,
+			reason: "manifest_corrupt",
+			detail: "manifest.json is schema 1; expected schema 2",
+		});
+		expect(await writeGeneratedSkill(storeDir, skillFixture(), NOW)).toMatchObject({
+			ok: false,
+			reason: "manifest_corrupt",
+		});
+		expect(await readFile(join(storeDir, "manifest.json"), "utf8")).toBe(schema1);
+	});
+
+	test("each create, update, disable and delete appends exactly one audit line", async () => {
+		const created = await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+		expect(created).toMatchObject({ ok: true, action: "created", audit: { ok: true } });
+		expect(await auditLines()).toMatchObject([{ action: "create", name: SKILL, version: 1 }]);
+
+		const revised = skillFixture({ steps: ["Import the type with import type."] });
+		const updated = await writeGeneratedSkill(storeDir, revised, LATER);
+		expect(updated).toMatchObject({ ok: true, action: "updated", audit: { ok: true } });
+		expect(await auditLines()).toMatchObject([
+			{ action: "create" },
+			{ action: "update", name: SKILL, version: 2, content_hash: revised.content_hash },
+		]);
+
+		expect(await setGeneratedStatus(storeDir, SKILL, "disabled")).toMatchObject({
+			ok: true,
+			audit: { ok: true },
+		});
+		expect(await removeGeneratedSkill(storeDir, SKILL)).toMatchObject({
+			ok: true,
+			audit: { ok: true },
+		});
+		expect(await auditLines()).toMatchObject([
+			{ action: "create" },
+			{ action: "update" },
+			{ action: "disable", name: SKILL, version: 2 },
+			{ action: "delete", name: SKILL, version: 2 },
+		]);
+	});
+
+	test("no audit line carries the skill text", async () => {
+		const skill = skillFixture({ steps: ["Import the type with import type."] });
+		await writeGeneratedSkill(storeDir, skill, NOW, { qualification_by: "recurrence" });
+		await setGeneratedStatus(storeDir, SKILL, "disabled");
+		await removeGeneratedSkill(storeDir, SKILL);
+
+		const text = await readFile(join(storeDir, "audit.ndjson"), "utf8");
+		expect(text).not.toContain("Import the type with import type.");
+		expect(text).not.toContain(skill.description);
+		expect(text).not.toContain("tsc rejects value imports of types");
+		expect(await auditLines()).toMatchObject([
+			{ action: "create", qualification_by: "recurrence" },
+			{ action: "disable" },
+			{ action: "delete" },
+		]);
+	});
+
+	test("a failed audit append is reported and the written skill stays in place", async () => {
+		await mkdir(join(storeDir, "audit.ndjson"), { recursive: true });
+
+		const result = await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+
+		expect(result).toMatchObject({
+			ok: true,
+			action: "created",
+			audit: { ok: false, detail: "EISDIR" },
+		});
+		expect(await skillMd(SKILL)).toContain(`name: ${SKILL}\n`);
+		expect(await listGenerated(storeDir)).toMatchObject({
+			ok: true,
+			entries: [{ name: SKILL, version: 1 }],
+		});
 	});
 });

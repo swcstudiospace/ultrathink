@@ -31,7 +31,7 @@ type PanelPartialReason = "timeout" | "budget_cap" | "truncated";
 /** The class of a failed lookup: the probe reason code, or `unclassified` when the record carries none. */
 type PanelErrorClass = KnowledgeReason | "unclassified";
 /** What became of a returned item after the lookup produced it. */
-type PanelItemStatus = "returned" | "injected" | "excluded" | "deduped" | "trimmed";
+type PanelItemStatus = "returned" | "injected" | "deduped";
 /** Why a candidate was left out of the panel. Closed. */
 type PanelExcludedReason =
 	| "below_floor"
