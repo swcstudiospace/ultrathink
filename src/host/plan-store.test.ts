@@ -12,7 +12,8 @@ const input = {
 	prompt: "write the plan",
 	cwd: "/work/repo",
 };
-const CREATED_AT = "2026-11-17T00:00:00.000Z";
+// Taken at load so savePlan's 24-hour prune never ages out a record this run saved; a fixed date does, at midnight UTC.
+const CREATED_AT = new Date().toISOString();
 const HOUR_MS = 60 * 60 * 1000;
 
 let dir: string;
