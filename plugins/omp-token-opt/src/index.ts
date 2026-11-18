@@ -301,21 +301,25 @@ function callCwd(event: ToolCallLike): string {
 	return typeof event.cwd === "string" && event.cwd.length > 0 ? event.cwd : process.cwd();
 }
 
-async function readStream(stream: ReadableStream<Uint8Array> | null | undefined, limit: number): Promise<string> {
-	if (!stream) return "";
+async function readStream(
+	stream: ReadableStream<Uint8Array> | null | undefined,
+	limit: number,
+): Promise<{ text: string; truncated: boolean }> {
+	if (!stream) return { text: "", truncated: false };
 	const reader = stream.getReader();
 	const chunks: Uint8Array[] = [];
 	let total = 0;
+	let truncated = false;
 	try {
-		while (total < limit) {
+		while (true) {
 			const step = await reader.read();
 			if (step.done) break;
 			const value = step.value;
 			if (!value || value.byteLength === 0) continue;
 			const room = limit - total;
 			if (value.byteLength > room) {
-				chunks.push(value.subarray(0, room));
-				total = limit;
+				if (room > 0) chunks.push(value.subarray(0, room));
+				truncated = true;
 				break;
 			}
 			chunks.push(value);
@@ -328,7 +332,7 @@ async function readStream(stream: ReadableStream<Uint8Array> | null | undefined,
 			// best-effort
 		}
 	}
-	return new TextDecoder().decode(Buffer.concat(chunks));
+	return { text: new TextDecoder().decode(Buffer.concat(chunks)), truncated };
 }
 
 async function rewriteWithRtk(command: string, cwd: string): Promise<string | null> {
@@ -346,9 +350,10 @@ async function rewriteWithRtk(command: string, cwd: string): Promise<string | nu
 			stdin: "ignore",
 			signal: killer.signal,
 		});
-		const stdout = await readStream(proc.stdout, 65_536);
+		const { text: stdout, truncated } = await readStream(proc.stdout, 65_536);
 		const exitCode = await proc.exited;
-		if (exitCode !== 0) return null;
+		// A clipped rewrite is a different command from the one rtk produced; never run it.
+		if (truncated || exitCode !== 0) return null;
 		const line = stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout;
 		if (line.length === 0 || line.includes("\n") || !line.startsWith("rtk ")) return null;
 		return line;
@@ -381,7 +386,7 @@ async function readRtkTotalSaved(): Promise<number | null> {
 			stdin: "ignore",
 			signal: killer.signal,
 		});
-		const stdout = await readStream(proc.stdout, 65_536);
+		const { text: stdout } = await readStream(proc.stdout, 65_536);
 		const exitCode = await proc.exited;
 		if (exitCode !== 0) return null;
 		return parseRtkTotalSaved(stdout);
