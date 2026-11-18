@@ -190,6 +190,11 @@ export function httpTarget(baseUrl: string, options: HttpTargetOptions = {}): Ch
 				payload = JSON.stringify(body);
 			}
 			const url = new URL(path.replace(/^\/+/, ""), root);
+			if (url.origin !== root.origin) {
+				throw new TypeError(
+					`chaos request path ${JSON.stringify(path)} resolves outside ${root.origin}`,
+				);
+			}
 			const signal = AbortSignal.timeout(timeoutMs);
 			const deadlineMessage = `${method} ${path} got no complete response within ${timeoutMs} ms`;
 			const response = await untilAborted(
