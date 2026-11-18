@@ -240,21 +240,45 @@ describe("omp phase record", () => {
 		expect(restored).toContain("Discuss, Plan, Execute");
 	});
 
-	test("a phase whose GSD verification reads human_needed opens an open HTIL entry", async () => {
+	test("a bare VERIFICATION.md opens one HTIL entry, for the human_needed phase and not the passed one", async () => {
 		const root = newRoot();
 		const project = newRoot();
-		const verification = join(project, ".planning", "phases", "01-core");
-		mkdirSync(verification, { recursive: true });
+		const phases = join(project, ".planning", "phases");
+		const needsHuman = "110-persist-and-checkpoint-the-phase-loop";
+		const passed = "113-verify-the-phase-loop-gate";
+		mkdirSync(join(phases, needsHuman), { recursive: true });
+		mkdirSync(join(phases, passed), { recursive: true });
 		writeFileSync(
-			join(verification, "01-VERIFICATION.md"),
+			join(phases, needsHuman, "VERIFICATION.md"),
 			"---\nstatus: human_needed\n---\nCheck the live rollout.\n",
+		);
+		writeFileSync(
+			join(phases, passed, "VERIFICATION.md"),
+			"---\nstatus: passed\n---\nAll checks pass.\n",
 		);
 		const { run } = setup(planner(), 1_000, { stateDir: root }, { cwd: project });
 		await run(DISCUSS);
 		await flush();
 		expect(readRecord(root).humanItems).toEqual([
-			{ id: "verification:01-core", owner: "human", state: "open" },
+			{ id: `verification:${needsHuman}`, owner: "human", state: "open" },
 		]);
+	});
+
+	test("gaps_found is not a human item and opens no entry", async () => {
+		const root = newRoot();
+		const project = newRoot();
+		const phases = join(project, ".planning", "phases");
+		const gaps = "111-audit-gate-and-owner-override-record";
+		mkdirSync(join(phases, gaps), { recursive: true });
+		mkdirSync(join(phases, "112-single-guarded-writer-for-state-and-roadmap"), { recursive: true });
+		writeFileSync(
+			join(phases, gaps, "VERIFICATION.md"),
+			"---\nstatus: gaps_found\n---\nOne gap remains.\n",
+		);
+		const { run } = setup(planner(), 1_000, { stateDir: root }, { cwd: project });
+		await run(DISCUSS);
+		await flush();
+		expect(readRecord(root).humanItems).toEqual([]);
 	});
 
 	test("a kill checkpoint writes a kill reason at the given time over an open phase loop", () => {

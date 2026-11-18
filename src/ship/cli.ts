@@ -14,6 +14,7 @@ import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { createDecisions } from "../decisions/gate.ts";
 import type { Decisions } from "../decisions/gate.ts";
 import { selectJudgeEngine } from "../host/engine.ts";
+import { findPhaseDirectory, verificationEntryId } from "../host/omp-phase.ts";
 import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import type { McpClient } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
@@ -78,7 +79,7 @@ type ShipRecord = SessionRecord & { ship?: ShipState };
 /**
  * `merge` and `run` take `--owner-override <reason>` with `--owner <name>`: the owner decision closes the phase without a
  * passing audit, and the reason is kept in the phase record. `resolve <phase>` closes the phase's open HTIL entry
- * (`verification:<phase>`) with `--owner <name>` and `--evidence <text>` as the owner's evidence.
+ * (`verification:<phase directory>`) with `--owner <name>` and `--evidence <text>` as the owner's evidence.
  */
 const USAGE =
 	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd] [--approve] [--owner <name> --owner-override <reason>] | ultrathink-ship resolve <phase> --state <sessions/<id>.json> --owner <name> --evidence <text> [--cwd <dir>]";
@@ -244,7 +245,7 @@ interface Ctx {
 	override: ShipOverride | undefined;
 }
 
-/** The owner's answer to an open HTIL entry: the phase whose `verification:<phase>` entry it closes, who resolved it, and the evidence. */
+/** The owner's answer to an open HTIL entry: the phase (a phase number or directory name) whose verification entry it closes, who resolved it, and the evidence. */
 interface Resolution {
 	phase: string;
 	owner: string;
@@ -1174,8 +1175,8 @@ async function stepMerge(
 }
 
 /**
- * Resolves the phase's open HTIL entry `verification:<phase>` (LIFE-05) with the owner's evidence and the time, under the
- * phase-record lock. An entry that is not open is refused and nothing is written.
+ * Resolves the phase's open HTIL entry `verification:<phase directory>` (LIFE-05) with the owner's evidence and the
+ * time, under the phase-record lock. An entry that is not open is refused and nothing is written.
  */
 function stepResolve(ctx: Ctx, resolution: Resolution | undefined): Output {
 	const { deps, statePath } = ctx;
@@ -1184,7 +1185,10 @@ function stepResolve(ctx: Ctx, resolution: Resolution | undefined): Output {
 	const { phase, owner, evidence } = resolution;
 	const sessionId = readRecord(statePath)?.sessionId ?? "";
 	if (!sessionId) return { ok: false, error: "session id missing from the state file" };
-	const entryId = `verification:${phase}`;
+	const directory = findPhaseDirectory(phase, join(ctx.cwd, ".planning", "phases"));
+	if (directory === null)
+		return { ok: false, error: `no phase directory matches ${phase} under .planning/phases` };
+	const entryId = verificationEntryId(directory);
 	const resolvedAt = new Date(deps.now()).toISOString();
 	try {
 		const locked = underPhaseRecordLock(deps.phaseLoopDir, () =>

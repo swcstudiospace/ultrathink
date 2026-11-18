@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionRecord } from "../claude/state.ts";
@@ -1983,6 +1983,13 @@ describe("merge approval for the Claude reviewer", () => {
 
 describe("merge phase gate", () => {
 	const phaseDir = () => join(dir, "phase-loop");
+	/** The phase directories `resolve` names phases from; `resolve` also accepts a bare number such as `110`. */
+	const P110 = "110-persist-and-checkpoint-the-phase-loop";
+	const P111 = "111-audit-gate-and-owner-override-record";
+	/** Creates a phase directory under the test project's `.planning/phases`. */
+	const phaseFixture = (name: string): void => {
+		mkdirSync(join(dir, ".planning", "phases", name), { recursive: true });
+	};
 	const phaseRecord = () => {
 		const outcome = fileStore(phaseDir()).load("s");
 		return outcome.status === "found" ? outcome.record : undefined;
@@ -2172,6 +2179,7 @@ describe("merge phase gate", () => {
 	});
 
 	test("ship resolve clears the phase's open HTIL entry with the owner's evidence, and the merge then proceeds", async () => {
+		phaseFixture("01-core");
 		await reviewStage();
 		expect(
 			open("s", { id: "verification:01-core", owner: "human" }, fileStore(phaseDir())).accepted,
@@ -2215,6 +2223,7 @@ describe("merge phase gate", () => {
 	});
 
 	test("ship resolve refuses without evidence, and refuses a phase with no open entry; nothing is written", async () => {
+		phaseFixture("01-core");
 		const noEvidence = await withFlags("resolve", deps(), "01-core", "--owner", "alice");
 		expect(noEvidence.code).toBe(2);
 		expect(noEvidence.output).toMatchObject({
@@ -2256,5 +2265,62 @@ describe("merge phase gate", () => {
 		expect(again.output).toMatchObject({ ok: false });
 		expect(String(again.output.error)).toContain("is already done");
 		expect(phaseRecord()?.humanItems).toMatchObject([{ state: "done", evidenceId: "UAT passed" }]);
+	});
+
+	test("ship resolve by the bare phase number 110 clears only the 110 entry", async () => {
+		phaseFixture(P110);
+		phaseFixture(P111);
+		open("s", { id: `verification:${P110}`, owner: "human" }, fileStore(phaseDir()));
+		open("s", { id: `verification:${P111}`, owner: "human" }, fileStore(phaseDir()));
+		const resolved = await withFlags(
+			"resolve",
+			deps(),
+			"110",
+			"--owner",
+			"alice",
+			"--evidence",
+			"UAT passed",
+		);
+		expect(resolved.code).toBe(0);
+		expect(resolved.output).toMatchObject({ ok: true, entryId: `verification:${P110}` });
+		expect(phaseRecord()?.humanItems).toMatchObject([
+			{ id: `verification:${P110}`, state: "done", evidenceId: "UAT passed" },
+			{ id: `verification:${P111}`, state: "open" },
+		]);
+	});
+
+	test("ship resolve by the full directory name clears the same entry", async () => {
+		phaseFixture(P110);
+		open("s", { id: `verification:${P110}`, owner: "human" }, fileStore(phaseDir()));
+		const resolved = await withFlags(
+			"resolve",
+			deps(),
+			P110,
+			"--owner",
+			"alice",
+			"--evidence",
+			"UAT passed",
+		);
+		expect(resolved.code).toBe(0);
+		expect(resolved.output).toMatchObject({ ok: true, entryId: `verification:${P110}` });
+		expect(phaseRecord()?.humanItems).toMatchObject([
+			{ id: `verification:${P110}`, state: "done", evidenceId: "UAT passed" },
+		]);
+	});
+
+	test("ship resolve refuses a phase number with no phase directory and resolves no entry", async () => {
+		phaseFixture(P111);
+		const out = await withFlags(
+			"resolve",
+			deps(),
+			"110",
+			"--owner",
+			"alice",
+			"--evidence",
+			"UAT passed",
+		);
+		expect(out.output).toMatchObject({ ok: false });
+		expect(String(out.output.error)).toContain("no phase directory matches 110");
+		expect(phaseRecord()?.humanItems ?? []).toEqual([]);
 	});
 });

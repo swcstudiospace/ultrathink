@@ -87,6 +87,18 @@ function frontmatterStatus(text: string): string | undefined {
 	return status?.[1];
 }
 
+/**
+ * A phase directory's verification file: the bare `VERIFICATION.md` when present, else the last `*-VERIFICATION.md`.
+ * Undefined when neither is listed.
+ */
+export function verificationFileName(files: readonly string[]): string | undefined {
+	if (files.includes("VERIFICATION.md")) return "VERIFICATION.md";
+	return files
+		.filter((name) => name.endsWith("-VERIFICATION.md"))
+		.sort()
+		.at(-1);
+}
+
 function latestVerification(cwd: string): GsdSignals["verification"] {
 	try {
 		const phasesDir = join(cwd, ".planning", "phases");
@@ -99,10 +111,7 @@ function latestVerification(cwd: string): GsdSignals["verification"] {
 				// reason: an unreadable phase directory yields no verification, the same as a phase without one
 				continue;
 			}
-			const file = files
-				.filter((name) => name.endsWith("-VERIFICATION.md"))
-				.sort()
-				.at(-1);
+			const file = verificationFileName(files);
 			if (!file) continue;
 			const status = frontmatterStatus(readFileSync(join(phasesDir, phase, file), "utf8"));
 			if (status) return { phase, status };
@@ -164,10 +173,7 @@ function latestMilestone(cwd: string): MilestoneEvidence | undefined {
 				continue;
 			}
 			// A phase without a readable, status-bearing verification counts as "missing", never as silently passed.
-			const file = files
-				.filter((name) => name.endsWith("-VERIFICATION.md"))
-				.sort()
-				.at(-1);
+			const file = verificationFileName(files);
 			const status = file
 				? frontmatterStatus(readFileSync(join(phasesDir, phase, file), "utf8"))
 				: undefined;
