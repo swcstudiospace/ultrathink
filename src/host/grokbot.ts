@@ -328,29 +328,15 @@ function decisionsUrl(input: unknown): string | undefined {
 	}
 }
 
-interface InstalledJournal {
-	wrapped: typeof fetch;
-	/** The global fetch this wrapper replaced; for the outermost installed wrapper, the real fetch. */
-	original: typeof fetch;
-}
-
-/** Journal wrappers currently installed, outermost first. While any is installed the last one is `globalThis.fetch`. */
-const installedJournals: InstalledJournal[] = [];
-
 /**
- * Wraps `globalThis.fetch` for Decisions API calls only: a journalled response (keyed by URL + request body, never
- * headers) replays; a fresh one is stored on success. Returns the restore function. Credentials are never written.
- *
- * Installations may overlap (concurrent client-driven plans). `base` defaults to the fetch beneath every installed
- * wrapper so overlapping journals never chain through each other's dir; restore only puts the replaced fetch back
- * while this wrapper still owns the global, otherwise it just drops out of the stack so the last restore leaves the
- * real fetch.
+ * The fetch the Decisions client gets for a plan. It journals Decisions API calls only: a journalled response (keyed by
+ * URL + request body, never headers) replays; a fresh one is stored on success. Credentials are never written. It wraps
+ * `base` (the real fetch by default) and patches nothing global: the plan hands it to the Decisions client as its fetch.
  */
-export function installDecisionsJournal(
+export function decisionsJournalFetch(
 	dir: string,
-	base: typeof fetch = installedJournals[0]?.original ?? globalThis.fetch,
-): () => void {
-	const original = globalThis.fetch;
+	base: typeof fetch = globalThis.fetch,
+): typeof fetch {
 	const wrapped = async (
 		input: Parameters<typeof fetch>[0],
 		init?: Parameters<typeof fetch>[1],
@@ -385,21 +371,7 @@ export function installDecisionsJournal(
 			headers: { "content-type": response.headers.get("content-type") ?? "application/json" },
 		});
 	};
-	const entry: InstalledJournal = {
-		wrapped: Object.assign(wrapped, { preconnect: original.preconnect }) as typeof fetch,
-		original,
-	};
-	installedJournals.push(entry);
-	globalThis.fetch = entry.wrapped;
-	return () => {
-		const index = installedJournals.indexOf(entry);
-		if (index < 0) return;
-		installedJournals.splice(index, 1);
-		const inner = installedJournals[index];
-		// A wrapper installed over this one now sits directly on what this one replaced.
-		if (inner && inner.original === entry.wrapped) inner.original = entry.original;
-		if (globalThis.fetch === entry.wrapped) globalThis.fetch = entry.original;
-	};
+	return Object.assign(wrapped, { preconnect: base.preconnect });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -851,7 +823,7 @@ export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPl
 		timers: input.timers,
 		owner,
 	});
-	const restore = installDecisionsJournal(dir);
+	const journalFetch = decisionsJournalFetch(dir);
 	const resolution = hostResolution();
 	let response: PlanResponse;
 	let transcript: TranscriptCopy | undefined;
@@ -869,6 +841,7 @@ export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPl
 			env,
 			{
 				stateDir,
+				fetch: journalFetch,
 				signal: controller.signal,
 				selectEngine: async (): Promise<SelectedEngine> => ({
 					label: GROKBOT_LABEL,
@@ -882,7 +855,6 @@ export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPl
 	} finally {
 		journal.dispose();
 		runsInProgress.delete(owner.run);
-		restore();
 	}
 	const missed = journal.missed();
 	const base = {

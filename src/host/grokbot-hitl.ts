@@ -53,7 +53,7 @@ export function recordAnswers(
 	now = Date.now(),
 	lock?: LockOptions,
 	lastLock?: LastLockOptions,
-): { matched: Clarification[]; unknownIds: string[]; list: Clarification[] } {
+): { matched: Clarification[]; unknownIds: string[]; list: Clarification[]; warning?: string } {
 	return withFileLock(
 		statePath,
 		() => {
@@ -87,35 +87,44 @@ export function recordAnswers(
 			};
 			writeFileAtomic(statePath, `${JSON.stringify(next, null, 2)}\n`);
 			writeFileAtomic(xmlPath, `${xml}\n`);
-			mirrorLast(statePath, next, lastLock);
-			return { matched, unknownIds, list };
+			const warning = mirrorLast(statePath, next, lastLock);
+			return { matched, unknownIds, list, ...(warning ? { warning } : {}) };
 		},
 		{ ...CLI_LOCK, ...lock },
 	); // a CLI writer in its own process: wait up to 30 s, never write unlocked
 }
 
-/** `ctl last` and `ctl hitl last` read `last.json`, a copy of the session written when the plan was saved. */
+/**
+ * `ctl last` and `ctl hitl last` read `last.json`, a copy of the session written when the plan was saved. Returns a
+ * warning when `last.json` could not be refreshed (a busy lock, or a failed write or lock). The session file is already
+ * saved by then, so the failure is reported, never thrown: a committed change must not read as failed.
+ */
 export function mirrorLast(
 	statePath: string,
 	record: SessionRecord,
 	lastLock?: LastLockOptions,
-): void {
+): string | undefined {
 	const lastPath = join(dirname(dirname(statePath)), "last.json");
-	if (!existsSync(lastPath)) return;
-	const refreshed = withLastLock(
-		lastPath,
-		() => {
-			let last: { sessionId?: string } | null;
-			try {
-				last = JSON.parse(readFileSync(lastPath, "utf8")) as { sessionId?: string } | null;
-			} catch {
-				// an unreadable last.json stays as it is
-				return;
-			}
-			if (!last || last.sessionId !== record.sessionId) return;
-			writeFileAtomic(lastPath, `${JSON.stringify(record, null, "\t")}\n`);
-		},
-		lastLock,
-	);
-	if (!refreshed) throw new Error(lastRefreshMessage(lastPath));
+	if (!existsSync(lastPath)) return undefined;
+	try {
+		const refreshed = withLastLock(
+			lastPath,
+			() => {
+				let last: { sessionId?: string } | null;
+				try {
+					last = JSON.parse(readFileSync(lastPath, "utf8")) as { sessionId?: string } | null;
+				} catch {
+					// an unreadable last.json stays as it is
+					return;
+				}
+				if (!last || last.sessionId !== record.sessionId) return;
+				writeFileAtomic(lastPath, `${JSON.stringify(record, null, "\t")}\n`);
+			},
+			lastLock,
+		);
+		return refreshed ? undefined : lastRefreshMessage(lastPath);
+	} catch {
+		// reason: the session file is saved; a failed mirror is reported as the warning, as saveSessionFile does
+		return lastRefreshMessage(lastPath);
+	}
 }

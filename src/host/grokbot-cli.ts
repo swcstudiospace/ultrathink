@@ -454,9 +454,10 @@ async function cmdAnswers(rest: string[], { stateDir }: Ctx): Promise<Out> {
 			code: 1,
 			text: `unknown question id(s): ${outcome.unknownIds.join(", ")} (nothing recorded)`,
 		};
+	const warning = outcome.warning ? `\nwarning: ${outcome.warning}` : "";
 	return {
 		code: 0,
-		text: `HITL · ${outcome.matched.length} answer(s) recorded\n${json(outcome.list.map(({ id, question, answer, default: def, blocking }) => ({ id, question, blocking, ...(answer ? { answer } : { default: def }) })))}`,
+		text: `HITL · ${outcome.matched.length} answer(s) recorded${warning}\n${json(outcome.list.map(({ id, question, answer, default: def, blocking }) => ({ id, question, blocking, ...(answer ? { answer } : { default: def }) })))}`,
 	};
 }
 

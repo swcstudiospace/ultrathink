@@ -315,12 +315,7 @@ export function recordRefs(
 			record.result = { ...record.result, xml };
 			writeFileAtomic(statePath, `${JSON.stringify(record, null, 2)}\n`);
 			writeFileAtomic(statePath.replace(/\.json$/, ".xml"), xml);
-			let warning: string | undefined;
-			try {
-				mirrorLast(statePath, record, lastLock);
-			} catch (error) {
-				warning = error instanceof Error ? error.message : String(error);
-			}
+			const warning = mirrorLast(statePath, record, lastLock);
 			return {
 				tracking,
 				todos: formatTrackingTodos(plan, tracking),

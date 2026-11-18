@@ -18,8 +18,9 @@ import {
 	newTurnSessionId,
 	type ControlState,
 	readControl,
-	readSkipOnce,
+	readSkipOnceStamp,
 	sessionPath,
+	type SkipOnceStamp,
 } from "../claude/state.ts";
 import { recentConversationFromTranscript } from "../claude/transcript.ts";
 import { parseUltrathinkCommand, trackingEnabled, trackingOff } from "../uplift/commands.ts";
@@ -111,6 +112,8 @@ export interface PlanOptions {
 	realmProbe?: HookDeps["realmProbe"];
 	/** Test seam for the Graph of Thought (see HookDeps); defaults to `runThink`. */
 	think?: HookDeps["think"];
+	/** Test seam and host seam for the Decisions client's fetch (see DecisionsDeps); defaults to `globalThis.fetch` at call time. */
+	fetch?: typeof fetch;
 }
 
 /** One diagnostic line on stderr when `ULTRATHINK_DEBUG=1`, like the hook entries' own log. */
@@ -239,10 +242,10 @@ function buildHookDeps(turn: {
 	engine: SelectedEngine;
 	resolution: ModelResolution;
 	stateDir: string;
-	skipArmed: boolean;
+	armedSkip: SkipOnceStamp | false;
 	options: PlanOptions;
 }): HookDeps {
-	const { host, env, config, control, engine, resolution, stateDir, skipArmed, options } = turn;
+	const { host, env, config, control, engine, resolution, stateDir, armedSkip, options } = turn;
 	const log = debugLog(env);
 	// The PRD stage writes through the same trackers as the rows: an injected tracker (a test) keeps it off unless a seam is given.
 	const tot =
@@ -263,7 +266,7 @@ function buildHookDeps(turn: {
 		modelResolution: resolution,
 		stateDir,
 		...(options.stateLock ? { stateLock: options.stateLock } : {}),
-		armedSkip: skipArmed,
+		armedSkip,
 		surface: host,
 		conversation: recentConversationFromTranscript,
 		brief: (input) =>
@@ -281,7 +284,7 @@ function buildHookDeps(turn: {
 		trackCommand: trackCommand(),
 		progress: options.progress,
 		// The plan gate itself runs in runPromptSubmit (AD-P1); the host's env holds its key and URL override.
-		decisionsDeps: { env },
+		decisionsDeps: { env, ...(options.fetch ? { fetch: options.fetch } : {}) },
 		...(options.recall ? { recall: options.recall } : {}),
 		...(options.ground ? { ground: options.ground } : {}),
 		...(options.realmProbe ? { realmProbe: options.realmProbe } : {}),
@@ -411,7 +414,8 @@ async function planPromptTurn(
 	// Supplied config, control and stateDir are this flight's captured values, never alternate stores. The armed skip is
 	// per session: it is read from, and cleared in, the one state directory planning, carriers and commands share.
 	const stateDir = options.stateDir ?? resolveStateDir({ ...env, ULTRATHINK_HOST: host });
-	const skipArmed = readSkipOnce(stateDir, sessionId);
+	const armedRead = readSkipOnceStamp(stateDir, sessionId);
+	const skipArmed = armedRead !== undefined;
 	let control: ControlState = options.control ?? {};
 	try {
 		const target = precheckTarget(text, cwd, host, skipArmed);
@@ -432,7 +436,7 @@ async function planPromptTurn(
 		const decision = decideUplift({ text, source: "user", idle: true }, state);
 		if (skipArmed && !state.skipOnce) {
 			try {
-				clearSkipOnce(stateDir, sessionId);
+				clearSkipOnce(stateDir, sessionId, armedRead);
 			} catch {
 				// reason: fail-open: the skip still applies to this prompt
 			}
@@ -483,7 +487,7 @@ async function planPromptTurn(
 				engine,
 				resolution,
 				stateDir,
-				skipArmed,
+				armedSkip: armedRead ?? false,
 				options,
 			}),
 		);

@@ -38,7 +38,7 @@ import {
 	deepenTargets,
 	GROKBOT_LABEL,
 	hostResolution,
-	installDecisionsJournal,
+	decisionsJournalFetch,
 	journalDir,
 	listPending,
 	type PendingRequest,
@@ -569,86 +569,44 @@ describe("grok-bot Jev journal", () => {
 			calls++;
 			return new Response('{"p":0.9}', { status: 200 });
 		}) as unknown as typeof fetch;
-		const restore = installDecisionsJournal(root, base);
-		try {
-			const init = {
-				method: "POST",
-				body: '{"x":1}',
-				headers: { authorization: "Bearer sk-test-should-not-persist" },
-			};
-			const first = await fetch("https://openrouter.ai/api/alpha/decisions", init);
-			const second = await fetch("https://openrouter.ai/api/alpha/decisions", init);
-			expect(await first.text()).toBe('{"p":0.9}');
-			expect(await second.text()).toBe('{"p":0.9}');
-			expect(calls).toBe(1);
-		} finally {
-			restore();
-		}
+		const journal = decisionsJournalFetch(root, base);
+		const init = {
+			method: "POST",
+			body: '{"x":1}',
+			headers: { authorization: "Bearer sk-test-should-not-persist" },
+		};
+		const first = await journal("https://openrouter.ai/api/alpha/decisions", init);
+		const second = await journal("https://openrouter.ai/api/alpha/decisions", init);
+		expect(await first.text()).toBe('{"p":0.9}');
+		expect(await second.text()).toBe('{"p":0.9}');
+		expect(calls).toBe(1);
 		const files = readdirSync(join(root, "decisions"));
 		expect(files).toHaveLength(1);
 		expect(readFileSync(join(root, "decisions", files[0]!), "utf8")).not.toContain("sk-test");
 	});
-	test("overlapping installations restore the real fetch whichever restore runs first", () => {
+	test("the journal leaves globalThis.fetch alone", () => {
 		const real = globalThis.fetch;
-		const base = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
-		for (const order of ["a-then-b", "b-then-a"] as const) {
-			const restoreA = installDecisionsJournal(tmp(), base);
-			const wrapperA = globalThis.fetch;
-			const restoreB = installDecisionsJournal(tmp(), base);
-			const wrapperB = globalThis.fetch;
-			expect(wrapperB).not.toBe(wrapperA);
-			if (order === "a-then-b") {
-				restoreA();
-				expect(globalThis.fetch).toBe(wrapperB);
-				restoreB();
-			} else {
-				restoreB();
-				expect(globalThis.fetch).toBe(wrapperA);
-				restoreA();
-			}
-			expect(globalThis.fetch).toBe(real);
-			restoreA();
-			restoreB();
-			expect(globalThis.fetch).toBe(real);
-		}
+		const journal = decisionsJournalFetch(tmp());
+		expect(journal).not.toBe(real);
+		expect(globalThis.fetch).toBe(real);
 	});
-	test("restore leaves a fetch it did not install alone", () => {
-		const real = globalThis.fetch;
-		const foreign = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
-		const restore = installDecisionsJournal(tmp(), foreign);
-		globalThis.fetch = foreign;
-		try {
-			restore();
-			expect(globalThis.fetch).toBe(foreign);
-		} finally {
-			globalThis.fetch = real;
-		}
-	});
-	test("a journal installed over another one never journals into the other's dir", async () => {
-		const real = globalThis.fetch;
+	test("a journal writes only into the dir it was made for", async () => {
+		const dir = tmp();
+		const other = tmp();
 		let calls = 0;
-		globalThis.fetch = (async () => {
+		const base = (async () => {
 			calls++;
 			return new Response('{"p":0.5}', { status: 200 });
 		}) as unknown as typeof fetch;
-		const dirA = tmp();
-		const dirB = tmp();
-		const restoreA = installDecisionsJournal(dirA);
-		const restoreB = installDecisionsJournal(dirB);
-		try {
-			const response = await fetch("https://openrouter.ai/api/alpha/decisions", {
-				method: "POST",
-				body: '{"y":2}',
-			});
-			expect(await response.text()).toBe('{"p":0.5}');
-		} finally {
-			restoreA();
-			restoreB();
-			globalThis.fetch = real;
-		}
+		const journal = decisionsJournalFetch(dir, base);
+		const response = await journal("https://openrouter.ai/api/alpha/decisions", {
+			method: "POST",
+			body: '{"y":2}',
+		});
+		expect(await response.text()).toBe('{"p":0.5}');
 		expect(calls).toBe(1);
-		expect(readdirSync(join(dirB, "decisions"))).toHaveLength(1);
-		expect(existsSync(join(dirA, "decisions"))).toBe(false);
+		expect(readdirSync(join(dir, "decisions"))).toHaveLength(1);
+		expect(existsSync(join(other, "decisions"))).toBe(false);
 	});
 	test("a pending request without a controller rejects as AbortError", async () => {
 		const root = tmp();
@@ -1647,15 +1605,15 @@ describe("grok-bot answers", () => {
 		const before = readFileSync(lastPath, "utf8");
 		writeFileSync(`${lastPath}.lock`, String(process.pid));
 		try {
-			expect(() =>
+			expect(
 				recordAnswers(
 					statePath,
 					{ answers: { q1: "JSON lines" } },
 					301,
 					undefined,
 					virtualLastLock(),
-				),
-			).toThrow(/could not refresh/);
+				).warning,
+			).toMatch(/could not refresh/);
 			const refreshed = recordRefs(
 				statePath,
 				{ notion: { task: "https://www.notion.so/saved-task" } },
@@ -1709,9 +1667,9 @@ describe("grok-bot answers", () => {
 		const fd = openSync(`${lastPath}.lock`, "wx");
 		writeSync(fd, String(process.pid));
 		try {
-			expect(() =>
+			expect(
 				mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 }, virtualLastLock()),
-			).toThrow(/could not refresh/);
+			).toMatch(/could not refresh/);
 			expect(JSON.parse(readFileSync(lastPath, "utf8")).at).toBe(1);
 			expect(writeSession(stateDir, { ...record, at: 3 }, virtualLastLock())).toMatch(
 				/could not refresh/,
@@ -1744,9 +1702,9 @@ describe("grok-bot answers", () => {
 		utimesSync(`${lastPath}.lock`, old, old);
 		const lockMtime = statSync(`${lastPath}.lock`).mtimeMs;
 		try {
-			expect(() =>
+			expect(
 				mirrorLast(join(stateDir, "sessions", "s1.json"), { ...record, at: 2 }, virtualLastLock()),
-			).toThrow(/could not refresh/);
+			).toMatch(/could not refresh/);
 			expect(writeSession(stateDir, { ...record, at: 3 }, virtualLastLock())).toMatch(
 				/could not refresh/,
 			);
