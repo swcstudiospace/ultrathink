@@ -539,6 +539,28 @@ describe("ship config", () => {
 				.greptileOrganization,
 		).toBe("mine");
 	});
+	test("ship.owners: a user file sets the allowed owners, trimmed and deduplicated; an explicit empty list clears them", () => {
+		expect(base.ship.owners).toEqual([]);
+		expect(
+			mergeConfig({ ship: { owners: [" alice ", "bob", "alice", "  "] } }, base).ship.owners,
+		).toEqual(["alice", "bob"]);
+		const set = mergeConfig({ ship: { owners: ["alice"] } }, base);
+		expect(mergeConfig({ ship: { owners: [] } }, set).ship.owners).toEqual([]);
+	});
+	test("ship.owners: a wrong type preserves the lower layer's list", () => {
+		const set = mergeConfig({ ship: { owners: ["alice"] } }, base);
+		expect(mergeConfig({ ship: { owners: "alice" } }, set).ship.owners).toEqual(["alice"]);
+		expect(mergeConfig({ ship: { owners: null } }, set).ship.owners).toEqual(["alice"]);
+	});
+	test("ship.owners: a project layer cannot set it", () => {
+		expect(
+			mergeConfig({ ship: { owners: ["mallory"] } }, base, { project: true }).ship.owners,
+		).toEqual([]);
+		const set = mergeConfig({ ship: { owners: ["alice"] } }, base);
+		expect(
+			mergeConfig({ ship: { owners: ["mallory"] } }, set, { project: true }).ship.owners,
+		).toEqual(["alice"]);
+	});
 	test("valid overrides apply", () => {
 		const ship = mergeConfig(
 			{

@@ -314,6 +314,8 @@ Merge the PR on GitHub yourself. ultrathink does not watch it afterwards, and it
 
 `--state` is required. `--cwd` defaults to the current directory, so run it from the project's working tree or pass `--cwd`; the config files are read for that directory. Each call prints one JSON object. The exit code is 0, except 2 for usage errors and 127 when Bun is missing. Failures are reported in the JSON as `ok: false` with a `reason` or `error`.
 
+An owner decision (`resolve --owner`, or `merge`/`run --owner-override`) needs its owner listed in `ship.owners` in your user config. Any other name, or an empty list, is refused before anything is written.
+
 | Subcommand | Does |
 |---|---|
 | `assess` | Collect the git, GSD and graph signals and judge whether the task is done. `--ignore-gsd` leaves the GSD roadmap out (see [Done assessment](#done-assessment)). In another repository or branch it archives a finished ship into `ship.history` and starts a fresh one (see [Several PRs in one session](#several-prs-in-one-session)). |
