@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { type LockOptions, withFileLock } from "../claude/atomic.ts";
 import { OMP_LOCK } from "../claude/state.ts";
 import { redactSecrets } from "../redact.ts";
+import { verificationFileName } from "../ship/signals.ts";
 import { parseSkillScaffold, parseSlashCommand } from "../uplift/skill.ts";
 import { type CheckpointReason, fileStore } from "../workflow/phase-loop-store.ts";
 import {
@@ -136,42 +137,61 @@ const frontmatterStatus = (text: string): string | undefined => {
 	return block?.match(/^status:\s*["']?([^"'\r\n]+?)["']?\s*$/m)?.[1];
 };
 
-/**
- * Phases whose latest GSD verification reads `human_needed`, found the way the ship assessment finds the latest
- * verification: the newest phase directory that has a verification file. Unreadable input yields none.
- */
-function humanNeededPhases(cwd: string): string[] {
-	const phasesDir = join(cwd, ".planning", "phases");
-	let phases: string[];
+/** GSD verification statuses that open an HTIL entry for their phase directory. */
+const HTIL_STATUSES: Record<string, true> = { human_needed: true };
+
+/** The names of the subdirectories directly under `dir`, sorted. A missing or unreadable `dir` has none. */
+function subdirectories(dir: string): string[] {
 	try {
-		phases = readdirSync(phasesDir).sort().reverse();
+		return readdirSync(dir, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name)
+			.sort();
 	} catch {
-		// reason: no phases directory means no verification to read; the loop records without an HTIL entry
+		// reason: a missing or unreadable directory has no subdirectories, so there is no phase or verification to read
 		return [];
 	}
-	for (const phase of phases) {
-		let files: string[];
+}
+
+/**
+ * Phase directories whose verification status opens an HTIL entry: `human_needed`, the human item ADR 0001 defines. Every phase directory
+ * is considered. Each phase's verification is its bare `VERIFICATION.md`, else its last `*-VERIFICATION.md`. A passed
+ * status, a missing or unreadable file, or no status opens none. Returns the directory names, sorted.
+ */
+function htilPhases(cwd: string): string[] {
+	const phasesDir = join(cwd, ".planning", "phases");
+	return subdirectories(phasesDir).filter((phase) => {
 		try {
-			files = readdirSync(join(phasesDir, phase));
+			const file = verificationFileName(readdirSync(join(phasesDir, phase)));
+			if (file === undefined) return false;
+			const status = frontmatterStatus(readFileSync(join(phasesDir, phase, file), "utf8"));
+			return status !== undefined && HTIL_STATUSES[status] === true;
 		} catch {
-			// reason: an unreadable phase directory has no verification, the same as a phase without one
-			continue;
+			// reason: an unreadable phase directory or verification file opens no entry
+			return false;
 		}
-		const file = files
-			.filter((name) => name.endsWith("-VERIFICATION.md"))
-			.sort()
-			.at(-1);
-		if (file === undefined) continue;
-		let status: string | undefined;
-		try {
-			status = frontmatterStatus(readFileSync(join(phasesDir, phase, file), "utf8"));
-		} catch {
-			// reason: an unreadable verification file yields no status; the HTIL entry is not opened
-			return [];
-		}
-		if (status !== undefined) return status === "human_needed" ? [phase] : [];
-	}
-	return [];
+	});
+}
+
+/** The HTIL entry id of a phase directory's verification (LIFE-05): `verification:<directory name>`. */
+export function verificationEntryId(directoryName: string): string {
+	return `verification:${directoryName}`;
+}
+
+/**
+ * The phase directory a phase argument names under `phasesDir`: a full directory name, or a bare phase number such as
+ * `110` or `1` (compared by integer value, so `1` names `01-core`). A number that matches no directory, or more than
+ * one, names none. Returns the directory name, or null.
+ */
+export function findPhaseDirectory(phaseArg: string, phasesDir: string): string | null {
+	const names = subdirectories(phasesDir);
+	if (names.includes(phaseArg)) return phaseArg;
+	if (!/^\d+$/.test(phaseArg)) return null;
+	const matches = names.filter((name) => {
+		const prefix = name.split("-", 1)[0] ?? "";
+		return /^\d+$/.test(prefix) && Number(prefix) === Number(phaseArg);
+	});
+	return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 /**
@@ -191,8 +211,12 @@ export function recordGsdPhase(options: {
 	return underPhaseLock(dir, (): PhaseReport => {
 		const store = fileStore(dir);
 		// A phase whose verification needs a human opens an HTIL entry (Q8); an entry already open is refused without a write.
-		for (const verified of humanNeededPhases(options.cwd))
-			openHtilEntry(options.sessionId, { id: `verification:${verified}`, owner: "human" }, store);
+		for (const directory of htilPhases(options.cwd))
+			openHtilEntry(
+				options.sessionId,
+				{ id: verificationEntryId(directory), owner: "human" },
+				store,
+			);
 		// The live session is connected by construction: this host records only for its own flight.
 		const outcome = attemptPhase(
 			options.sessionId,
