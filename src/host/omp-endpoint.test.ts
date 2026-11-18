@@ -376,8 +376,8 @@ describe("named legacy flight identity (REV15-005)", () => {
 					[currentPath, "ENDPOINT_MODEL"],
 				]);
 				expect(calls.map((call) => call.user)).toEqual([
-					`<user_request>\n${prompt}\n</user_request>`,
-					`<user_request>\n${prompt}\n</user_request>`,
+					`<user_request>\nBuild a widget showing A &amp; B inside &lt;button&gt; labels.\n</user_request>`,
+					`<user_request>\nBuild a widget showing A &amp; B inside &lt;button&gt; labels.\n</user_request>`,
 				]);
 				expect(current.events).toContainEqual(
 					expect.objectContaining({ type: "stage", stage: "uplift", phase: "end", ok: true }),

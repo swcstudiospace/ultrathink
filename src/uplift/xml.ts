@@ -27,6 +27,14 @@ export function escapeXml(value: string): string {
 		.replace(/"/g, "&quot;");
 }
 
+/**
+ * Element-text escape for the uplift payload. In element content only `&`, `<` and `>` are structural, so quotes stay
+ * as written and harness framing in the transcript (for example a skill invocation line) keeps its exact wording.
+ */
+export function escapeXmlText(value: string): string {
+	return stripInvalid(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 /** Strips one leading fence line and one trailing fence line by index scans, so hostile whitespace or backticks stay linear. */
 export function stripFences(text: string): string {
 	let value = text.trim();

@@ -4,12 +4,12 @@ import { isAbortError } from "../shared.ts";
 import type { CompletionReport, UpliftResult } from "../types.ts";
 import { fallbackUplift } from "./fallback.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "./prompt.ts";
-import { checkUpliftXml, escapeXml } from "./xml.ts";
+import { checkUpliftXml, escapeXmlText } from "./xml.ts";
 
 function buildPayload(original: string, conversation?: string): string {
-	const request = escapeXml(original);
+	const request = escapeXmlText(original);
 	if (conversation?.trim()) {
-		return `<conversation>\n${escapeXml(conversation)}\n</conversation>\n\n<user_request>\n${request}\n</user_request>`;
+		return `<conversation>\n${escapeXmlText(conversation)}\n</conversation>\n\n<user_request>\n${request}\n</user_request>`;
 	}
 	return `<user_request>\n${request}\n</user_request>`;
 }
