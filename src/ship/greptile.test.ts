@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
+import { tenantReason } from "../greptile/tenant.ts";
 import {
 	findGreptileRepo,
 	GREPTILE_SETUP,
@@ -8,7 +9,6 @@ import {
 	reviewCli,
 	reviewPr,
 	runReview,
-	tenantReason,
 	type ToolCaller,
 } from "./greptile.ts";
 import type { Run, ShipConfig } from "./types.ts";

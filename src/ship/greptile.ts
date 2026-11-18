@@ -9,6 +9,7 @@ import {
 	type Run,
 	type ShipConfig,
 } from "./types.ts";
+import { tenantReason } from "../greptile/tenant.ts";
 import { redactSecrets } from "../redact.ts";
 import { asObj } from "../shared.ts";
 
@@ -59,31 +60,6 @@ const orgArgs = (organization: string | undefined): Obj => (organization ? { org
 
 const errorText = (error: unknown): string =>
 	error instanceof Error ? error.message : String(error);
-
-/** Organization ids/handles a tenant_required error offers, from a JSON payload or a `candidates: a, b` list. */
-function tenantCandidates(message: string): string[] {
-	const start = message.indexOf("{");
-	const payload = start >= 0 ? parseJson(message.slice(start)) : undefined;
-	const listed = payload ? asArr(payload.candidates ?? asObj(payload.error)?.candidates) : [];
-	const names = listed
-		.map((entry) => asStr(entry) ?? asStr(asObj(entry)?.handle) ?? asStr(asObj(entry)?.id))
-		.filter((name): name is string => Boolean(name));
-	if (names.length > 0) return names;
-	// A truncated JSON payload lands here too: keep only bare ids/handles, never fragments of objects.
-	const inline = /candidates["']?\s*[:=]\s*\[?([^\]\n]+)/i.exec(message)?.[1] ?? "";
-	return inline
-		.split(",")
-		.map((name) => name.trim().replace(/^["']|["']$/g, ""))
-		.filter((name) => /^[\w.@-]+$/.test(name));
-}
-
-/** Actionable reason when Greptile refuses a call because the account spans several organizations and none was chosen. */
-export function tenantReason(message: string): string | undefined {
-	if (!/tenant_required/i.test(message)) return undefined;
-	const candidates = tenantCandidates(message);
-	const choose = candidates.length > 0 ? ` (one of: ${candidates.join(", ")})` : "";
-	return `Greptile account has several organizations; set ship.greptileOrganization in ~/.config/ultrathink/config.json${choose}`;
-}
 
 /** What the Greptile repository lookup found: `repo` when Greptile lists it; otherwise `note` says why the CLI path runs. */
 export interface GreptileLookup {

@@ -10,7 +10,6 @@ import type { UltrathinkConfig } from "../config.ts";
 import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
 import { redactSecrets } from "../redact.ts";
-import { tenantReason } from "../ship/greptile.ts";
 import { asObj } from "../shared.ts";
 import type { ToolCaller } from "../track/create.ts";
 import type {
@@ -20,6 +19,7 @@ import type {
 	KnowledgeStage,
 	KnowledgeStageName,
 } from "./knowledge-probe.ts";
+import { tenantReason } from "./tenant.ts";
 
 export type { KnowledgeLookup } from "./knowledge-probe.ts";
 
