@@ -107,7 +107,7 @@ describe("buildTaskMatrix", () => {
 			"| PHASE-2 | phase | Beta writer | Contract merged | executable | G0 | PHASE-1 | PHASE-1 | none | I:5 | not in sources | not in sources | R:12 | I:5 |",
 		]);
 		expect(rowsFor(out, "PHASE-3")).toEqual([
-			"| PHASE-3 | phase | Gamma audit | Not started | blocked | G1 | PHASE-2 | PHASE-2; missing: phase 2 must reach Complete (currently: Contract merged) | none | - | not in sources | not in sources | R:18 | - |",
+			"| PHASE-3 | phase | Gamma audit | Not started | blocked | G1 | PHASE-2 | PHASE-2; missing: phase 2 must be closed (currently: Contract merged) | none | - | not in sources | not in sources | R:18 | - |",
 		]);
 		expect(rowsFor(out, "DEFERRED-9")).toEqual([
 			"| DEFERRED-9 | deferred | Phase 9 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 9` (verification_deferred_human, S:7, S:15) | - | S:7, S:15 | not in sources | /gsd:verify-work 9 | S:7, S:15 | - |",
@@ -130,7 +130,7 @@ describe("buildTaskMatrix", () => {
 	test("a blocked item names its exact missing input", () => {
 		const blocked = section(buildTaskMatrix(FIXTURE), "Blocked");
 		expect(blocked).toContain(
-			"- PHASE-3 (blocked): phase 2 must reach Complete (currently: Contract merged)",
+			"- PHASE-3 (blocked): phase 2 must be closed (currently: Contract merged)",
 		);
 		expect(blocked).toContain(
 			"- BACKLOG-HOST-02 (blocked): condition in R:26 is not yet met: Live proof after a host route is funded.",
@@ -293,6 +293,66 @@ describe("buildTaskMatrix", () => {
 		expect(rowsFor(out, "PHASE-1")).toEqual([
 			"| PHASE-1 | phase | Path a\\\\\\|b | Complete | closed | - | - | none | - | - | not in sources | not in sources | R:1 | - |",
 		]);
+	});
+
+	test("the bucket follows the status line: Complete or verdict passed is closed, verdict human_needed is deferred, otherwise executable", () => {
+		const cases: [string, string][] = [
+			["Complete (merged)", "closed"],
+			["Verified 2026-11-18: passed 3/3 success criteria", "closed"],
+			["Verified human_needed on 2026-11-18 at origin/main 99ce989", "deferred"],
+			["Verified 2026-11-18: gaps_found on criterion 2", "executable"],
+			["Verified 2026-11-18 with no verdict word", "executable"],
+			["Verified human_needed on 2026-11-18; gaps_found earlier", "deferred"],
+			["Verified 2026-11-18: gaps_found, then passed on rerun", "executable"],
+		];
+		for (const [status, bucket] of cases) {
+			const roadmap = doc(
+				"### Phase 1: Alpha",
+				"",
+				`Status: ${status}.`,
+				"",
+				"**Depends on:** none",
+			);
+			const row = rowsFor(buildTaskMatrix({ ...FIXTURE, roadmap }), "PHASE-1")[0] ?? "";
+			expect(row.split(" | ")[4]).toBe(bucket);
+		}
+	});
+
+	test("a dependency is satisfied by a closed phase, and a deferred phase is listed under Deferred to owner", () => {
+		const roadmap = doc(
+			"### Phase 1: Alpha", // 1
+			"", // 2
+			"Status: Verified 2026-11-18: passed 3/3.", // 3
+			"", // 4
+			"**Depends on:** none", // 5
+			"", // 6
+			"### Phase 2: Beta", // 7
+			"", // 8
+			"Status: Verified human_needed on 2026-11-18.", // 9
+			"", // 10
+			"**Depends on:** 1.", // 11
+			"", // 12
+			"### Phase 3: Gamma", // 13
+			"", // 14
+			"Status: Not started.", // 15
+			"", // 16
+			"**Depends on:** 2.", // 17
+			"", // 18
+			"### Phase 4: Delta", // 19
+			"", // 20
+			"Status: Not started.", // 21
+			"", // 22
+			"**Depends on:** 1.", // 23
+		);
+		const out = buildTaskMatrix({ ...FIXTURE, roadmap });
+		expect(section(out, "Executable now")).toBe("- PHASE-4 (G0)");
+		expect(section(out, "Deferred to owner")).toBe(
+			"- PHASE-2 (deferred): owner human verification of phase 2 must pass (currently: Verified human_needed on 2026-11-18)",
+		);
+		expect(section(out, "Blocked")).toContain(
+			"- PHASE-3 (blocked): phase 2 must be closed (currently: Verified human_needed on 2026-11-18)",
+		);
+		expect(section(out, "Closed")).toContain("- PHASE-1");
 	});
 });
 
