@@ -8,6 +8,7 @@
  * Messages never contain the key. Transient failures (network errors, 5xx) are
  * retried with backoff; a 401 or 403 is final.
  */
+import { sleep as defaultSleep } from "../resilience/sleep.ts";
 
 const OPENROUTER_KEY_PATTERN = /^sk-or-[A-Za-z0-9_-]{16,256}$/;
 export const OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/auth/key";
@@ -42,7 +43,7 @@ export async function verifyOpenRouterKey(key: string, deps: VerifyDeps = {}): P
 	const format = checkOpenRouterKeyFormat(key);
 	if (!format.ok) return format;
 	const fetchImpl = deps.fetch ?? fetch;
-	const sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
+	const sleep = deps.sleep ?? defaultSleep;
 	for (let attempt = 0; attempt < RETRY_BACKOFF_MS.length + 1; attempt++) {
 		if (attempt > 0) await sleep(RETRY_BACKOFF_MS[attempt - 1] ?? 0);
 		let response: Response;

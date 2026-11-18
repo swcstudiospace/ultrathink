@@ -17,6 +17,7 @@ import {
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
+import { sleep as defaultSleep } from "../resilience/sleep.ts";
 import { processIdentity } from "../swarm/lane.ts";
 import type { ProviderId } from "./providers.ts";
 
@@ -274,7 +275,7 @@ export async function withStoreLock<T>(
 		pollMs?: number;
 		/** Clock for the lock deadline, staleness and heartbeat stamps; defaults to `Date.now`. */
 		now?: () => number;
-		/** Wait between acquire attempts; defaults to `Bun.sleep`. */
+		/** Wait between acquire attempts; defaults to the shared sleep from resilience/sleep.ts. */
 		sleep?: (ms: number) => Promise<void>;
 		/** Interval port for the heartbeat that keeps a held lock fresh; defaults to the platform timers. */
 		timers?: LockTimers;
@@ -286,7 +287,7 @@ export async function withStoreLock<T>(
 	const waitMs = opts.waitMs ?? staleMs + 5_000;
 	const pollMs = opts.pollMs ?? 100;
 	const now = opts.now ?? Date.now;
-	const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
+	const sleep = opts.sleep ?? defaultSleep;
 	const timers: LockTimers = opts.timers ?? {
 		setInterval: (fn, ms) => setInterval(fn, ms),
 		clearInterval: (handle) => clearInterval(handle as Parameters<typeof clearInterval>[0]),
