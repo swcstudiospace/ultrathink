@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { isAbsolute } from "node:path";
+import { isPlanningPath } from "../../../src/host/paths.ts";
 import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
 import { type AnomalyRule, parseAnomalyRules } from "../obs/anomaly.ts";
 
@@ -413,14 +414,24 @@ function readOriginList(
 	return [...origins];
 }
 
-/** Absolute, without trailing slashes: `dbPath` appends `/ultrathink.sqlite`. */
-function readStateDir(env: Record<string, string | undefined>): string {
+/**
+ * The state directory from ULTRATHINK_STATE_DIR, or `fallback` when it is unset or blank. An explicit value must be
+ * absolute and must not sit in a `.planning` tree; either refusal throws ConfigError. Trailing slashes are dropped,
+ * because `dbPath` appends `/ultrathink.sqlite`.
+ */
+export function resolveStateDir(
+	env: Record<string, string | undefined>,
+	fallback = DEFAULT_STATE_DIR,
+): string {
 	const raw = readOptional(env, "ULTRATHINK_STATE_DIR");
 	if (raw === undefined) {
-		return DEFAULT_STATE_DIR;
+		return fallback;
 	}
 	if (!isAbsolute(raw)) {
 		throw new ConfigError("ULTRATHINK_STATE_DIR must be an absolute path");
+	}
+	if (isPlanningPath(raw)) {
+		throw new ConfigError("ULTRATHINK_STATE_DIR must not point into a .planning tree");
 	}
 	return raw.replace(/(?<=.)\/+$/, "");
 }
@@ -696,7 +707,7 @@ export function loadConfig(
 		collect(problems, fallback, () => readLimit(env, name, fallback, min, max));
 	const flag = (name: string): boolean | undefined =>
 		collect<boolean | undefined>(problems, undefined, () => readFlag(env, name));
-	const stateDir = collect(problems, DEFAULT_STATE_DIR, () => readStateDir(env));
+	const stateDir = collect(problems, DEFAULT_STATE_DIR, () => resolveStateDir(env));
 	collect(problems, undefined, () => {
 		rejectRemovedPlanningBackend(env);
 		return undefined;
