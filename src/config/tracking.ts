@@ -39,7 +39,10 @@ export function mergeTrack(
 	};
 }
 
-export function tightenTrack(track: Record<string, unknown> | undefined, base: TrackConfig): TrackConfig {
+export function tightenTrack(
+	track: Record<string, unknown> | undefined,
+	base: TrackConfig,
+): TrackConfig {
 	if (!track) return base;
 	return { ...base, enabled: track.enabled === false ? false : base.enabled };
 }

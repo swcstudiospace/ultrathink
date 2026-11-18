@@ -2,7 +2,10 @@
 // Copyright (C) 2026 SWC Studio
 import type { HitlConfig } from "../hitl/types.ts";
 
-export function mergeHitl(hitl: Record<string, unknown> | undefined, defaults: HitlConfig): HitlConfig {
+export function mergeHitl(
+	hitl: Record<string, unknown> | undefined,
+	defaults: HitlConfig,
+): HitlConfig {
 	if (!hitl) return defaults;
 	return {
 		enabled: typeof hitl.enabled === "boolean" ? hitl.enabled : defaults.enabled,
@@ -18,7 +21,10 @@ export function mergeHitl(hitl: Record<string, unknown> | undefined, defaults: H
 	};
 }
 
-export function tightenHitl(hitl: Record<string, unknown> | undefined, base: HitlConfig): HitlConfig {
+export function tightenHitl(
+	hitl: Record<string, unknown> | undefined,
+	base: HitlConfig,
+): HitlConfig {
 	if (!hitl) return base;
 	return {
 		...base,

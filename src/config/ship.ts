@@ -16,7 +16,10 @@ function reviewerField(value: unknown, fallback: ShipConfig["reviewer"]): ShipCo
 	throw new Error(`ship.reviewer must be "greptile" or "claude", got ${JSON.stringify(value)}`);
 }
 
-export function mergeShip(ship: Record<string, unknown> | undefined, defaults: ShipConfig): ShipConfig {
+export function mergeShip(
+	ship: Record<string, unknown> | undefined,
+	defaults: ShipConfig,
+): ShipConfig {
 	if (!ship) return defaults;
 	const skills =
 		Array.isArray(ship.skills) && ship.skills.every((s) => typeof s === "string" && s.trim())
@@ -82,7 +85,10 @@ export function mergeShip(ship: Record<string, unknown> | undefined, defaults: S
  * already belongs to, and the repository's code goes to Greptile for review either way. Notion and Linear are user-only
  * (see `mergeConfig`). Think is user-only. `ship.owners` is user-only, so the base list passes through unchanged.
  */
-export function tightenShip(ship: Record<string, unknown> | undefined, base: ShipConfig): ShipConfig {
+export function tightenShip(
+	ship: Record<string, unknown> | undefined,
+	base: ShipConfig,
+): ShipConfig {
 	if (!ship) return base;
 	const minScore = ship.minScore;
 	return {

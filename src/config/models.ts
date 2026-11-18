@@ -9,7 +9,9 @@ import { asRecord, hasControlCharacter, selectorField } from "./fields.ts";
 const UNSAFE_DICTIONARY_KEYS: readonly string[] = ["__proto__", "constructor", "prototype"];
 
 /** A prototype-free copy of a provider dictionary's own entries, so no inherited property can act as a mapping. */
-export function providerDictionary(entries: Readonly<Record<string, string>>): Record<string, string> {
+export function providerDictionary(
+	entries: Readonly<Record<string, string>>,
+): Record<string, string> {
 	const out = Object.create(null) as Record<string, string>;
 	for (const [key, value] of Object.entries(entries)) out[key] = value;
 	return out;
