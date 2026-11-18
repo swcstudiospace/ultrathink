@@ -5,7 +5,13 @@
  * skill by name. It manages skills that already exist and never generates one. Every outcome is one reply text; a store
  * failure is reported with its reason and never thrown.
  */
-import { listGenerated, removeGeneratedSkill, setGeneratedStatus } from "./skill-store.ts";
+import {
+	listGenerated,
+	promoteGeneratedSkill as promoteStoredSkill,
+	type PromoteResult,
+	removeGeneratedSkill,
+	setGeneratedStatus,
+} from "./skill-store.ts";
 
 const USAGE = "Usage: /ultrathink-skills [list | disable <name> | delete <name>]";
 
@@ -49,4 +55,17 @@ export async function runSkillsCommand(argText: string, deps: SkillsCommandDeps)
 		default:
 			return USAGE;
 	}
+}
+
+/**
+ * Promotes a draft generated skill to active on the user's confirmation. `confirmedBy` names who confirmed it, and the
+ * audit record carries it. An active skill succeeds and changes nothing; a disabled skill and an unknown name are refused
+ * with their reason.
+ */
+export function promoteGeneratedSkill(
+	storeDir: string,
+	name: string,
+	{ confirmedBy }: { confirmedBy: string },
+): Promise<PromoteResult> {
+	return promoteStoredSkill(storeDir, name, confirmedBy);
 }

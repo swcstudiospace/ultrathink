@@ -2,8 +2,9 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * The append-only audit log of the generated-skill store: one JSON object per line in `audit.ndjson` at the store root.
- * A record names one decision (create, update, reject, disable or delete) with the skill's identity and provenance. It
- * never holds skill text: each line is built from the named fields below, so no other property reaches the file.
+ * A record names one decision (create, update, reject, disable, promote or delete) with the skill's identity and
+ * provenance. It never holds skill text: each line is built from the named fields below, so no other property reaches
+ * the file.
  *
  * Appends run under the file lock and are synchronous, because the lock is released as soon as its callback returns.
  * A failed append is returned as an outcome, never thrown, so the caller decides what a missing record means.
@@ -14,7 +15,7 @@ import { withFileLock } from "../claude/atomic.ts";
 
 const AUDIT_FILE = "audit.ndjson";
 
-type AuditAction = "create" | "update" | "reject" | "disable" | "delete";
+type AuditAction = "create" | "update" | "reject" | "disable" | "promote" | "delete";
 export type QualificationBy = "user-confirmed" | "recurrence" | "resolved-root-cause";
 export type MatchBy = "signature-hash" | "task-scope" | "similarity";
 
@@ -29,6 +30,8 @@ export interface AuditRecord {
 	source_ids?: string[];
 	qualification_by?: QualificationBy;
 	match_by?: MatchBy;
+	/** Who confirmed a promotion to active, as the caller named them. Set only on a promote record. */
+	confirmedBy?: string;
 	/** Why a candidate was refused. A kind and field name, never the text that failed. */
 	reject_kind?: string;
 	reject_field?: string;
@@ -61,6 +64,7 @@ function auditLineOf(record: AuditRecord): AuditRecord {
 		source_ids: record.source_ids === undefined ? undefined : [...record.source_ids],
 		qualification_by: record.qualification_by,
 		match_by: record.match_by,
+		confirmedBy: record.confirmedBy,
 		reject_kind: record.reject_kind,
 		reject_field: record.reject_field,
 	};
