@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 /**
- * ultrathink-ship: assess | pr | review | merge | run | status --state <sessions/<id>.json> [--cwd <dir>].
+ * ultrathink-ship: assess | pr | review | merge | run | resolve <phase> | status --state <sessions/<id>.json> [--cwd <dir>].
  * Prints one JSON object; always exits 0 except usage errors (2). Fails open; the merge gate on the phase record fails closed.
  */
 import { readFileSync } from "node:fs";
@@ -18,7 +18,12 @@ import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import type { McpClient } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
 import { fileStore } from "../workflow/phase-loop-store.ts";
-import { confirmShip } from "../workflow/phase-loop.ts";
+import {
+	confirmShip,
+	recordAudit,
+	resolve as resolveHumanItem,
+	type ShipConfirmationInput,
+} from "../workflow/phase-loop.ts";
 import { assessDecisionJson, assessDone } from "./assess.ts";
 import { CLAUDE_REVIEW_TIMEOUT_MS, reviewWithClaude, usesClaudeReviewer } from "./claude-review.ts";
 import { createGithub } from "./github.ts";
@@ -70,8 +75,13 @@ export interface ShipDeps {
 type Output = Record<string, unknown>;
 type ShipRecord = SessionRecord & { ship?: ShipState };
 
+/**
+ * `merge` and `run` take `--owner-override <reason>` with `--owner <name>`: the owner decision closes the phase without a
+ * passing audit, and the reason is kept in the phase record. `resolve <phase>` closes the phase's open HTIL entry
+ * (`verification:<phase>`) with `--owner <name>` and `--evidence <text>` as the owner's evidence.
+ */
 const USAGE =
-	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd] [--approve]";
+	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd] [--approve] [--owner <name> --owner-override <reason>] | ultrathink-ship resolve <phase> --state <sessions/<id>.json> --owner <name> --evidence <text> [--cwd <dir>]";
 const NEXT_FIX =
 	"fix the listed findings, commit only the files you edited, push, then run review again";
 const NEXT_PENDING =
@@ -230,6 +240,21 @@ interface Ctx {
 	ignoreGsd: boolean;
 	/** The operator approved the merge (`--approve`); a passing Claude review merges only with it. */
 	approve: boolean;
+	/** The owner's `--owner-override` decision: a merge or run that proceeds without a passing audit; undefined otherwise. */
+	override: ShipOverride | undefined;
+}
+
+/** The owner's answer to an open HTIL entry: the phase whose `verification:<phase>` entry it closes, who resolved it, and the evidence. */
+interface Resolution {
+	phase: string;
+	owner: string;
+	evidence: string;
+}
+
+/** The owner decision that lets a merge or run proceed without a passing audit (`--owner-override`). */
+interface ShipOverride {
+	owner: string;
+	reason: string;
 }
 
 /** owner/repo of a recorded PR: its own `repo`, else parsed from a `https://github.com/<owner>/<repo>/pull/<n>` url. */
@@ -578,6 +603,23 @@ async function stepReview(ctx: Ctx): Promise<Output & { ready: boolean }> {
 		)
 	)
 		return { ...stateWriteFailed(), ready: false };
+	if (result.status === "completed") {
+		// The review stage's audit: a merge of this head cites it in the phase record (LIFE-02).
+		const audited = recordReviewAudit(
+			deps.phaseLoopDir,
+			readRecord(statePath)?.sessionId ?? "",
+			status.headSha,
+			passed,
+			now,
+		);
+		if (audited !== undefined)
+			return {
+				ok: false,
+				ready: false,
+				error: audited,
+				next: "fix the phase record so it can be written, then run review again",
+			};
+	}
 	let commented: boolean | undefined;
 	if (blockedReason && status.state === "OPEN" && !reusedRound && ship.phase !== "blocked") {
 		const body = stoppedComment({
@@ -681,17 +723,76 @@ function storedReviewRefusal(
 	return mergeGate({ config, status: standIn, latest }).reason;
 }
 
+/** The phase record id of the review of `headSha`: the audit a merge of that head cites (LIFE-02). */
+const reviewRecordId = (headSha: string): string => `review:${headSha}`;
+
 /**
- * The phase record gates the merge: the session's record confirms a reviewed head once, and a head that moved after that
- * confirmation is blocked for a human. Only the store is read; the runtime connection is not evaluated here. An unreadable
- * or unwritable record blocks, so GitHub is never asked to merge on a record the CLI could not read or write.
+ * Runs `fn` under the phase-record lock. Undefined, with `fn` not run, when the lock is not taken: the caller refuses, so
+ * nothing is written unlocked.
  */
-function confirmPhaseMerge(
+function underPhaseRecordLock<T>(dir: string, fn: () => T): { value: T } | undefined {
+	let notTaken = false;
+	return withFileLock(dir, () => (notTaken ? undefined : { value: fn() }), {
+		...HOOK_LOCK,
+		onTimeout: "throw",
+		// acquire reports through `log` only when it runs the callback unlocked, and it does so before the callback.
+		log: () => {
+			notTaken = true;
+		},
+	});
+}
+
+/**
+ * The review stage's audit (LIFE-02): records the completed review of `headSha` in the phase record, passed or not, so
+ * a merge of that head can cite it. Returns why it was not recorded, or undefined when it was.
+ */
+function recordReviewAudit(
 	dir: string,
 	sessionId: string,
 	headSha: string,
-	reviewedAt: number,
-): MergeStep | undefined {
+	passed: boolean,
+	at: number,
+): string | undefined {
+	if (!sessionId) return "session id missing from the state file";
+	try {
+		const locked = underPhaseRecordLock(dir, () =>
+			recordAudit(
+				sessionId,
+				{
+					id: reviewRecordId(headSha),
+					kind: "validation",
+					result: passed ? "pass" : "fail",
+					recordedAt: new Date(at).toISOString(),
+				},
+				fileStore(dir),
+			),
+		);
+		if (locked === undefined) return "phase record lock not taken; nothing recorded";
+		return locked.value.accepted ? undefined : locked.value.refusals.join("; ");
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		return `phase record unavailable: ${detail}`;
+	}
+}
+
+/** What a merge confirmation is checked against: the session's record, the reviewed head, and the owner override if given. */
+interface PhaseMergeInput {
+	dir: string;
+	sessionId: string;
+	headSha: string;
+	now: number;
+	override: ShipOverride | undefined;
+}
+
+/**
+ * The phase record gates the merge: the session's record confirms a reviewed head once, and a head that moved after that
+ * confirmation is blocked for a human. The close cites the audit the review stage recorded for the head, or, with an owner
+ * override, the override, which the record keeps with its reason. Only the store is read; the runtime connection is not
+ * evaluated here. An unreadable or unwritable record blocks, so GitHub is never asked to merge on a record the CLI could not
+ * read or write.
+ */
+function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
+	const { dir, sessionId, headSha, now, override } = input;
 	const blocked = (reason: string): MergeStep => ({
 		kind: "blocked",
 		reason,
@@ -699,59 +800,58 @@ function confirmPhaseMerge(
 		comment: false,
 	});
 	if (!sessionId) return blocked("session id missing from the state file");
-	const recordId = `review:${headSha}`;
+	const recordId = reviewRecordId(headSha);
+	const decisionId = `override:${headSha}`;
 	const store = fileStore(dir);
-	let lockNotTaken = false;
 	try {
-		return withFileLock(
-			dir,
-			(): MergeStep | undefined => {
-				// acquire reports through `log` only when it runs the callback unlocked, and it does so before the callback.
-				if (lockNotTaken) return blocked("phase record lock not taken; nothing merged");
-				const stored = store.load(sessionId);
-				if (stored.status === "quarantined")
-					return blocked(`phase record is corrupt; set aside at ${stored.quarantinedAs}`);
-				const record = stored.status === "found" ? stored.record : undefined;
-				const closedBy = record?.closedBy;
-				if (closedBy !== undefined) {
-					if (closedBy.recordId === recordId) return undefined;
-					return blocked(
-						`phase was confirmed for ${closedBy.recordId}; the head moved, so a human must confirm ${recordId}`,
-					);
-				}
-				// The runtime connection is not evaluated here: the CLI checks only the store.
-				const outcome = confirmShip(
-					sessionId,
-					{
-						afterVerify: record?.phaseOrder.at(-1) === "Verify",
-						audit: {
-							id: recordId,
-							kind: "validation",
-							result: "pass",
-							recordedAt: new Date(reviewedAt).toISOString(),
-						},
-						auditId: recordId,
-					},
-					() => true,
-					store,
+		const locked = underPhaseRecordLock(dir, (): MergeStep | undefined => {
+			const stored = store.load(sessionId);
+			if (stored.status === "quarantined")
+				return blocked(`phase record is corrupt; set aside at ${stored.quarantinedAs}`);
+			const record = stored.status === "found" ? stored.record : undefined;
+			const closedBy = record?.closedBy;
+			if (closedBy !== undefined) {
+				if (closedBy.recordId === recordId || closedBy.recordId === decisionId) return undefined;
+				return blocked(
+					`phase was confirmed for ${closedBy.recordId}; the head moved, so a human must confirm ${recordId}`,
 				);
-				if (outcome.accepted) return undefined;
-				const reason = outcome.refusals.join("; ");
-				return {
-					kind: "needs-agent",
-					reason,
-					next: `${reason}; resolve it in the phase record, then run merge again`,
-					headSha,
+			}
+			// The runtime connection is not evaluated here: the CLI checks only the store.
+			const afterVerify = record?.phaseOrder.at(-1) === "Verify";
+			let closing: ShipConfirmationInput;
+			if (override !== undefined) {
+				closing = {
+					afterVerify,
+					override: {
+						decisionId,
+						owner: override.owner,
+						decidedAt: new Date(now).toISOString(),
+						reason: override.reason,
+					},
 				};
-			},
-			{
-				...HOOK_LOCK,
-				onTimeout: "throw",
-				log: () => {
-					lockNotTaken = true;
-				},
-			},
-		);
+			} else {
+				const audit = record?.audits?.find((item) => item.id === recordId);
+				if (audit === undefined || audit.result !== "pass") {
+					const reason =
+						audit === undefined
+							? `no recorded audit for ${recordId}`
+							: `audit ${recordId} did not pass`;
+					return { kind: "needs-agent", reason, next: `${reason}; run review again`, headSha };
+				}
+				closing = { afterVerify, audit, auditId: recordId };
+			}
+			const outcome = confirmShip(sessionId, closing, () => true, store);
+			if (outcome.accepted) return undefined;
+			const reason = outcome.refusals.join("; ");
+			return {
+				kind: "needs-agent",
+				reason,
+				next: `${reason}; resolve it in the phase record, then run merge again`,
+				headSha,
+			};
+		});
+		if (locked === undefined) return blocked("phase record lock not taken; nothing merged");
+		return locked.value;
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
 		return blocked(`phase record unavailable: ${detail}`);
@@ -768,7 +868,7 @@ function mergeOnce(
 	github: Github,
 	ship: ShipState,
 	pr: PrRef,
-	confirm: (headSha: string, reviewedAt: number) => MergeStep | undefined,
+	confirm: (headSha: string) => MergeStep | undefined,
 	threadOpts?: ReviewThreadsOptions,
 	approved = false,
 ): MergeStep {
@@ -832,7 +932,7 @@ function mergeOnce(
 	// A passing Claude review never merges on its own: the operator approves the merge with --approve.
 	if (usesClaudeReviewer(config) && !approved) return { kind: "needs-approval", headSha };
 	// The phase record gates the merge: this head is confirmed there before GitHub is asked to merge.
-	const refused = confirm(headSha, latest.at);
+	const refused = confirm(headSha);
 	if (refused) return refused;
 	const allowed = github.mergeMethods();
 	const method =
@@ -978,8 +1078,14 @@ async function stepMerge(
 	const github = deps.github(cwd);
 	const started = deps.now();
 	const sessionId = readRecord(statePath)?.sessionId ?? "";
-	const confirm = (headSha: string, reviewedAt: number) =>
-		confirmPhaseMerge(deps.phaseLoopDir, sessionId, headSha, reviewedAt);
+	const confirm = (headSha: string) =>
+		confirmPhaseMerge({
+			dir: deps.phaseLoopDir,
+			sessionId,
+			headSha,
+			now: deps.now(),
+			override: ctx.override,
+		});
 	let waiting = ship.waiting;
 	let delay = config.pollMs;
 	for (let polls = 1; ; polls++) {
@@ -1067,6 +1173,39 @@ async function stepMerge(
 	}
 }
 
+/**
+ * Resolves the phase's open HTIL entry `verification:<phase>` (LIFE-05) with the owner's evidence and the time, under the
+ * phase-record lock. An entry that is not open is refused and nothing is written.
+ */
+function stepResolve(ctx: Ctx, resolution: Resolution | undefined): Output {
+	const { deps, statePath } = ctx;
+	if (resolution === undefined)
+		return { ok: false, error: "resolve needs a phase, --owner and --evidence" };
+	const { phase, owner, evidence } = resolution;
+	const sessionId = readRecord(statePath)?.sessionId ?? "";
+	if (!sessionId) return { ok: false, error: "session id missing from the state file" };
+	const entryId = `verification:${phase}`;
+	const resolvedAt = new Date(deps.now()).toISOString();
+	try {
+		const locked = underPhaseRecordLock(deps.phaseLoopDir, () =>
+			resolveHumanItem(
+				sessionId,
+				entryId,
+				{ state: "done", evidenceId: evidence, resolvedBy: owner, resolvedAt },
+				fileStore(deps.phaseLoopDir),
+			),
+		);
+		if (locked === undefined)
+			return { ok: false, entryId, error: "phase record lock not taken; nothing resolved" };
+		const outcome = locked.value;
+		if (!outcome.accepted) return { ok: false, entryId, error: outcome.refusals.join("; ") };
+		return { ok: true, entryId, resolvedBy: owner, resolvedAt, next: "run merge" };
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		return { ok: false, entryId, error: `phase record unavailable: ${detail}` };
+	}
+}
+
 async function stepRun(ctx: Ctx): Promise<Output> {
 	const { config } = ctx.deps;
 	const started = ctx.deps.now();
@@ -1102,16 +1241,58 @@ export async function runShip(
 	let cwd = process.cwd();
 	let ignoreGsd = false;
 	let approve = false;
+	let phase: string | undefined;
+	let owner: string | undefined;
+	let evidence: string | undefined;
+	let overrideReason: string | undefined;
 	for (let i = 0; i < rest.length; i++) {
-		if (rest[i] === "--state") state = rest[++i];
-		else if (rest[i] === "--cwd") cwd = rest[++i] ?? cwd;
-		else if (rest[i] === "--ignore-gsd") ignoreGsd = true;
-		else if (rest[i] === "--approve") approve = true;
-		else
-			return { code: 2, output: { ok: false, error: `unknown argument ${rest[i]}`, usage: USAGE } };
+		const arg = rest[i];
+		if (arg === "--state") state = rest[++i];
+		else if (arg === "--cwd") cwd = rest[++i] ?? cwd;
+		else if (arg === "--ignore-gsd") ignoreGsd = true;
+		else if (arg === "--approve") approve = true;
+		else if (arg === "--owner") owner = rest[++i] ?? "";
+		else if (arg === "--evidence") evidence = rest[++i] ?? "";
+		else if (arg === "--owner-override") overrideReason = rest[++i] ?? "";
+		else if (command === "resolve" && phase === undefined && arg && !arg.startsWith("--"))
+			phase = arg;
+		else return { code: 2, output: { ok: false, error: `unknown argument ${arg}`, usage: USAGE } };
 	}
 	if (!state) return { code: 2, output: { ok: false, error: "--state is required", usage: USAGE } };
-	const ctx: Ctx = { deps, statePath: resolve(state), cwd: resolve(cwd), ignoreGsd, approve };
+	const usageError = (error: string): { code: number; output: Output } => ({
+		code: 2,
+		output: { ok: false, error, usage: USAGE },
+	});
+	const present = (value: string | undefined): value is string =>
+		value !== undefined && value.trim() !== "";
+	let resolution: Resolution | undefined;
+	if (command === "resolve") {
+		if (!present(phase))
+			return usageError("resolve needs a phase: resolve <phase> --owner <name> --evidence <text>");
+		if (!present(owner)) return usageError("resolve needs --owner <name>");
+		if (!present(evidence)) return usageError("resolve needs a non-empty --evidence <text>");
+		resolution = { phase, owner, evidence };
+	} else if (evidence !== undefined) {
+		return usageError("--evidence applies to resolve");
+	}
+	let override: ShipOverride | undefined;
+	if (overrideReason !== undefined) {
+		if (command !== "merge" && command !== "run")
+			return usageError("--owner-override applies to merge and run");
+		if (!present(overrideReason)) return usageError("--owner-override needs a non-empty reason");
+		if (!present(owner)) return usageError("--owner-override needs --owner <name>");
+		override = { owner, reason: overrideReason };
+	} else if (owner !== undefined && command !== "resolve") {
+		return usageError("--owner applies to resolve and --owner-override");
+	}
+	const ctx: Ctx = {
+		deps,
+		statePath: resolve(state),
+		cwd: resolve(cwd),
+		ignoreGsd,
+		approve,
+		override,
+	};
 	try {
 		switch (command) {
 			case "assess":
@@ -1124,6 +1305,8 @@ export async function runShip(
 				return { code: 0, output: await stepMerge(ctx) };
 			case "run":
 				return { code: 0, output: await stepRun(ctx) };
+			case "resolve":
+				return { code: 0, output: stepResolve(ctx, resolution) };
 			case "status": {
 				const ship = readShip(ctx.statePath);
 				return {

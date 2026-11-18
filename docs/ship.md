@@ -252,6 +252,7 @@ The agent never resolves a finding just to pass the gate.
 | Check | Fails with | Then |
 |---|---|---|
 | A review round exists and it completed | `no review has run`, `review failed`, `review timeout` | back to the agent: run `review` again |
+| A passing audit of the reviewed head is recorded in the phase record (`review:<sha>`, written by the review stage), unless the owner gave an `--owner-override` | `no recorded audit for review:<sha>`, `audit review:<sha> did not pass` | back to the agent: run `review` again |
 | The reviewed commit is the current PR head | `PR head changed since last review` | back to the agent: run `review` again |
 | The review has a score of at least `ship.minScore` (default 5, Greptile's maximum) | `review has no score`, `review score N/5 is below M/5` | back to the agent: run `review` again |
 | No open comments, when `ship.requireNoComments` is `true`. In PR mode these are the unresolved, non-outdated Greptile review threads; in CLI mode, the run's comments. | `N open review comment(s)` | back to the agent: run `review` again |
@@ -306,6 +307,8 @@ Merge the PR on GitHub yourself. ultrathink does not watch it afterwards, and it
 
 ```sh
 <clone>/bin/ultrathink-ship <subcommand> --state <state dir>/sessions/<session-id>.json [--cwd <repo dir>] [--ignore-gsd]
+<clone>/bin/ultrathink-ship merge|run --state <state dir>/sessions/<session-id>.json --owner <name> --owner-override <reason> [--cwd <repo dir>]
+<clone>/bin/ultrathink-ship resolve <phase> --state <state dir>/sessions/<session-id>.json --owner <name> --evidence <text> [--cwd <repo dir>]
 ```
 
 `--state` is required. `--cwd` defaults to the current directory, so run it from the project's working tree or pass `--cwd`; the config files are read for that directory. Each call prints one JSON object. The exit code is 0, except 2 for usage errors and 127 when Bun is missing. Failures are reported in the JSON as `ok: false` with a `reason` or `error`.
@@ -315,9 +318,10 @@ Merge the PR on GitHub yourself. ultrathink does not watch it afterwards, and it
 | `assess` | Collect the git, GSD and graph signals and judge whether the task is done. `--ignore-gsd` leaves the GSD roadmap out (see [Done assessment](#done-assessment)). In another repository or branch it archives a finished ship into `ship.history` and starts a fresh one (see [Several PRs in one session](#several-prs-in-one-session)). |
 | `pr` | Push the branch and open or reuse the PR into the default branch. |
 | `review` | Run one Greptile review round in PR or CLI mode. Returns `pending` within `waitMs` while Greptile is still working, or `blocked` when Greptile is not usable as configured. |
-| `merge` | Check the merge gate, merge, and (with `deleteBranch`) delete the branch, retrying transient failures within `waitMs` (see [Merge retries](#merge-retries)). Refuses with `autoMerge disabled` when `autoMerge` is off. |
+| `merge` | Check the merge gate, merge, and (with `deleteBranch`) delete the branch, retrying transient failures within `waitMs` (see [Merge retries](#merge-retries)). Refuses with `autoMerge disabled` when `autoMerge` is off. With `--owner <name> --owner-override <reason>` the owner closes the phase without a recorded passing audit; the reason is kept in the phase record. An empty reason is refused. |
 | `run` | `assess`, `pr`, `review` and `merge` in one call. It stops at the first step that is not ready, and before `merge` when `autoMerge` is off. When the review passed, it merges within what is left of its `waitMs`. Fixes stay with the agent. |
 | `status` | Print the stored ship state, including the attempt log. |
+| `resolve <phase>` | Owner only. Closes the open HTIL entry `verification:<phase>` with `--owner <name> --evidence <text>` and the time, under the phase-record lock. Refuses when no open entry exists for the phase. |
 
 Progress is stored under `ship` in the session record. It holds `phase`, `assessment`, `pr`, `rounds`, `pending`, `waiting`, `attempts`, `blockedReason`, `nudgedAt`, `mergedAt` and `history`. See [Configuration](configuration.md#state-directories) for where each host keeps the record.
 

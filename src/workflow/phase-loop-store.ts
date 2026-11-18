@@ -14,7 +14,13 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { ClosedBy, HtilEntry, PhaseLoopState } from "./phase-loop.ts";
+import type {
+	AuditRecord,
+	ClosedBy,
+	HtilEntry,
+	OverrideDecision,
+	PhaseLoopState,
+} from "./phase-loop.ts";
 
 export type CheckpointReason = "pause" | "kill";
 
@@ -75,7 +81,9 @@ function isHtilEntry(value: unknown): value is HtilEntry {
 		typeof entry.owner === "string" &&
 		(entry.state === "open" || entry.state === "done" || entry.state === "deferred") &&
 		(entry.evidenceId === undefined || typeof entry.evidenceId === "string") &&
-		(entry.decisionId === undefined || typeof entry.decisionId === "string")
+		(entry.decisionId === undefined || typeof entry.decisionId === "string") &&
+		(entry.resolvedBy === undefined || typeof entry.resolvedBy === "string") &&
+		(entry.resolvedAt === undefined || typeof entry.resolvedAt === "string")
 	);
 }
 
@@ -86,6 +94,28 @@ function isClosedBy(value: unknown): value is ClosedBy {
 		(closedBy.kind === "audit" || closedBy.kind === "validation" || closedBy.kind === "override") &&
 		typeof closedBy.recordId === "string" &&
 		typeof closedBy.recordedAt === "string"
+	);
+}
+
+function isAuditRecord(value: unknown): value is AuditRecord {
+	if (typeof value !== "object" || value === null) return false;
+	const audit = value as Record<string, unknown>;
+	return (
+		typeof audit.id === "string" &&
+		(audit.kind === "audit" || audit.kind === "validation") &&
+		(audit.result === "pass" || audit.result === "fail") &&
+		typeof audit.recordedAt === "string"
+	);
+}
+
+function isOverrideDecision(value: unknown): value is OverrideDecision {
+	if (typeof value !== "object" || value === null) return false;
+	const decision = value as Record<string, unknown>;
+	return (
+		typeof decision.decisionId === "string" &&
+		typeof decision.owner === "string" &&
+		typeof decision.decidedAt === "string" &&
+		typeof decision.reason === "string"
 	);
 }
 
@@ -102,7 +132,10 @@ function isPhaseLoopRecord(value: unknown): value is StoredRecord {
 		(row.checkpoint === undefined || isCheckpoint(row.checkpoint)) &&
 		(row.humanItems === undefined ||
 			(Array.isArray(row.humanItems) && row.humanItems.every(isHtilEntry))) &&
-		(row.closedBy === undefined || isClosedBy(row.closedBy))
+		(row.closedBy === undefined || isClosedBy(row.closedBy)) &&
+		(row.audits === undefined || (Array.isArray(row.audits) && row.audits.every(isAuditRecord))) &&
+		(row.overrides === undefined ||
+			(Array.isArray(row.overrides) && row.overrides.every(isOverrideDecision)))
 	);
 }
 

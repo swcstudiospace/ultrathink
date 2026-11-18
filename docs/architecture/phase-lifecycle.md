@@ -1,6 +1,6 @@
 # Phase lifecycle state machine
 
-Scope: `src/workflow/phase-loop.ts` as of phase 111 (414 lines). Line numbers refer to that file. Phase 111 status: the audit gate on close (LIFE-02) and human items (LIFE-05) are implemented in `phase-loop.ts` and in the record schema of `phase-loop-store.ts`. The accepted close records the record it cites in `closedBy`. Section 1 describes what the file does. Section 2 lists the transitions from ADR 0001 (`docs/adr/0001-persist-and-gate-the-phase-lifecycle.md`) with their status. Persistence is opt-in: a call persists only when it passes a store. No production caller in `src/` passes a store yet; only the phase-loop tests do.
+Scope: `src/workflow/phase-loop.ts` as of phase 111 (414 lines). Line numbers refer to that file. Phase 111 status: the audit gate on close (LIFE-02) and human items (LIFE-05) are implemented in `phase-loop.ts` and in the record schema of `phase-loop-store.ts`. The accepted close records the record it cites in `closedBy`. Section 1 describes what the file does. Section 2 lists the transitions from ADR 0001 (`docs/adr/0001-persist-and-gate-the-phase-lifecycle.md`) with their status. Persistence is opt-in: a call persists only when it passes a store. The production callers pass a store: the Omp host (`src/host/omp-phase.ts`) and the ship merge and resolve commands (`src/ship/cli.ts`).
 
 ## 1. Implemented
 
@@ -65,10 +65,10 @@ stateDiagram-v2
 
 ### 1.5 Observed gaps in the phase 111 file
 
-- Persistence is opt-in. Without a store, nothing is persisted: the in-memory `loops` map (L120) holds the state, and a restart starts empty. With a store, a restart reads the last committed record (`restorePhaseLoop`, L389). The running system passes a store: the Omp host (`fileStore`, `src/host/omp-phase.ts:191` and `:219`) and the ship merge (`src/ship/cli.ts:703`).
+- Persistence is opt-in. Without a store, nothing is persisted: the in-memory `loops` map (L120) holds the state, and a restart starts empty. With a store, a restart reads the last committed record (`restorePhaseLoop`, L389). The running system passes a store: the Omp host (`fileStore`, `src/host/omp-phase.ts:191` and `:219`) and the ship merge (`confirmPhaseMerge`, `src/ship/cli.ts:805`).
 - Pause writes a checkpoint: `pauseSessionPhases` (`src/host/omp-phase.ts:242-244`) calls `checkpointPhaseLoop` (L369) with reason `pause`. No caller passes reason `kill`, so a kill writes no checkpoint yet.
-- `open` is called in production: `recordGsdPhase` (`src/host/omp-phase.ts:194`) opens a `verification:<phase>` HTIL entry when verification needs a human. No caller in `src/` invokes `resolve` (L340), so an opened entry blocks merge with no production way to clear it.
-- `closedBy` holds the cited record's kind, id, and time (L241). It does not hold the record body: the audit's content and the owner decision's reason stay with the caller. The loop does not check that the cited id exists in any audit store; it checks only the fields the caller passes (L232-233).
+- `open` is called in production: `recordGsdPhase` (`src/host/omp-phase.ts:194`) opens a `verification:<phase>` HTIL entry when verification needs a human. `resolve` (L340) is called in production by `ultrathink-ship resolve` (`stepResolve`, `src/ship/cli.ts`) under the phase-record lock, so the owner can clear an opened entry.
+- `closedBy` holds the cited record's kind, id, and time (L241). It does not hold the record body: the audit's content and the owner decision's reason stay with the caller. `recordAudit` (L385) stores audits in the phase record, and the merge looks the cited one up there. `confirmShip` takes the audit as the caller gives it and does not check it against the stored audits (L232-233).
 - `attemptPhase` does not return its refusal reasons (L289-291).
 - `open` and `resolve` do not check the runtime connection. The phase 111 design did not require it.
 
@@ -104,7 +104,7 @@ Proposed states were **Checkpointed** and **Closed**. HTIL entries are a set att
 - The guard is a passing audit or validation record that the call cites: `auditId` must equal `audit.id`, and `audit.result` must be `pass` (`closeRecord`, L194-196). Or a complete owner override: `override` with non-blank `decisionId`, `owner`, `decidedAt`, and `reason` (L183-186, L197-199). The override counts only when no passing audit holds.
 - An accepted close sets `closedBy` (L241) in the same save as the phase push: `{ kind, recordId, recordedAt }`. For an audit, `kind` is the audit's kind and `recordId` its id. For an override, `kind` is `override`, `recordId` the decision id, and `recordedAt` the decision time.
 - No audit, a failed audit with no override, a mismatched id, or an incomplete override: refused, state unchanged, `closedBy` undefined (R7).
-- The loop does not store or look up the audit record. The caller supplies it, and the close checks it at the call (section 1.5).
+- `recordAudit` stores the audit in the phase record, and the merge looks it up there. `confirmShip` takes the audit as the caller gives it; it does not check it against the stored audits. The close checks the audit at the call (section 1.5).
 - Closed is terminal (Ship).
 - The milestone-complete gate is out of repo, in gsd-core at `/root/.agents/gsd-core`. Its internals are not designed here.
 
