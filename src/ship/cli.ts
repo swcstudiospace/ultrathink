@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 /**
- * ultrathink-ship: assess | pr | review | merge | run | resolve <phase> | status --state <sessions/<id>.json> [--cwd <dir>].
+ * ultrathink-ship: assess | pr | review | merge | run | resolve <phase> | status --state <sessions/<id>.json> [--cwd <dir>] | phase repair-runtime --phase <phase> --session <id> --reason <text> [--cwd <dir>].
  * Prints one JSON object; always exits 0 except usage errors (2). Fails open; the merge gate on the phase record fails closed.
  */
 import { readFileSync } from "node:fs";
@@ -82,7 +82,7 @@ type ShipRecord = SessionRecord & { ship?: ShipState };
  * (`verification:<phase directory>`) with `--owner <name>` and `--evidence <text>` as the owner's evidence.
  */
 const USAGE =
-	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd] [--approve] [--owner <name> --owner-override <reason>] | ultrathink-ship resolve <phase> --state <sessions/<id>.json> --owner <name> --evidence <text> [--cwd <dir>]";
+	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd] [--approve] [--owner <name> --owner-override <reason>] | ultrathink-ship resolve <phase> --state <sessions/<id>.json> --owner <name> --evidence <text> [--cwd <dir>] | ultrathink-ship phase repair-runtime --phase <phase> --session <sessionId> --reason <text> [--cwd <dir>]";
 const NEXT_FIX =
 	"fix the listed findings, commit only the files you edited, push, then run review again";
 const NEXT_PENDING =
@@ -1233,6 +1233,65 @@ function stepResolve(ctx: Ctx, resolution: Resolution | undefined): Output {
 	}
 }
 
+/** The owner's repair input: the phase the owner names, the session whose record is repaired, and the owner's reason. */
+interface RepairInput {
+	deps: ShipDeps;
+	cwd: string;
+	phase: string;
+	sessionId: string;
+	reason: string;
+}
+
+/**
+ * The owner's repair (F5) of a phase record written before the runtime marker. Under the phase-record lock, sets
+ * runtimeSessionId to the session and keeps the owner's reason and time as runtimeRepair. Refused, and nothing written,
+ * unless the record exists, has no marker yet, is at Verify, and names --phase when it names a phase. A record names
+ * its phases through its verification entries (verificationEntryId).
+ */
+function stepRepairRuntime(input: RepairInput): Output {
+	const { deps, cwd, phase, sessionId, reason } = input;
+	const dir = deps.phaseLoopDir;
+	const store = fileStore(dir);
+	const refuse = (error: string): Output => ({ ok: false, error: `${error}; nothing repaired` });
+	try {
+		const locked = underPhaseRecordLock(dir, (): Output => {
+			const outcome = store.load(sessionId);
+			if (outcome.status === "absent") return refuse(`no phase record for session ${sessionId}`);
+			if (outcome.status === "quarantined")
+				return refuse(`phase record is corrupt; set aside at ${outcome.quarantinedAs}`);
+			const { record } = outcome;
+			if (record.runtimeSessionId !== undefined)
+				return refuse(`phase record already has the runtime marker ${record.runtimeSessionId}`);
+			const last = record.phaseOrder.at(-1);
+			if (last !== "Verify")
+				return refuse(`the record is not at Verify: last recorded phase is ${last ?? "none"}`);
+			const named = record.humanItems.filter((item) => item.id.startsWith("verification:"));
+			if (named.length > 0) {
+				const directory = findPhaseDirectory(phase, join(cwd, ".planning", "phases"));
+				if (directory === null)
+					return refuse(`no phase directory matches ${phase} under .planning/phases`);
+				if (!named.some((item) => item.id === verificationEntryId(directory)))
+					return refuse(
+						`the record names ${named.map((item) => item.id).join(", ")}, not ${phase}`,
+					);
+			}
+			const repairedAt = new Date(deps.now()).toISOString();
+			store.save(sessionId, {
+				...record,
+				runtimeSessionId: sessionId,
+				runtimeRepair: { reason, at: repairedAt },
+			});
+			return { ok: true, sessionId, phase, repairedAt, next: "run merge" };
+		});
+		if (locked === undefined)
+			return { ok: false, error: "phase record lock not taken; nothing repaired" };
+		return locked.value;
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		return { ok: false, error: `phase record unavailable: ${detail}` };
+	}
+}
+
 async function stepRun(ctx: Ctx): Promise<Output> {
 	const { config } = ctx.deps;
 	const started = ctx.deps.now();
@@ -1263,7 +1322,10 @@ export async function runShip(
 	argv: string[],
 	deps: ShipDeps,
 ): Promise<{ code: number; output: Output }> {
-	const [command, ...rest] = argv;
+	const [command, ...afterCommand] = argv;
+	// `phase` has one subcommand, `repair-runtime`, which comes before its flags.
+	const subcommand = command === "phase" ? afterCommand[0] : undefined;
+	const rest = command === "phase" ? afterCommand.slice(1) : afterCommand;
 	let state: string | undefined;
 	let cwd = process.cwd();
 	let ignoreGsd = false;
@@ -1272,6 +1334,9 @@ export async function runShip(
 	let owner: string | undefined;
 	let evidence: string | undefined;
 	let overrideReason: string | undefined;
+	let repairPhase: string | undefined;
+	let repairSession: string | undefined;
+	let repairReason: string | undefined;
 	for (let i = 0; i < rest.length; i++) {
 		const arg = rest[i];
 		if (arg === "--state") state = rest[++i];
@@ -1281,17 +1346,41 @@ export async function runShip(
 		else if (arg === "--owner") owner = rest[++i] ?? "";
 		else if (arg === "--evidence") evidence = rest[++i] ?? "";
 		else if (arg === "--owner-override") overrideReason = rest[++i] ?? "";
+		else if (arg === "--phase") repairPhase = rest[++i] ?? "";
+		else if (arg === "--session") repairSession = rest[++i] ?? "";
+		else if (arg === "--reason") repairReason = rest[++i] ?? "";
 		else if (command === "resolve" && phase === undefined && arg && !arg.startsWith("--"))
 			phase = arg;
 		else return { code: 2, output: { ok: false, error: `unknown argument ${arg}`, usage: USAGE } };
 	}
-	if (!state) return { code: 2, output: { ok: false, error: "--state is required", usage: USAGE } };
 	const usageError = (error: string): { code: number; output: Output } => ({
 		code: 2,
 		output: { ok: false, error, usage: USAGE },
 	});
 	const present = (value: string | undefined): value is string =>
 		value !== undefined && value.trim() !== "";
+	if (command === "phase") {
+		if (subcommand !== "repair-runtime")
+			return usageError("phase needs the repair-runtime subcommand");
+		if (!present(repairPhase)) return usageError("phase repair-runtime needs --phase <phase>");
+		if (!present(repairSession))
+			return usageError("phase repair-runtime needs --session <sessionId>");
+		if (!present(repairReason))
+			return usageError("phase repair-runtime needs a non-empty --reason <text>");
+		if (owner !== undefined || evidence !== undefined || overrideReason !== undefined)
+			return usageError("phase repair-runtime takes --phase, --session and --reason only");
+		const output = stepRepairRuntime({
+			deps,
+			cwd: resolve(cwd),
+			phase: repairPhase,
+			sessionId: repairSession,
+			reason: repairReason,
+		});
+		return { code: 0, output };
+	}
+	if (!state) return { code: 2, output: { ok: false, error: "--state is required", usage: USAGE } };
+	if (repairPhase !== undefined || repairSession !== undefined || repairReason !== undefined)
+		return usageError("--phase, --session and --reason apply to phase repair-runtime");
 	let resolution: Resolution | undefined;
 	if (command === "resolve") {
 		if (!present(phase))

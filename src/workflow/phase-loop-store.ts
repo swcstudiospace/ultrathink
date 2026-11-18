@@ -20,6 +20,7 @@ import type {
 	HtilEntry,
 	OverrideDecision,
 	PhaseLoopState,
+	RuntimeRepair,
 } from "./phase-loop.ts";
 
 export type CheckpointReason = "pause" | "kill";
@@ -120,6 +121,12 @@ function isOverrideDecision(value: unknown): value is OverrideDecision {
 	);
 }
 
+function isRuntimeRepair(value: unknown): value is RuntimeRepair {
+	if (typeof value !== "object" || value === null) return false;
+	const repair = value as Record<string, unknown>;
+	return typeof repair.reason === "string" && typeof repair.at === "string";
+}
+
 function isPhaseLoopRecord(value: unknown): value is StoredRecord {
 	if (typeof value !== "object" || value === null) return false;
 	const row = value as Record<string, unknown>;
@@ -137,7 +144,8 @@ function isPhaseLoopRecord(value: unknown): value is StoredRecord {
 		(row.audits === undefined || (Array.isArray(row.audits) && row.audits.every(isAuditRecord))) &&
 		(row.overrides === undefined ||
 			(Array.isArray(row.overrides) && row.overrides.every(isOverrideDecision))) &&
-		(row.runtimeSessionId === undefined || typeof row.runtimeSessionId === "string")
+		(row.runtimeSessionId === undefined || typeof row.runtimeSessionId === "string") &&
+		(row.runtimeRepair === undefined || isRuntimeRepair(row.runtimeRepair))
 	);
 }
 
