@@ -83,7 +83,7 @@ function toLines(text: string): Line[] {
 }
 
 function escapeCell(text: string): string {
-	return text.replace(/\|/g, "\\|");
+	return text.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 
 function escapeRegex(text: string): string {

@@ -163,6 +163,20 @@ describe("buildTaskMatrix", () => {
 		expect(() => buildTaskMatrix({ ...FIXTURE, roadmap })).toThrow(/has no phase lines/);
 	});
 
+	test("escapes a backslash before a pipe so the table cell keeps its column count", () => {
+		const roadmap = doc(
+			"### Phase 1: Path a\\|b",
+			"",
+			"Status: Complete.",
+			"",
+			"**Depends on:** none",
+		);
+		const out = buildTaskMatrix({ ...FIXTURE, roadmap });
+		expect(rowsFor(out, "PHASE-1")).toEqual([
+			"| PHASE-1 | phase | Path a\\\\\\|b | Complete | closed | - | - | - | R:1 | - |",
+		]);
+	});
+
 	test("rejects a phase number defined twice", () => {
 		const roadmap = doc(
 			"### Phase 1: First",
