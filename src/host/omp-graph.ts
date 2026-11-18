@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 /** Pure Graph-of-Thought renderer for the Omp TUI: wave columns of node cards with sub-issues dropping down beneath each card. */
 import { type Paint, paint, truncateToWidth, visibleWidth } from "./omp-paint.ts";
+import { sanitizeInsightText } from "./omp-insights.ts";
 
 type NodeStatus = "pending" | "running" | "done" | "fallback";
 export interface GraphIssue {
@@ -84,6 +85,37 @@ export function waveLayout(nodes: ReadonlyArray<{ id: string; dependsOn: string[
 
 function within(now: number, start: number | undefined, span: number): boolean {
 	return start !== undefined && now >= start && now - start < span;
+}
+
+/** Plan-derived text: the insight sanitizer's terminal-control strip and redaction, then whitespace folded to one line. */
+function graphText(text: string): string {
+	return sanitizeInsightText(text)
+		.replace(/[^\S ]+/g, " ")
+		.trim();
+}
+
+function sanitizeIssue(issue: GraphIssue | undefined): GraphIssue | undefined {
+	if (!issue?.identifier) return issue;
+	return { ...issue, identifier: graphText(issue.identifier) };
+}
+
+/** Copy with every plan-derived string sanitized, so layout measures and writes only the cleaned text. */
+function sanitizeModel(model: GraphModel): GraphModel {
+	return {
+		nodes: model.nodes.map((node) => ({
+			...node,
+			id: graphText(node.id),
+			title: graphText(node.title),
+			kind: graphText(node.kind),
+			dependsOn: node.dependsOn.map(graphText),
+			issue: sanitizeIssue(node.issue),
+			steps: node.steps.map((step) => ({
+				...step,
+				title: graphText(step.title),
+				issue: sanitizeIssue(step.issue),
+			})),
+		})),
+	};
 }
 
 /** Model reduced to what is on screen at `now`, so later columns never jump when earlier ones grow. */
@@ -370,7 +402,7 @@ export function renderGraph(
 		now: options.now,
 		animate: options.animate,
 	};
-	const nodes = visibleModel(model, options);
+	const nodes = visibleModel(sanitizeModel(model), options);
 	if (nodes.length === 0) return [];
 	const max = options.maxRows ?? Number.POSITIVE_INFINITY;
 	if (max <= 0) return [];
