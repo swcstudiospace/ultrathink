@@ -26,7 +26,7 @@ export interface SinkEvent {
 }
 
 /** A timer handle: a numeric id from an injected fake, or the Bun timer `setTimeout` returns. `clearTimeout` accepts both. */
-export type TimerHandle = number | Timer;
+type TimerHandle = number | Timer;
 export type SetTimer = (callback: () => void, ms: number) => TimerHandle;
 export type ClearTimer = (handle: TimerHandle | undefined) => void;
 
