@@ -5,6 +5,7 @@
  * is the feature on, and is there a Hindsight client to talk to. Config comes from the same layered files the rest of
  * ultrathink reads, so a project file can switch the feature off but never on.
  */
+import { existsSync, readFileSync } from "node:fs";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { DEFAULT_GATEWAY_CONFIG } from "../gateway/types.ts";
 import { type DecisionOutcome, type Decisions, createDecisions } from "../decisions/gate.ts";
@@ -43,37 +44,79 @@ export interface TeachContextOptions {
 	log?: (line: string) => void;
 }
 
-function loadTeachConfig(cwd: string, env: NodeJS.ProcessEnv): TeachContext["config"] {
+/** The reason a config file that exists cannot be used (unreadable, not JSON, or not a JSON object); undefined when it is missing or usable. */
+function unusableConfigFile(path: string): string | undefined {
+	if (!existsSync(path)) return undefined;
 	try {
-		const config = loadConfig(claudeConfigPaths(cwd, env));
-		return {
+		const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return `${path}: not a JSON object`;
+		}
+		return undefined;
+	} catch (error) {
+		return `${path}: ${error instanceof Error ? error.message : String(error)}`;
+	}
+}
+
+/**
+ * Teach's config from the layered files. An unusable file fails closed: teach stays off with capture explicit, whatever
+ * the other layers say, and the reason is returned. A missing file keeps the defaults. Other sections keep their fallback.
+ */
+function loadTeachConfig(
+	cwd: string,
+	env: NodeJS.ProcessEnv,
+): { config: TeachContext["config"]; error?: string } {
+	const files = claudeConfigPaths(cwd, env);
+	let error = files
+		.map((file) => unusableConfigFile(typeof file === "string" ? file : file.path))
+		.find((reason) => reason !== undefined);
+	let loaded: TeachContext["config"];
+	try {
+		const config = loadConfig(files);
+		loaded = {
 			teach: config.teach,
 			hindsight: config.hindsight,
 			decisions: config.decisions,
 			gateway: config.gateway,
 		};
-	} catch {
-		return {
+	} catch (caught) {
+		error = caught instanceof Error ? caught.message : String(caught);
+		loaded = {
 			teach: { ...DEFAULT_TEACH_CONFIG },
 			hindsight: { ...DEFAULT_HINDSIGHT_CONFIG },
 			decisions: { ...DEFAULT_DECISIONS_CONFIG, points: [...DEFAULT_DECISIONS_CONFIG.points] },
 			gateway: { ...DEFAULT_GATEWAY_CONFIG },
 		};
 	}
+	if (error === undefined) return { config: loaded };
+	const failedClosed = { ...DEFAULT_TEACH_CONFIG, enabled: false, capture: "explicit" as const };
+	return { config: { ...loaded, teach: failedClosed }, error };
+}
+
+/** The reason a context's teach config is untrusted (an unreadable or unparseable config file), keyed by context. */
+const configErrors = new WeakMap<TeachContext, string>();
+
+/** Why teach's config failed to load, or undefined when every layer loaded or none exists. For status output to show. */
+export function teachConfigError(ctx: TeachContext): string | undefined {
+	return configErrors.get(ctx);
 }
 
 /** Defaults: process env and cwd, host `ULTRATHINK_HOST` else "claude-code", the host's state directory, the shared credential store. */
 export function teachContext(options: TeachContextOptions): TeachContext {
 	const env = options.env ?? process.env;
 	const cwd = options.cwd ?? process.cwd();
+	const loaded: { config: TeachContext["config"]; error?: string } = options.config
+		? { config: options.config }
+		: loadTeachConfig(cwd, env);
 	const ctx: TeachContext = {
 		host: options.host ?? (env.ULTRATHINK_HOST?.trim() || "claude-code"),
 		cwd,
-		config: options.config ?? loadTeachConfig(cwd, env),
+		config: loaded.config,
 		env,
 		stateDir: options.stateDir ?? resolveStateDir(env),
 		storePath: options.storePath ?? defaultStorePath(env),
 	};
+	if (loaded.error !== undefined) configErrors.set(ctx, loaded.error);
 	if (options.sessionId !== undefined) ctx.sessionId = options.sessionId;
 	if (options.now) ctx.now = options.now;
 	if (options.fetch) ctx.fetch = options.fetch;
