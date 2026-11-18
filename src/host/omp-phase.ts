@@ -14,6 +14,7 @@ import { OMP_LOCK } from "../claude/state.ts";
 import { redactSecrets } from "../redact.ts";
 import { verificationFileName } from "../ship/signals.ts";
 import { parseSkillScaffold, parseSlashCommand } from "../uplift/skill.ts";
+import type { PhaseLoopStore } from "../workflow/phase-loop-store.ts";
 import { type CheckpointReason, fileStore } from "../workflow/phase-loop-store.ts";
 import {
 	attemptPhase,
@@ -179,6 +180,16 @@ export function verificationEntryId(directoryName: string): string {
 }
 
 /**
+ * Opens an HTIL entry for every `human_needed` phase directory on disk under `cwd` (LIFE-05). The disk is read at each
+ * call, so a verification written after the phase's settle-time record is opened before a merge checks the entries. An
+ * entry that already exists, open or resolved, is refused by `open` without a write.
+ */
+export function openHtilEntries(cwd: string, sessionId: string, store: PhaseLoopStore): void {
+	for (const directory of htilPhases(cwd))
+		openHtilEntry(sessionId, { id: verificationEntryId(directory), owner: "human" }, store);
+}
+
+/**
  * The phase directory a phase argument names under `phasesDir`: a full directory name, or a bare phase number such as
  * `110` or `1` (compared by integer value, so `1` names `01-core`). A number that matches no directory, or more than
  * one, names none. Returns the directory name, or null.
@@ -211,12 +222,7 @@ export function recordGsdPhase(options: {
 	return underPhaseLock(dir, (): PhaseReport => {
 		const store = fileStore(dir);
 		// A phase whose verification needs a human opens an HTIL entry (Q8); an entry already open is refused without a write.
-		for (const directory of htilPhases(options.cwd))
-			openHtilEntry(
-				options.sessionId,
-				{ id: verificationEntryId(directory), owner: "human" },
-				store,
-			);
+		openHtilEntries(options.cwd, options.sessionId, store);
 		// The live session is connected by construction: this host records only for its own flight.
 		const outcome = attemptPhase(
 			options.sessionId,

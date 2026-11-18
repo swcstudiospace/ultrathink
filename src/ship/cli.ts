@@ -14,7 +14,7 @@ import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { createDecisions } from "../decisions/gate.ts";
 import type { Decisions } from "../decisions/gate.ts";
 import { selectJudgeEngine } from "../host/engine.ts";
-import { findPhaseDirectory, verificationEntryId } from "../host/omp-phase.ts";
+import { findPhaseDirectory, openHtilEntries, verificationEntryId } from "../host/omp-phase.ts";
 import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import type { McpClient } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
@@ -778,6 +778,7 @@ function recordReviewAudit(
 
 /** What a merge confirmation is checked against: the session's record, the reviewed head, and the owner override if given. */
 interface PhaseMergeInput {
+	cwd: string;
 	dir: string;
 	sessionId: string;
 	headSha: string;
@@ -793,7 +794,7 @@ interface PhaseMergeInput {
  * read or write.
  */
 function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
-	const { dir, sessionId, headSha, now, override } = input;
+	const { cwd, dir, sessionId, headSha, now, override } = input;
 	const blocked = (reason: string): MergeStep => ({
 		kind: "blocked",
 		reason,
@@ -817,6 +818,9 @@ function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
 					`phase was confirmed for ${closedBy.recordId}; the head moved, so a human must confirm ${recordId}`,
 				);
 			}
+			// LIFE-05: a human_needed phase whose verification was written after its settle-time record is opened here,
+			// so the entries checked below include it.
+			openHtilEntries(cwd, sessionId, store);
 			// The runtime connection is not evaluated here: the CLI checks only the store.
 			const afterVerify = record?.phaseOrder.at(-1) === "Verify";
 			let closing: ShipConfirmationInput;
@@ -1081,6 +1085,7 @@ async function stepMerge(
 	const sessionId = readRecord(statePath)?.sessionId ?? "";
 	const confirm = (headSha: string) =>
 		confirmPhaseMerge({
+			cwd,
 			dir: deps.phaseLoopDir,
 			sessionId,
 			headSha,

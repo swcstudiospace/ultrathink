@@ -2222,6 +2222,27 @@ describe("merge phase gate", () => {
 		expect(mergeCalls()).toEqual(["merge:squash:abc"]);
 	});
 
+	test("a verification that turns human_needed after the review settled opens its HTIL entry at the merge gate and refuses the merge", async () => {
+		phaseFixture("01-core");
+		const verification = join(dir, ".planning", "phases", "01-core", "VERIFICATION.md");
+		writeFileSync(verification, "---\nstatus: passed\n---\nAll checks pass.\n");
+		await reviewStage();
+		// A verify run writes human_needed after the settle-time record: no entry is recorded yet.
+		writeFileSync(verification, "---\nstatus: human_needed\n---\nCheck the live rollout.\n");
+		expect(phaseRecord()?.humanItems ?? []).toEqual([]);
+		const refused = await ship("merge", deps());
+		expect(refused.output).toMatchObject({
+			ok: false,
+			merged: false,
+			reason: "open HTIL entry verification:01-core",
+		});
+		expect(mergeCalls()).toEqual([]);
+		expect(phaseRecord()?.humanItems).toEqual([
+			{ id: "verification:01-core", owner: "human", state: "open" },
+		]);
+		expect(phaseRecord()?.closedBy).toBeUndefined();
+	});
+
 	test("ship resolve refuses without evidence, and refuses a phase with no open entry; nothing is written", async () => {
 		phaseFixture("01-core");
 		const noEvidence = await withFlags("resolve", deps(), "01-core", "--owner", "alice");
