@@ -274,7 +274,7 @@ function fsyncDirectory(dir: string): void {
 	}
 }
 
-export function errorCode(error: unknown): string | undefined {
+function errorCode(error: unknown): string | undefined {
 	return error instanceof Error && "code" in error && typeof error.code === "string"
 		? error.code
 		: undefined;

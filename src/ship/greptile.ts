@@ -24,7 +24,7 @@ export interface GreptileRepo {
 }
 
 /** A repository as Greptile lists it; `reviewsEnabled` is absent when Greptile does not say. */
-export type ListedGreptileRepo = GreptileRepo & { reviewsEnabled?: boolean };
+type ListedGreptileRepo = GreptileRepo & { reviewsEnabled?: boolean };
 
 type Obj = Record<string, unknown>;
 
