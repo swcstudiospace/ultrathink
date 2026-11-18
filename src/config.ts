@@ -699,8 +699,9 @@ function modelPin(
 }
 
 /**
- * A non-empty http(s) URL with trailing slashes stripped; anything else falls back. A URL that carries a user name, a
- * password, a query or a fragment falls back too: it can hold a secret that would then reach logs and error messages.
+ * A non-empty http(s) URL with trailing slashes stripped; anything else falls back. A URL with a query or a fragment
+ * falls back too. A user name or password is kept: the doctor shows the URL with it removed, and a bearer-carrying
+ * request is refused by the service-URL policy at use.
  */
 function httpUrl(value: unknown, fallback: string): string {
 	if (typeof value !== "string") return fallback;
@@ -708,7 +709,7 @@ function httpUrl(value: unknown, fallback: string): string {
 	if (!trimmed) return fallback;
 	try {
 		const url = new URL(trimmed);
-		if (url.username || url.password || url.search || url.hash) return fallback;
+		if (url.search || url.hash) return fallback;
 		if (url.protocol === "https:") return trimmed;
 		// Cleartext is allowed only to loopback and private (RFC 1918) addresses, which do not route on the public internet.
 		return url.protocol === "http:" &&

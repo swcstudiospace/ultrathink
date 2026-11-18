@@ -625,9 +625,9 @@ describe("substrate config", () => {
 			"https://substrate.example",
 		);
 	});
-	test("a URL that carries credentials, a query or a fragment keeps the default", () => {
+	test("a URL with a query or a fragment keeps the default; a user name is kept as written", () => {
 		expect(mergeConfig({ substrate: { url: "https://user:pass@host/" } }, base).substrate.url).toBe(
-			"",
+			"https://user:pass@host",
 		);
 		expect(mergeConfig({ substrate: { url: "https://host/?k=v" } }, base).substrate.url).toBe("");
 		expect(mergeConfig({ substrate: { url: "https://host/#f" } }, base).substrate.url).toBe("");
