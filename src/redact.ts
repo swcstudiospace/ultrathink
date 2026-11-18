@@ -186,6 +186,17 @@ export function redactSecretShapes(text: string): string {
 	return redactAssignments(out);
 }
 
+/**
+ * Whether `text` holds a secret shape that `redactSecretShapes` would mask. Fails closed: a redactor error counts as a hit.
+ */
+export function hasSecretShape(text: string): boolean {
+	try {
+		return redactSecretShapes(text) !== text;
+	} catch {
+		return true;
+	}
+}
+
 /** The forms one secret takes inside error text: as given, trimmed, JSON-escaped (inside a quoted body) and URL-encoded. A blank secret has none. */
 function exactForms(secret: string): string[] {
 	const trimmed = secret.trim();

@@ -1130,12 +1130,14 @@ describe("grok-bot prompts build", () => {
 			branch: "b",
 			rules: Array.from({ length: 11 }, (_, i) => `rule ${i}`),
 		};
-		expect(validateCloudPrompt(buildCloudPrompt(record, many), many, PROMPT).ok).toBe(true);
-		const injected = buildCloudPrompt(record, many).replace(
+		expect(() => buildCloudPrompt(record, many)).toThrow(/DESK_RULES/);
+		const ten = { ...many, rules: many.rules.slice(0, 10) };
+		expect(validateCloudPrompt(buildCloudPrompt(record, ten), ten, PROMPT).ok).toBe(true);
+		const injected = buildCloudPrompt(record, ten).replace(
 			"<RULE>rule 0</RULE>",
 			"<RULE>rule 0</RULE><RULE>x</RULE>".repeat(6),
 		);
-		expect(validateCloudPrompt(injected, many, PROMPT).errors.join()).toMatch(/DESK_RULES/);
+		expect(validateCloudPrompt(injected, ten, PROMPT).errors.join()).toMatch(/DESK_RULES/);
 		const follow = { unit: "n3", mode: "followup" as const, repo: "o/r", branch: "b" };
 		expect(
 			validateCloudPrompt(buildCloudPrompt(record, follow), follow, PROMPT).errors.join(),

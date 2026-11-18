@@ -602,7 +602,22 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 						});
 						continue;
 					}
-					const xml = buildCloudPrompt(record, dispatch);
+					let xml: string;
+					try {
+						xml = buildCloudPrompt(record, dispatch);
+					} catch (error) {
+						failed++;
+						report.push({
+							unit: dispatch.unit,
+							mode: dispatch.mode,
+							agent: dispatch.agentId,
+							path: undefined,
+							ok: false,
+							errors: [error instanceof Error ? error.message : String(error)],
+							chars: 0,
+						});
+						continue;
+					}
 					const check = validateCloudPrompt(xml, dispatch, record.result.original);
 					if (check.ok) writeFileAtomic(target.path, xml);
 					else failed++;
