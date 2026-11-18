@@ -12,11 +12,8 @@ import {
 import { tenantReason } from "../greptile/tenant.ts";
 import { redactSecrets } from "../redact.ts";
 import { sleep as defaultSleep } from "../resilience/sleep.ts";
-import { asObj } from "../shared.ts";
-
-export interface ToolCaller {
-	call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
-}
+import { asArr, asObj, asStr, parseJson } from "../shared.ts";
+import type { ToolCaller } from "../track/create.ts";
 
 export interface GreptileRepo {
 	name: string;
@@ -30,11 +27,8 @@ type ListedGreptileRepo = GreptileRepo & { reviewsEnabled?: boolean };
 
 type Obj = Record<string, unknown>;
 
-const asStr = (value: unknown): string | undefined =>
-	typeof value === "string" ? value : undefined;
 const asNum = (value: unknown): number | undefined =>
 	typeof value === "number" && Number.isFinite(value) ? value : undefined;
-const asArr = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
 const SCORE_PATTERN = new RegExp(
 	String.raw`confidence\s+score(?:\s*:|\s+of)?\s*(?:<[^>]*>\s*)*(\d+)\s*\/\s*${GREPTILE_MAX_SCORE}\b`,
@@ -280,13 +274,6 @@ export async function reviewPr(input: {
 	}
 }
 
-const parseJson = (text: string): Obj | undefined => {
-	try {
-		return asObj(JSON.parse(text));
-	} catch {
-		return undefined;
-	}
-};
 const validScore = (value: unknown): number | undefined => {
 	const n = asNum(value);
 	return n !== undefined && n >= 0 && n <= GREPTILE_MAX_SCORE ? n : undefined;
@@ -345,7 +332,7 @@ export async function reviewCli(input: {
 			});
 			if (shown.exitCode !== 0)
 				return fail(shown.stderr.trim() || `greptile review show exited ${shown.exitCode}`, runId);
-			const parsed = parseJson(shown.stdout);
+			const parsed = asObj(parseJson(shown.stdout));
 			if (!parsed) return fail("greptile review show returned invalid JSON", runId);
 			detail = parsed;
 		}
@@ -366,7 +353,7 @@ export async function reviewCli(input: {
 			cwd,
 			timeoutMs: CLI_QUERY_TIMEOUT_MS,
 		});
-		const info = parseJson(checked.stdout);
+		const info = asObj(parseJson(checked.stdout));
 		// Records may carry full or abbreviated shas; any sha naming another commit means no review for headSha.
 		// A parsed record naming no sha cannot be tied to headSha, so it is no review either; an unparsed reply keeps
 		// the exit-code rule below.
@@ -410,7 +397,7 @@ export async function reviewCli(input: {
 		if (now() - startedAt >= remaining) return done({ status: "pending" });
 		return fail(started.stderr.trim() || `greptile exited ${started.exitCode}`);
 	}
-	const parsed = parseJson(started.stdout);
+	const parsed = asObj(parseJson(started.stdout));
 	if (!parsed) return fail("greptile review returned invalid JSON");
 	const runId = asStr(parsed.runId);
 	const score = validScore(parsed.confidence);

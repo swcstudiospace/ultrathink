@@ -10,7 +10,7 @@ import type { UltrathinkConfig } from "../config.ts";
 import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
 import { redactSecrets } from "../redact.ts";
-import { asObj } from "../shared.ts";
+import { asArr, asObj, asStr } from "../shared.ts";
 import type { ToolCaller } from "../track/create.ts";
 import type {
 	KnowledgeLookup,
@@ -79,11 +79,8 @@ const STOPWORDS = new Set(
 type Obj = Record<string, unknown>;
 type Caller = ToolCaller & { close?(): void };
 
-const asStr = (value: unknown): string | undefined =>
-	typeof value === "string" ? value : undefined;
 const asNum = (value: unknown): number | undefined =>
 	typeof value === "number" && Number.isFinite(value) ? value : undefined;
-const asArr = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const errorMessage = (error: unknown): string =>
 	error instanceof Error ? error.message : String(error);
 
