@@ -3,14 +3,9 @@
 
 import { describe, expect, test } from "bun:test";
 import { flush } from "../../../src/host/omp-test.helpers.ts";
+import type { TimerPort } from "../../../src/shared.ts";
 import { ConsoleSecurityEventLogger } from "../security/events.ts";
-import {
-	type Admission,
-	type AdmitResult,
-	type FairShare,
-	type FairShareTimers,
-	createFairShare,
-} from "./fair-share.ts";
+import { type Admission, type AdmitResult, type FairShare, createFairShare } from "./fair-share.ts";
 import { createLogger } from "./log.ts";
 
 const owner: Admission = { principal: "owner", class: "owner" };
@@ -158,7 +153,7 @@ interface FakeTimer {
 /** A timer seam the test drives: `timers[i].run()` fires a wait, and a cleared timer is recorded. */
 function fakeTimers() {
 	const timers: FakeTimer[] = [];
-	const seam: FairShareTimers = {
+	const seam: TimerPort = {
 		setTimeout: (run, ms) => {
 			const timer: FakeTimer = {
 				ms,

@@ -25,7 +25,7 @@ import {
 } from "../../../src/host/grokbot.ts";
 import { type PlanResponse, planPrompt } from "../../../src/host/plan.ts";
 import { redactSecrets } from "../../../src/redact.ts";
-import { isAbortError } from "../../../src/shared.ts";
+import { isAbortError, type TimerPort } from "../../../src/shared.ts";
 import { type CompletionReport, readReport } from "../../../src/types.ts";
 import { DEFAULT_PLAN_CONCURRENCY, type UltrathinkConfig } from "../config/config.ts";
 import { CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
@@ -35,7 +35,6 @@ import {
 	type AdmitResult,
 	createFairShare,
 	type FairShare,
-	type FairShareTimers,
 } from "../obs/fair-share.ts";
 import { failureLabel, type Logger } from "../obs/log.ts";
 import type { SpanSink } from "../obs/otel.ts";
@@ -533,7 +532,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 	 * The queue's timers run on the planner's own `sleep`, so a test that injects one controls the 60 s wait. A wait that
 	 * was cleared resolves its sleep early; the guard keeps it from firing.
 	 */
-	const queueTimers: FairShareTimers = {
+	const queueTimers: TimerPort = {
 		setTimeout(run, ms) {
 			const timer = new AbortController();
 			sleep(ms, timer.signal)

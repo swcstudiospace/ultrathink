@@ -2,6 +2,8 @@
 // Copyright (C) 2026 SWC Studio
 /** Periodic `PRAGMA wal_checkpoint` for the store. Timers are injectable, as in the retention sweeper, so tests drive the schedule. */
 
+import { platformTimers } from "../../../src/shared.ts";
+
 export interface WalCheckpointerOptions {
 	/** Runs one checkpoint. `Store.checkpoint` never throws and reports a busy result as `ok: false`. */
 	checkpoint: () => { ok: boolean };
@@ -19,21 +21,14 @@ export interface WalCheckpointer {
 	start(): () => void;
 }
 
-function defaultSetTimer(run: () => void, intervalMs: number): object {
-	const timer = setInterval(run, intervalMs);
-	timer.unref();
-	return timer;
-}
-
 export function createWalCheckpointer(options: WalCheckpointerOptions): WalCheckpointer {
 	if (typeof options.checkpoint !== "function")
 		throw new TypeError("wal checkpoint: checkpoint must be a function");
 	if (!Number.isFinite(options.intervalMs) || options.intervalMs <= 0) {
 		throw new RangeError("wal checkpoint: intervalMs must be a positive finite number");
 	}
-	const setTimer = options.setTimer ?? defaultSetTimer;
-	const clearTimer =
-		options.clearTimer ?? ((handle: object) => clearInterval(handle as NodeJS.Timeout));
+	const setTimer = options.setTimer ?? platformTimers.setInterval;
+	const clearTimer = options.clearTimer ?? platformTimers.clearInterval;
 	let handle: object | undefined;
 	const stop = (): void => {
 		if (handle === undefined) return;

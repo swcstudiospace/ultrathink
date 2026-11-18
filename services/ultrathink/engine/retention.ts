@@ -16,6 +16,7 @@
  */
 import { type Dir, lstatSync, opendirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { platformTimers } from "../../../src/shared.ts";
 import { createLogger, failureLabel, type Logger } from "../obs/log.ts";
 import { isSessionId } from "./journal.ts";
 
@@ -103,12 +104,6 @@ interface Walk {
 	stuckCutoff: number;
 	maxEntries: number;
 	logger: Logger;
-}
-
-function realSetTimer(run: () => void, intervalMs: number): object {
-	const timer = setInterval(run, intervalMs);
-	timer.unref();
-	return timer;
 }
 
 /**
@@ -422,9 +417,8 @@ export function createSweeper<T = SweepResult>(options: SweeperOptions<T>): Swee
 	) {
 		throw new RangeError("retention: intervalMs must be a positive finite number");
 	}
-	const setTimer = options.setTimer ?? realSetTimer;
-	const clearTimer =
-		options.clearTimer ?? ((handle: object) => clearInterval(handle as NodeJS.Timeout));
+	const setTimer = options.setTimer ?? platformTimers.setInterval;
+	const clearTimer = options.clearTimer ?? platformTimers.clearInterval;
 	const report = (error: unknown): void => {
 		try {
 			options.onError?.(error instanceof Error ? error : new Error(String(error)));

@@ -14,6 +14,7 @@
 //
 // Construction throws `RangeError` for invalid options.
 
+import { platformTimers, type TimerPort } from "../../../src/shared.ts";
 import type { SecurityEventLogger } from "../security/events.ts";
 
 /** Priority class of an admitted request. `owner` > `connector` > `bearer`. */
@@ -25,19 +26,13 @@ export interface Admission {
 	class: AdmissionClass;
 }
 
-/** Timer seam for queued waits. Defaults to the global timers. */
-export interface FairShareTimers {
-	setTimeout(run: () => void, ms: number): unknown;
-	clearTimeout(handle: unknown): void;
-}
-
 interface FairShareQueue {
 	/** Waiting admissions per class. Integer `>= 0`; 0 refuses at once. */
 	depth: number;
 	/** Longest wait before the admission expires, in ms. Positive safe integer. */
 	waitMs: number;
 	/** Test seam. Defaults to the global timers. */
-	timers?: FairShareTimers;
+	timers?: TimerPort;
 }
 
 export interface FairShareOptions {
@@ -101,11 +96,6 @@ interface Waiter {
 /** Highest priority first. The order in which freed slots are handed out. */
 const CLASS_ORDER: readonly AdmissionClass[] = ["owner", "connector", "bearer"];
 
-const DEFAULT_TIMERS: FairShareTimers = {
-	setTimeout: (run, ms) => setTimeout(run, ms),
-	clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
-};
-
 /** Create a fair-share pool. Throws `RangeError` on invalid options. */
 export function createFairShare(options: FairShareOptions): FairShare {
 	const { capacity, reserve } = options;
@@ -138,7 +128,7 @@ export function createFairShare(options: FairShareOptions): FairShare {
 	}
 	const depth = queue?.depth ?? 0;
 	const waitMs = queue?.waitMs ?? 0;
-	const timers = queue?.timers ?? DEFAULT_TIMERS;
+	const timers = queue?.timers ?? platformTimers;
 	const security = options.security;
 
 	let held = 0;
