@@ -3,15 +3,19 @@
 import type { SessionRecord } from "../claude/state.ts";
 import type { DecisionAction, DecisionRecord } from "../decisions/types.ts";
 import { formatP } from "../decisions/types.ts";
+import { redactSecrets } from "../redact.ts";
 import type { Assessment } from "./types.ts";
 
 const TITLE_MAX = 72;
 // Absolute local paths (/root/..., /home/..., C:\...) never belong in a PR.
 const LOCAL_PATH = /(?:[A-Za-z]:\\|\/(?:root|home|Users|tmp|var|private)\/)[^\s)`'"]*/g;
 
-// Strips ASCII control chars (keeping \n and \t) and absolute local paths from interpolated text.
+// Every interpolated value (the title and each body section) goes through here: masks secrets first, while the
+// raw text is still whole, then strips ASCII control chars (keeping \n and \t) and absolute local paths.
 function scrub(text: string): string {
-	return text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").replace(LOCAL_PATH, "<local path>");
+	return redactSecrets(text)
+		.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+		.replace(LOCAL_PATH, "<local path>");
 }
 
 /** Suffix of the `- Jev:` line by what Jev did to the outcome; `none` adds nothing. */
