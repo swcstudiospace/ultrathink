@@ -5,7 +5,10 @@ coverage/
 *.bak-*
 .claude/settings.local.json
 issues/
-.planning/
+.planning/*
+!.planning/ROADMAP.md
+!.planning/STATE.md
+!.planning/PHASES-INVENTORY.md
 .hermes/
 docs/superpowers/
 __pycache__/
