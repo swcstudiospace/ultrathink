@@ -3,22 +3,22 @@ gsd_state_version: "1.0"
 milestone: v1.24
 milestone_name: Phase lifecycle design and remaining-work decomposition
 status: in_progress
-stopped_at: v1.24 verification refresh for phases 110-113 in progress
+stopped_at: v1.24 verification refresh complete: phases 109 and 113 passed; 110-112 human_needed, deferred to the owner
 last_updated: "2026-11-18T05:39:59.000Z"
 state_head: 49374976071dbe29b1e3646cb7132905714b048c
 progress:
   total_phases: 5
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 5
   completed_plans: 5
-  percent: 20
+  percent: 40
 last_activity: 2026-11-18
 implementation_head: bab5a83 (local and pushed candidate; not integrated or deployed)
 implementation_branch: gsd/remove-cimd-phases
 implementation_root: /root/src/worktrees/ultrathink-remove-cimd
 current_phase: 110
 current_phase_name: Persist and checkpoint the phase loop
-last_activity_desc: "v1.24 active: phase 109 passed; phases 110-113 executed with stale gap records, being re-verified against origin/main 99ce989"
+last_activity_desc: "v1.24: phases 109 and 113 passed (113 re-verified on origin/main a95752c); 110-112 human_needed and deferred; milestone lifecycle awaits owner"
 ---
 
 # Project State

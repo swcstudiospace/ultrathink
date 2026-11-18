@@ -98,7 +98,7 @@ Status: Verified human_needed on 2026-11-18 at origin/main 6eedb14 (PR #170 merg
 
 ### Phase 113: Decomposition task matrix
 
-Status: Matrix written (`docs/roadmap/task-matrix.md`, from `bun run matrix`). Verification gaps_found on 2026-11-18: the generator classified every Backlog bullet as blocked, the header misstated the gitignore state, and some rows copied stale statuses. Gap closure in progress.
+Status: Verified 2026-11-18: passed 3/3 success criteria on origin/main a95752c (`phases/113-decomposition-task-matrix/VERIFICATION.md`). The earlier gaps_found (generator classified every Backlog bullet as blocked, stale header, stale row statuses) was closed by PR #171 and PR #173. Matrix regenerated with `bun run matrix`. Residual limits N1 to N4 are recorded in that file; N1 lists human-deferred phases 110 and 112 under Executable now.
 
 **Goal:** a source-grounded task matrix for every remaining phase and Backlog item.
 **Requirements:** DEC-01, DEC-02, DEC-03.
