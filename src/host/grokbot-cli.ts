@@ -177,6 +177,11 @@ export async function summarize(
 	};
 }
 
+/** The Greptile GitHub App's login as the REST API reports it: authorship is an exact match on this, never a substring. */
+const GREPTILE_BOT_LOGIN = "greptile-apps[bot]";
+/** How long one GitHub read may stall before `review read` fails. */
+const GITHUB_READ_TIMEOUT_MS = 15_000;
+
 /** Read-only fixture files (from the GitHub connector) standing in for the REST calls. */
 export function dirFetcher(dir: string): typeof fetch {
 	const files: Array<[RegExp, string]> = [
@@ -200,8 +205,18 @@ export async function reviewRead(
 	fetcher: typeof fetch = fetch,
 ): Promise<Record<string, unknown>> {
 	const headers = { accept: "application/vnd.github+json", "user-agent": "ultrathink-grokbot" };
+	/** A stalled GitHub read fails after GITHUB_READ_TIMEOUT_MS instead of hanging `review read`. */
+	const send = async (path: string, url: string): Promise<Response> => {
+		try {
+			return await fetcher(url, { headers, signal: AbortSignal.timeout(GITHUB_READ_TIMEOUT_MS) });
+		} catch (error) {
+			if (error instanceof DOMException && error.name === "TimeoutError")
+				throw new Error(`GitHub ${path}: timed out after ${GITHUB_READ_TIMEOUT_MS / 1000} s`);
+			throw error;
+		}
+	};
 	const get = async <T>(path: string): Promise<{ value: T; link: string | null }> => {
-		const response = await fetcher(`https://api.github.com/repos/${repo}/${path}`, { headers });
+		const response = await send(path, `https://api.github.com/repos/${repo}/${path}`);
 		if (!response.ok) throw new Error(`GitHub ${path}: HTTP ${response.status}`);
 		return { value: (await response.json()) as T, link: response.headers.get("link") };
 	};
@@ -211,7 +226,7 @@ export async function reviewRead(
 		let next: string | undefined =
 			`https://api.github.com/repos/${repo}/${path}${path.includes("?") ? "&" : "?"}per_page=100`;
 		for (let page = 0; page < 20 && next; page++) {
-			const response: Response = await fetcher(next, { headers });
+			const response: Response = await send(path, next);
 			if (!response.ok) throw new Error(`GitHub ${path}: HTTP ${response.status}`);
 			const batch: T[] = take(await response.json());
 			out.push(...batch);
@@ -222,7 +237,7 @@ export async function reviewRead(
 	};
 	type Item = Record<string, unknown>;
 	const isGreptile = (c: Item) =>
-		/greptile/i.test(String((c.user as { login?: string } | undefined)?.login ?? ""));
+		(c.user as { login?: string } | undefined)?.login === GREPTILE_BOT_LOGIN;
 	const pull = (await get<Item>(`pulls/${pr}`)).value;
 	const head = String((pull.head as { sha?: string } | undefined)?.sha ?? "");
 	const [issueComments, reviews, reviewComments, checkRunsFetch] = await Promise.all([
@@ -265,8 +280,7 @@ export async function reviewRead(
 		.sort((a, b) => a.at - b.at)
 		.at(-1)?.score;
 	const headScore = headReview ? parseScore(String(headReview.body ?? "")) : null;
-	const descriptionScore = parseScore(String(pull.body ?? ""));
-	const score = headScore ?? latestCommentScore ?? descriptionScore;
+	const score = headScore ?? latestCommentScore;
 	const roots = reviewComments.filter((c) => isGreptile(c) && !c.in_reply_to_id);
 	const threads = roots.map((c) => ({
 		path: c.path,
@@ -293,9 +307,7 @@ export async function reviewRead(
 				? "head-review"
 				: latestCommentScore !== undefined
 					? "latest-comment"
-					: descriptionScore !== null
-						? "pr-description"
-						: "none",
+					: "none",
 		lastGreptileReviewCommit: String(lastReview?.commit_id ?? "").slice(0, 12),
 		reviewedHead: lastReview?.commit_id === head,
 		greptileThreadsTotal: threads.length,
@@ -522,12 +534,13 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 				const refsFile = flag(rest, "--refs");
 				if (!refsFile) return { code: 2, text: "track record needs --refs F" };
 				const config = loadConfig(claudeConfigPaths(cwd, env));
-				const parsed = JSON.parse(readFileSync(refsFile, "utf8")) as Parameters<
-					typeof recordRefs
-				>[1];
+				const parsed: unknown = JSON.parse(readFileSync(refsFile, "utf8"));
+				if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+					throw new Error("track record: --refs must be a JSON object");
+				const refs = parsed as Parameters<typeof recordRefs>[1];
 				const { tracking, todos } = recordRefs(path, {
-					...parsed,
-					trackers: parsed.trackers ?? {
+					...refs,
+					trackers: refs.trackers ?? {
 						linear: config.linear.team.trim() !== "",
 						notion: config.notion.dataSourceUrl.trim() !== "",
 					},
