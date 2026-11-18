@@ -39,6 +39,8 @@ const OPEN_WORDS =
 	/\b(pending|blocked|gaps?[ _]found|human[ _]needed|verification_deferred_human|not started|partial|needs?)\b/gi;
 /** "phase N", "phases N and M", "phases N to M", "phases N/M": the list of numbers after the word. */
 const PHASE_LIST = /\bphases?\s+(\d+(?:\s*(?:\/|,|\u2013|-|to|and)\s*\d+)*)/gi;
+/** The first verdict word after "Verified" in a phase status line. */
+const VERDICT = /\bVerified\b.*?\b(passed|human_needed|gaps_found)\b/i;
 const CLOSED_STATES: Record<string, true> = { accepted_tech_debt: true, withdrawn: true };
 const OPEN_STATES: Record<string, true> = {
 	verification_deferred_human: true,
@@ -57,7 +59,7 @@ type MatrixInput = {
 	paths?: { roadmap?: string; state?: string; inventory?: string };
 };
 
-type Bucket = "executable" | "blocked" | "closed" | "constraint";
+type Bucket = "executable" | "blocked" | "deferred" | "closed" | "constraint";
 type Claim = { cls: "open" | "closed"; words: string[] };
 type Witness = { file: "R" | "S" | "I"; no: number; claim: Claim };
 type Match = { mode: "number" | "word"; key: string };
@@ -110,10 +112,10 @@ type DeferredRow = { phase: string; state: string; resume: string; lines: number
 
 const RULES = [
 	"- Status: a phase shows its ROADMAP `Status:` line, trailing period removed. A deferred item shows its STATE state from Deferred Verification, or from Deferred Items when it has no Deferred Verification row. A backlog item shows `backlog`.",
-	"- Bucket: `closed` when a phase status starts with `Complete`, a deferred state is `accepted_tech_debt` or `withdrawn`, or a backlog bullet starts with `Superseded by` or contains `withdrawn`. `constraint` for a standing rule whose text starts with `Do not` or `One-way`; it is not work. `blocked` when a dependency is not Complete or a human or external input is missing. `executable` otherwise.",
+	"- Bucket: `closed` when a phase status starts with `Complete` or its verdict word after `Verified` is `passed`, a deferred state is `accepted_tech_debt` or `withdrawn`, or a backlog bullet starts with `Superseded by` or contains `withdrawn`. `deferred` when a phase's verdict word after `Verified` is `human_needed`: the owner runs its verification, so it is not executable. `constraint` for a standing rule whose text starts with `Do not` or `One-way`; it is not work. `blocked` when a dependency is not closed or a human or external input is missing. `executable` otherwise.",
 	"- Parallel group: `G0` has no open dependency. `Gn` is one more than its deepest open dependency. `external` waits on a human or external input. `-` means closed or constraint.",
 	"- Non-overlap: the other phase items in the same group. Items in one group have no dependency edge between them. File overlap is not derivable from these sources; check file sets before dispatching a group.",
-	"- Depends on: phase numbers from `**Depends on:**`. Entry condition: those IDs, or `none`; a blocked item adds `missing:` and its exact missing input.",
+	"- Depends on: phase numbers from `**Depends on:**`. Entry condition: those IDs, or `none`; a blocked or deferred item adds `missing:` and its exact missing input.",
 	"- Evidence: the STATE (`S:`) and PHASES-INVENTORY (`I:`) lines the row cites, or `-`.",
 	"- Owner and Validation command: a phase's `**Owner:**` and `**Validation:**` lines, and a deferred item's STATE resume cell when it is a slash command. Otherwise `not in sources`; nothing is inferred.",
 	"- Conflicts: an item whose own status is open or closed, and whose first status-bearing line in each source file that names it (phase or deferred: `phase N` or an inventory row for N; backlog: its bold key) states the opposite class. A line that names more than one phase or backlog ID is not used for any of them. A line carrying both open and closed words is not a status claim. The item's own line is excluded.",
@@ -132,8 +134,17 @@ function escapeRegex(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function isComplete(status: string): boolean {
-	return /^Complete\b/.test(status);
+/**
+ * A phase's bucket from its ROADMAP status line and its open dependencies, in order: a status
+ * starting with "Complete" is closed; verdict "passed" is closed; verdict "human_needed" is
+ * deferred to the owner; otherwise the phase is blocked by an open dependency, else executable.
+ * A dependency is satisfied when its phase is closed.
+ */
+function phaseBucket(status: string, openDeps: string[]): Bucket {
+	const verdict = VERDICT.exec(status)?.[1]?.toLowerCase();
+	if (/^Complete\b/.test(status) || verdict === "passed") return "closed";
+	if (verdict === "human_needed") return "deferred";
+	return openDeps.length > 0 ? "blocked" : "executable";
 }
 
 function splitRow(text: string): string[] {
@@ -276,7 +287,9 @@ function phaseItems(defs: PhaseDef[], src: Sources, label: string): Item[] {
 		}
 	}
 	const openDeps = (num: string): string[] =>
-		(byNum.get(num)?.deps ?? []).filter((dep) => !isComplete(byNum.get(dep)?.status ?? ""));
+		(byNum.get(num)?.deps ?? []).filter(
+			(dep) => phaseBucket(byNum.get(dep)?.status ?? "", []) !== "closed",
+		);
 	const levels = new Map<string, number>();
 	const levelOf = (num: string, path: string[]): number => {
 		const known = levels.get(num);
@@ -308,18 +321,21 @@ function phaseItems(defs: PhaseDef[], src: Sources, label: string): Item[] {
 			owner: d.owner ?? NOT_IN_SOURCES,
 			validation: d.validation ?? NOT_IN_SOURCES,
 		};
-		if (isComplete(d.status)) return { ...base, bucket: "closed", group: "-", missing: "" };
-		const group = `G${levelOf(d.num, [])}`;
 		const open = openDeps(d.num);
-		if (open.length > 0) {
-			const missing = open
-				.map(
-					(dep) => `phase ${dep} must reach Complete (currently: ${byNum.get(dep)?.status ?? ""})`,
-				)
-				.join("; ");
-			return { ...base, bucket: "blocked", group, missing };
+		const bucket = phaseBucket(d.status, open);
+		if (bucket === "closed") return { ...base, bucket, group: "-", missing: "" };
+		if (bucket === "deferred") {
+			const missing = `owner human verification of phase ${d.num} must pass (currently: ${d.status})`;
+			return { ...base, bucket, group: "external", missing };
 		}
-		return { ...base, bucket: "executable", group, missing: "" };
+		const group = `G${levelOf(d.num, [])}`;
+		if (bucket === "blocked") {
+			const missing = open
+				.map((dep) => `phase ${dep} must be closed (currently: ${byNum.get(dep)?.status ?? ""})`)
+				.join("; ");
+			return { ...base, bucket, group, missing };
+		}
+		return { ...base, bucket, group, missing: "" };
 	});
 }
 
@@ -546,7 +562,7 @@ function renderMatrix(items: Item[], src: Sources, labels: Labels): string {
 	const rows = items.map((item): string => {
 		const deps =
 			item.dependsOn.length > 0 ? item.dependsOn.map((n) => `PHASE-${n}`).join(", ") : "none";
-		const entry = item.bucket === "blocked" ? `${deps}; missing: ${item.missing}` : deps;
+		const entry = item.missing ? `${deps}; missing: ${item.missing}` : deps;
 		const cells = [
 			item.id,
 			item.kind,
@@ -568,6 +584,7 @@ function renderMatrix(items: Item[], src: Sources, labels: Labels): string {
 	const of = (bucket: Bucket): Item[] => items.filter((i) => i.bucket === bucket);
 	const executable = of("executable").map((i) => `- ${i.id} (${i.group})`);
 	const blocked = of("blocked").map((i) => `- ${i.id} (blocked): ${i.missing}`);
+	const deferred = of("deferred").map((i) => `- ${i.id} (deferred): ${i.missing}`);
 	const closed = of("closed").map((i) => `- ${i.id}`);
 	const constraints = of("constraint").map((i) => `- ${i.id}`);
 	const conflicts = conflictLines(items, src);
@@ -601,6 +618,10 @@ function renderMatrix(items: Item[], src: Sources, labels: Labels): string {
 		"## Blocked",
 		"",
 		section(blocked),
+		"",
+		"## Deferred to owner",
+		"",
+		section(deferred),
 		"",
 		"## Closed",
 		"",
