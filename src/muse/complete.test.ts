@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { abortError, CHILD_ENV } from "../claude/complete.ts";
-import { readReport } from "../types.ts";
+import { readReport } from "../completion-report.ts";
 import { CHILD_PROMPT_SENTINEL, planningTarget } from "../uplift/skill.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
 import { buildMuseArgs, buildMusePrompt, museComplete, parseMuseJsonl } from "./complete.ts";

@@ -9,7 +9,7 @@
  * framed as the user's own request, elaborated by a plugin the user installed.
  */
 import { join } from "node:path";
-import { hasControlCharacter } from "../config.ts";
+import { hasControlCharacter } from "../config/fields.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import { HANDOFF_MAX_CHARS, MAX_ENGINE_ERROR_CHARS } from "../host/display-limits.ts";
 import { redactSecrets } from "../redact.ts";

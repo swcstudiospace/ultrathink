@@ -20,7 +20,7 @@ import {
 	type GrokCompleteOptions,
 } from "../../../src/grok/complete.ts";
 import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
-import { attachReport, readReport } from "../../../src/types.ts";
+import { attachReport, readReport } from "../../../src/completion-report.ts";
 
 /**
  * The hosted service's coding-plan backend: `claude -p` on the plan holder's login, optionally

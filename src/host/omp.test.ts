@@ -23,7 +23,7 @@ import type { Api, AssistantMessage, Effort, Model } from "@oh-my-pi/pi-ai";
 import { writeControl, writeSession } from "../claude/state.ts";
 import { Flag } from "@oh-my-pi/pi-ai/error";
 import { RetryExhaustedError } from "../resilience/retry.ts";
-import { readReport } from "../types.ts";
+import { readReport } from "../completion-report.ts";
 import { briefDigest, LANE_LOCK_BUSY, writeLaneFile } from "../swarm/lane.ts";
 import type { ClassifyVerdict } from "../swarm/classify.ts";
 import { type LaneClassify, spawnLanes, type TeamsFs } from "../swarm/teams.ts";

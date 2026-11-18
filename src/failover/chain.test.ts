@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { abortError } from "../claude/complete.ts";
-import { attachReport, readReport } from "../types.ts";
+import { attachReport, readReport } from "../completion-report.ts";
 import { createCooldownLedger, createFailoverCompleter, type FailoverCandidate } from "./chain.ts";
 import { classifyFailure, type FailureClass, failureCooldownMs } from "./classify.ts";
 

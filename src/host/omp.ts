@@ -45,8 +45,8 @@ import {
 import type { LockOptions } from "../claude/atomic.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import type { LegacyModelProvenance, UltrathinkConfig } from "../config.ts";
-import type { CompletionReport } from "../types.ts";
-import { attachReport, readReport, TRUNCATED_REPLY } from "../types.ts";
+import { attachReport, type CompletionReport, readReport } from "../completion-report.ts";
+import { TRUNCATED_REPLY } from "../types.ts";
 import { redactSecrets } from "../redact.ts";
 import {
 	type FailureVerdict,
