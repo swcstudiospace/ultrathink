@@ -12,7 +12,7 @@
  *
  * Each mutation runs under the manifest's file lock, so concurrent writers take turns and never drop each other's entries.
  *
- * Each successful create, update, disable and delete also appends one record to `audit.ndjson` at the store root
+ * Each successful create, update, promote, disable and delete also appends one record to `audit.ndjson` at the store root
  * (see `skill-audit.ts`). A failed append is reported in the result and never undoes the mutation.
  */
 import { randomBytes } from "node:crypto";
@@ -53,7 +53,7 @@ const PLAIN_SCALAR_RE = /^[A-Za-z0-9][^#:"'\\]*$/;
 
 export type GeneratedStatus = AutoSkill["status"];
 
-/** Every status a manifest entry may hold. `active` is kept as written; this store never sets it. */
+/** Every status a manifest entry may hold. Only promoteGeneratedSkill sets `active`; the general setter refuses it. */
 type ManifestStatus = GeneratedStatus | "active";
 
 /** One generated skill as the manifest records it. */
@@ -78,6 +78,7 @@ type StoreReason =
 	| "invalid_input"
 	| "user_authored"
 	| "not_found"
+	| "wrong_status"
 	| "unsafe_path"
 	| "manifest_corrupt"
 	| "skill_corrupt"
@@ -100,6 +101,10 @@ export type WriteResult =
 	| { ok: true; action: WriteAction; entry: GeneratedEntry; audit: AuditOutcome }
 	| StoreFailure;
 export type StatusResult = { ok: true; entry: GeneratedEntry; audit: AuditOutcome } | StoreFailure;
+export type PromoteResult =
+	| { ok: true; changed: false; entry: GeneratedEntry }
+	| { ok: true; changed: true; entry: GeneratedEntry; audit: AuditOutcome }
+	| StoreFailure;
 export type RemoveResult = { ok: true; name: string; audit: AuditOutcome } | StoreFailure;
 export type ListResult = { ok: true; entries: GeneratedEntry[] } | StoreFailure;
 
@@ -116,9 +121,10 @@ class StoreError extends Error {
 const SLUG_RULE = "kebab-case, 1 to 64 characters";
 
 /**
- * Writes or replaces the generated skill `skill.name` under `storeDir`. A new skill starts at its record's version; an
- * existing generated skill keeps its status and gets the next version. `nowIso` becomes the entry's `generated_at`, and
- * the audit record's time. `provenance` is the decision the audit record names.
+ * Writes or replaces the generated skill `skill.name` under `storeDir`. A new skill starts at its record's version. An
+ * existing generated skill gets the next version and returns to draft, because changed content needs a fresh
+ * confirmation; a disabled one stays disabled. `nowIso` becomes the entry's `generated_at`, and the audit record's time.
+ * `provenance` is the decision the audit record names.
  */
 export async function writeGeneratedSkill(
 	storeDir: string,
@@ -145,7 +151,7 @@ export async function writeGeneratedSkill(
 	}
 }
 
-/** Sets the status of a generated skill in both the manifest and the `status:` line of its frontmatter. */
+/** Sets a generated skill to draft or disabled, in the manifest and the `status:` line of its frontmatter. Only promoteGeneratedSkill sets active. */
 export async function setGeneratedStatus(
 	storeDir: string,
 	name: string,
@@ -160,6 +166,32 @@ export async function setGeneratedStatus(
 			...auditFieldsOf(entry),
 		});
 		return { ok: true, entry, audit };
+	} catch (error) {
+		return failureOf(error);
+	}
+}
+
+/**
+ * Promotes a draft generated skill to active. `confirmedBy` names who confirmed it and goes in the audit record. An
+ * active skill is already promoted: the call succeeds, changes nothing and writes no record. A disabled skill is refused.
+ */
+export async function promoteGeneratedSkill(
+	storeDir: string,
+	name: string,
+	confirmedBy: string,
+): Promise<PromoteResult> {
+	try {
+		requireSlug(name);
+		if (!isSingleLine(confirmedBy)) throw new StoreError("invalid_input", "confirmedBy is invalid");
+		const outcome = underManifestLock(storeDir, false, () => promoteStatus(storeDir, name));
+		if (!outcome.changed) return { ok: true, changed: false, entry: outcome.entry };
+		const audit = appendAudit(storeDir, {
+			ts: new Date().toISOString(),
+			action: "promote",
+			confirmedBy,
+			...auditFieldsOf(outcome.entry),
+		});
+		return { ok: true, changed: true, entry: outcome.entry, audit };
 	} catch (error) {
 		return failureOf(error);
 	}
@@ -214,7 +246,7 @@ function writeSkill(
 	const prior = entries.find((entry) => entry.name === skill.name);
 	const entry: GeneratedEntry = {
 		name: skill.name,
-		status: prior?.status ?? skill.status,
+		status: statusOnWrite(prior, skill),
 		generated_by: "auto",
 		version: prior === undefined ? skill.version : Math.max(prior.version + 1, skill.version),
 		content_hash: contentHashOf(skill),
@@ -237,14 +269,57 @@ function writeSkill(
 	return { action: prior === undefined ? "created" : "updated", entry };
 }
 
-function setStatus(storeDir: string, name: string, status: GeneratedStatus): GeneratedEntry {
-	if (!isStatus(status)) throw new StoreError("invalid_input", "status is invalid");
+/** The status a generation writes. A changed skill needs a fresh confirmation before it is active, so a disabled one
+ * stays disabled and any other returns to draft. */
+function statusOnWrite(prior: GeneratedEntry | undefined, skill: AutoSkill): GeneratedStatus {
+	if (prior === undefined) return skill.status;
+	return prior.status === "disabled" ? "disabled" : "draft";
+}
 
+/** The named manifest entry and the manifest it came from. Throws when the name is user-authored or absent. */
+function priorEntry(
+	storeDir: string,
+	name: string,
+): { entries: GeneratedEntry[]; prior: GeneratedEntry } {
 	const entries = readManifest(storeDir);
 	assertOwnedOrAbsent(storeDir, name, entries);
 	const prior = entries.find((entry) => entry.name === name);
 	if (prior === undefined) throw new StoreError("not_found", "no generated skill with that name");
+	return { entries, prior };
+}
 
+/** Sets a draft or disabled status. Only `promoteStatus` sets `active`. */
+function setStatus(storeDir: string, name: string, status: ManifestStatus): GeneratedEntry {
+	if (status !== "draft" && status !== "disabled") {
+		throw new StoreError(
+			"invalid_input",
+			"status must be draft or disabled; only promotion sets active",
+		);
+	}
+	const { entries, prior } = priorEntry(storeDir, name);
+	return writeStatus(storeDir, name, entries, prior, status);
+}
+
+/** Promotes a draft to active. An active skill is already promoted and changes nothing; a disabled one is refused. */
+function promoteStatus(
+	storeDir: string,
+	name: string,
+): { changed: boolean; entry: GeneratedEntry } {
+	const { entries, prior } = priorEntry(storeDir, name);
+	if (prior.status === "active") return { changed: false, entry: prior };
+	if (prior.status !== "draft")
+		throw new StoreError("wrong_status", "only a draft skill can be promoted");
+	return { changed: true, entry: writeStatus(storeDir, name, entries, prior, "active") };
+}
+
+/** Writes `status` to the manifest entry and to the `status:` line of its SKILL.md. The manifest goes first. */
+function writeStatus(
+	storeDir: string,
+	name: string,
+	entries: GeneratedEntry[],
+	prior: GeneratedEntry,
+	status: ManifestStatus,
+): GeneratedEntry {
 	const file = join(storeDir, name, SKILL_FILE);
 	assertRegularFile(file);
 	const updated = withFrontmatterStatus(readFileSync(file, "utf8"), status);
@@ -413,7 +488,7 @@ function lstatIfPresent(path: string): Stats | undefined {
 }
 
 /** Returns the status line replaced inside the frontmatter, or undefined when the frontmatter has none. */
-function withFrontmatterStatus(text: string, status: GeneratedStatus): string | undefined {
+function withFrontmatterStatus(text: string, status: ManifestStatus): string | undefined {
 	const lines = text.split("\n");
 	if (lines[0] !== "---") return undefined;
 	const close = lines.indexOf("---", 1);
