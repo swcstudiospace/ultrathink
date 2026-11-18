@@ -53,6 +53,8 @@ export interface HtilEntry {
 	/** Who resolved a done entry, and when (ISO 8601). Set by `resolve` when the caller gives them. */
 	resolvedBy?: string;
 	resolvedAt?: string;
+	/** Set when the merge gate's reconcile opened the entry on a Ship-closed loop. `resolve` may then act on it after Ship. */
+	afterShip?: true;
 }
 
 /** How an open HTIL entry leaves the open set. Each resolution needs its record. */
@@ -330,17 +332,25 @@ export function confirmShip(
 	);
 }
 
+/** Options for `open`. `afterShip` is set only by the merge gate's reconcile, which records a verification entry on a Ship-closed loop (LIFE-05). */
+export interface OpenHtilOptions {
+	afterShip?: boolean;
+}
+
 /**
  * Record an open HTIL entry (LIFE-05). The entry starts in state open and blocks close until it
- * is resolved. A missing id or owner, or a duplicate id, is refused, and so is any entry once Ship is recorded.
+ * is resolved. A missing id or owner, or a duplicate id, is refused. Once Ship is recorded an entry is refused
+ * unless `options.afterShip` is set.
  */
 export function open(
 	runtimeId: string,
 	entry: Pick<HtilEntry, "id" | "owner">,
 	store?: PhaseLoopStore,
+	options: OpenHtilOptions = {},
 ): GateOutcome {
 	return transition(runtimeId, store, (row) => {
-		if (isClosed(row)) return [`loop is closed by Ship; HTIL entry ${entry.id} is not recorded`];
+		if (isClosed(row) && options.afterShip !== true)
+			return [`loop is closed by Ship; HTIL entry ${entry.id} is not recorded`];
 		const refusals: string[] = [];
 		if (isBlank(entry.id)) refusals.push("HTIL entry needs an id");
 		if (isBlank(entry.owner)) refusals.push(`HTIL entry ${entry.id} needs an owner`);
@@ -348,7 +358,9 @@ export function open(
 			refusals.push(`HTIL entry ${entry.id} already exists`);
 		}
 		if (refusals.length > 0) return refusals;
-		row.humanItems.push({ id: entry.id, owner: entry.owner, state: "open" });
+		// Ship-closed here only through the reconcile (afterShip), so this origin marks exactly those entries.
+		const origin: Pick<HtilEntry, "afterShip"> = isClosed(row) ? { afterShip: true } : {};
+		row.humanItems.push({ id: entry.id, owner: entry.owner, state: "open", ...origin });
 		return [];
 	});
 }
@@ -356,7 +368,7 @@ export function open(
 /**
  * Resolve an open HTIL entry (LIFE-05). `done` needs the evidence it was resolved by; `deferred`
  * needs the recorded owner decision that defers it. A missing record is refused and the entry
- * stays open. Refused once Ship is recorded.
+ * stays open. Refused once Ship is recorded, unless the entry was opened on the Ship-closed loop by the merge gate's reconcile (`afterShip`).
  */
 export function resolve(
 	runtimeId: string,
@@ -365,8 +377,9 @@ export function resolve(
 	store?: PhaseLoopStore,
 ): GateOutcome {
 	return transition(runtimeId, store, (row) => {
-		if (isClosed(row)) return [`loop is closed by Ship; HTIL entry ${entryId} is not resolved`];
 		const entry = row.humanItems.find((item) => item.id === entryId);
+		if (isClosed(row) && entry?.afterShip !== true)
+			return [`loop is closed by Ship; HTIL entry ${entryId} is not resolved`];
 		if (entry === undefined) return [`HTIL entry ${entryId} does not exist`];
 		if (entry.state !== "open") return [`HTIL entry ${entryId} is already ${entry.state}`];
 		if (resolution.state === "done") {

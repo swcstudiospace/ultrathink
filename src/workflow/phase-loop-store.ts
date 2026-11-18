@@ -83,7 +83,8 @@ function isHtilEntry(value: unknown): value is HtilEntry {
 		(entry.evidenceId === undefined || typeof entry.evidenceId === "string") &&
 		(entry.decisionId === undefined || typeof entry.decisionId === "string") &&
 		(entry.resolvedBy === undefined || typeof entry.resolvedBy === "string") &&
-		(entry.resolvedAt === undefined || typeof entry.resolvedAt === "string")
+		(entry.resolvedAt === undefined || typeof entry.resolvedAt === "string") &&
+		(entry.afterShip === undefined || entry.afterShip === true)
 	);
 }
 
