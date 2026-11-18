@@ -2,7 +2,15 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +20,7 @@ import {
 	hashContent,
 	LockHeldError,
 	readGuarded,
+	withGuardedLock,
 	writeGuarded,
 } from "./guarded-write.ts";
 
@@ -23,6 +32,12 @@ function thrownBy(call: () => unknown): unknown {
 		return error;
 	}
 	throw new Error("expected the call to throw");
+}
+
+/** Sets the file's modification time to `ageMs` in the past. */
+function backdate(file: string, ageMs: number): void {
+	const when = new Date(Date.now() - ageMs);
+	utimesSync(file, when, when);
 }
 
 /** The content a race worker writes: its tag repeated, so a torn or interleaved write is visible. */
@@ -127,6 +142,51 @@ describe("guarded writer", () => {
 		expect(error).toBeInstanceOf(LockHeldError);
 		expect(readFileSync(path, "utf8")).toBe("base\n");
 		expect(readFileSync(`${path}.lock`, "utf8")).toBe(String(process.pid));
+	});
+
+	test("a lock older than 60 seconds is taken over even when its holder pid is alive", () => {
+		writeGuarded(path, ABSENT, "base\n");
+		const base = readGuarded(path).hash;
+		writeFileSync(`${path}.lock`, String(process.pid));
+		backdate(`${path}.lock`, 61_000);
+
+		writeGuarded(path, base, "next\n", { lockWaitMs: 1_000 });
+
+		expect(readFileSync(path, "utf8")).toBe("next\n");
+		expect(existsSync(`${path}.lock`)).toBe(false);
+	});
+
+	test("a lock 5 seconds old with a live pid still refuses after the wait budget", () => {
+		writeGuarded(path, ABSENT, "base\n");
+		const base = readGuarded(path).hash;
+		writeFileSync(`${path}.lock`, String(process.pid));
+		backdate(`${path}.lock`, 5_000);
+
+		const error = thrownBy(() => writeGuarded(path, base, "next\n", { lockWaitMs: 50 }));
+
+		expect(error).toBeInstanceOf(LockHeldError);
+		expect(readFileSync(path, "utf8")).toBe("base\n");
+		expect(readFileSync(`${path}.lock`, "utf8")).toBe(String(process.pid));
+	});
+
+	test("a nested withGuardedLock on a path this process holds runs without waiting", () => {
+		const lock = `${path}.lock`;
+		const started = Date.now();
+		let inner = false;
+		withGuardedLock(path, () => {
+			withGuardedLock(
+				path,
+				() => {
+					inner = true;
+				},
+				{ lockWaitMs: 5_000 },
+			);
+			expect(existsSync(lock)).toBe(true);
+		});
+
+		expect(inner).toBe(true);
+		expect(Date.now() - started).toBeLessThan(1_000);
+		expect(existsSync(lock)).toBe(false);
 	});
 
 	test("a missing file reads as ABSENT; creating it succeeds once and a second create fails", () => {

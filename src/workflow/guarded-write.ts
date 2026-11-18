@@ -9,6 +9,7 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 	writeSync,
 } from "node:fs";
@@ -75,6 +76,9 @@ export interface WriteGuardedOptions {
 const DEFAULT_LOCK_WAIT_MS = 30_000;
 const LOCK_RETRY_MS = 10;
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+const LOCK_DEADMAN_MS = 60_000;
+// Lock paths this process holds. A nested call on one of them runs without waiting.
+const heldLocks = new Set<string>();
 
 /**
  * Replaces the file with `next` only when its current hash equals `expectedHash`. Under the lock
@@ -84,9 +88,6 @@ const sleepCell = new Int32Array(new SharedArrayBuffer(4));
  *
  * A failure before the rename leaves the file unchanged. A failure in the directory fsync comes
  * after the rename, so the file already holds `next` when that error is thrown.
- *
- * A lock whose body names a dead pid is taken over. A live or unreadable holder is waited for up
- * to `options.lockWaitMs`, then LockHeldError is thrown.
  */
 export function writeGuarded(
 	path: string,
@@ -94,30 +95,56 @@ export function writeGuarded(
 	next: string,
 	options: WriteGuardedOptions = {},
 ): { hash: string } {
+	return withGuardedLock(
+		path,
+		() => {
+			const { hash: actualHash } = readGuarded(path);
+			if (actualHash !== expectedHash) {
+				throw new ConcurrentWriteError(path, expectedHash, actualHash);
+			}
+			replaceFile(path, next);
+			return { hash: hashContent(next) };
+		},
+		options,
+	);
+}
+
+/**
+ * Runs `fn` while holding `<path>.lock`, and removes the lock afterwards. A call for a path this
+ * process already holds runs `fn` directly: it neither waits nor releases the outer holder's lock.
+ */
+export function withGuardedLock<T>(
+	path: string,
+	fn: () => T,
+	options: WriteGuardedOptions = {},
+): T {
 	const lockPath = `${path}.lock`;
+	if (heldLocks.has(lockPath)) return fn();
 	acquireLock(lockPath, options.lockWaitMs ?? DEFAULT_LOCK_WAIT_MS);
+	heldLocks.add(lockPath);
 	try {
-		const { hash: actualHash } = readGuarded(path);
-		if (actualHash !== expectedHash) {
-			throw new ConcurrentWriteError(path, expectedHash, actualHash);
-		}
-		replaceFile(path, next);
-		return { hash: hashContent(next) };
+		return fn();
 	} finally {
+		heldLocks.delete(lockPath);
 		rmSync(lockPath, { force: true });
 	}
 }
 
 /**
- * Takes `<path>.lock`, retrying until `waitMs` elapses. A lock whose body names a dead pid is
- * removed and retried at once. A lock taken here holds this process's pid as its body.
+ * Takes `<path>.lock`, retrying until `waitMs` elapses. A lock is taken over when its body names a
+ * dead pid, or when its file is older than LOCK_DEADMAN_MS whatever its holder. A lock taken here
+ * holds this process's pid as its body.
  */
 function acquireLock(lockPath: string, waitMs: number): void {
 	const startedAt = Date.now();
 	for (;;) {
 		if (tryCreateLock(lockPath)) return;
 		const heldBody = readLockBody(lockPath);
-		if (heldBody !== undefined && isDeadHolder(heldBody) && removeStaleLock(lockPath, heldBody)) {
+		if (
+			heldBody !== undefined &&
+			(isDeadHolder(heldBody) || isExpired(lockPath)) &&
+			removeStaleLock(lockPath, heldBody)
+		) {
 			continue;
 		}
 		if (Date.now() - startedAt >= waitMs) throw new LockHeldError(lockPath);
@@ -182,6 +209,18 @@ function removeStaleLock(lockPath: string, staleBody: string): boolean {
 	if (current !== staleBody) return false;
 	rmSync(lockPath, { force: true });
 	return true;
+}
+
+/**
+ * True when the lock file is older than LOCK_DEADMAN_MS, whatever its holder. A missing file is not.
+ */
+function isExpired(lockPath: string): boolean {
+	try {
+		return Date.now() - statSync(lockPath).mtimeMs > LOCK_DEADMAN_MS;
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return false;
+		throw error;
+	}
 }
 
 /** Blocks the calling thread for `ms`. The buffer is never notified, so the wait always runs out. */
