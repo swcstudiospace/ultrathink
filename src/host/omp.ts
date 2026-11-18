@@ -168,8 +168,10 @@ import { projectOf } from "../teach/mapping.ts";
 import type { TeachContext } from "../teach/types.ts";
 import { type PlanView, projectResolution } from "./view.ts";
 import {
+	installKillCheckpoint,
 	pauseSessionPhases,
 	type PhaseReport,
+	type PhaseSession,
 	recordGsdPhase,
 	restoreSessionPhases,
 } from "./omp-phase.ts";
@@ -2297,6 +2299,9 @@ export function createOmpExtension(
 				);
 			if (report?.kind === "notice") guard(() => ctx?.ui?.notify?.(report.text, "warning"));
 		};
+		/** The session the kill hook checkpoints: set at session start or switch, cleared once shutdown pauses it. */
+		let livePhaseSession: PhaseSession | undefined;
+		installKillCheckpoint(() => livePhaseSession, now);
 		pi.on("session_start", (_event, ctx) => {
 			shutDown = false;
 			attach(ctx);
@@ -2304,7 +2309,10 @@ export function createOmpExtension(
 			scheduleMount();
 			// The host already named this session. An invalid id is ignored; a throw must not block startup.
 			guard(() => store.setLiveSession(ctx?.sessionManager?.getSessionId?.()));
-			guard(() => showPhaseReport(restoreSessionPhases(phaseSession(ctx)), ctx));
+			guard(() => {
+				livePhaseSession = phaseSession(ctx);
+				showPhaseReport(restoreSessionPhases(livePhaseSession), ctx);
+			});
 		});
 		pi.on("session_switch", (_event, ctx) => {
 			// The old session's flights would deliver into the new one: cancel and suppress them.
@@ -2317,7 +2325,10 @@ export function createOmpExtension(
 			startActivityPoll(ctx);
 			scheduleMount();
 			guard(() => store.setLiveSession(ctx?.sessionManager?.getSessionId?.()));
-			guard(() => showPhaseReport(restoreSessionPhases(phaseSession(ctx)), ctx));
+			guard(() => {
+				livePhaseSession = phaseSession(ctx);
+				showPhaseReport(restoreSessionPhases(livePhaseSession), ctx);
+			});
 		});
 		pi.on("session_shutdown", (_event, ctx) => {
 			shutDown = true;
@@ -2336,6 +2347,8 @@ export function createOmpExtension(
 					ctx,
 				),
 			);
+			// Paused: a signal arriving from here on must not overwrite the pause checkpoint with a kill.
+			livePhaseSession = undefined;
 		});
 		for (const event of [
 			"agent_start",
