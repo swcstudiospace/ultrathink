@@ -2,8 +2,8 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import { disabledKnowledgeLookup } from "../greptile/knowledge.ts";
-import { knowledgeLookupToPanel } from "../recall/panel-model.ts";
-import { PLAN_TYPE, registerUltrathinkRenderers } from "./omp-render.ts";
+import { type PanelEnvelope, knowledgeLookupToPanel } from "../recall/panel-model.ts";
+import { PLAN_TYPE, RECALL_TYPE, registerUltrathinkRenderers } from "./omp-render.ts";
 import type { PlanView } from "./view.ts";
 
 type Renderer = Parameters<
@@ -70,5 +70,39 @@ describe("plan card with information panels", () => {
 
 	test("a panels entry with no string status renders the same rows as the view without panels", () => {
 		expect(planRows({ ...view, panels: { knowledge: { junk: 1 } } })).toEqual(planRows(view));
+	});
+});
+
+describe("recall card with information panels", () => {
+	test("the recall card draws the moments panel", () => {
+		const moments: PanelEnvelope = {
+			status: "success",
+			items: [
+				{
+					id: "moment-1",
+					title: "Check the owner before retrying",
+					preview: "Look at the owner and mode of the path first.",
+					source: { kind: "lesson", ref: "moment-1" },
+					timestamp: null,
+					matchReason: "error signature match",
+					itemStatus: "returned",
+				},
+			],
+			excluded: [],
+			missing: [],
+			stages: [],
+		};
+		const renderRecall = renderers[RECALL_TYPE] as Renderer;
+
+		const card = renderRecall(
+			{ content: "recall", details: { moments } },
+			{ expanded: false },
+			theme,
+		);
+		if (card === undefined) throw new Error("recall renderer declined the view");
+		const text = [...card.render(100)].join("\n");
+
+		expect(text).toContain("Teachable moments");
+		expect(text).toContain("Check the owner before retrying");
 	});
 });

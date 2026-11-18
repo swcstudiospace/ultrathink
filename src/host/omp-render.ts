@@ -1168,6 +1168,7 @@ const PANEL_LABELS: Record<keyof TurnPanels, string> = {
 	knowledge: "Greptile knowledge base",
 	lessons: "Lessons",
 	skills: "Skills",
+	moments: "Teachable moments",
 	substrate: "Substrate brief",
 };
 
