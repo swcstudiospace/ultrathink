@@ -2,6 +2,8 @@
 // Copyright (C) 2026 SWC Studio
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import type { ServerResponse } from "node:http";
 import net from "node:net";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +19,7 @@ import {
 	type MtlsServer,
 	peerIdentity,
 	startMtlsServer,
+	writeResponse,
 } from "./mtls.ts";
 
 const TRUST_DOMAIN = "ultrathink.test";
@@ -315,6 +318,34 @@ test("bunAtLeast orders a pre-release below its release and ignores build metada
 	expect(bunAtLeast("1.4.0-beta", MTLS_MIN_BUN)).toBe(false);
 	expect(bunAtLeast("1.4.0", MTLS_MIN_BUN)).toBe(true);
 	expect(bunAtLeast("1.2.23+build.5", [1, 2, 23])).toBe(true);
+});
+
+test("a backpressure stall leaves no drain or close listener on the response", async () => {
+	const res = new EventEmitter();
+	let stalls = 0;
+	Object.assign(res, {
+		statusCode: 200,
+		destroyed: false,
+		setHeader: () => undefined,
+		end: () => undefined,
+		write: () => {
+			stalls++;
+			queueMicrotask(() => res.emit("drain"));
+			return false;
+		},
+	});
+	const chunks = Array.from({ length: 12 }, (_, index) => new Uint8Array([index]));
+	const body = new ReadableStream<Uint8Array>({
+		pull(controller) {
+			const next = chunks.shift();
+			if (next === undefined) controller.close();
+			else controller.enqueue(next);
+		},
+	});
+	await writeResponse(res as unknown as ServerResponse, new Response(body));
+	expect(stalls).toBe(12);
+	expect(res.listenerCount("drain")).toBe(0);
+	expect(res.listenerCount("close")).toBe(0);
 });
 
 describe.skipIf(!ADAPTER_SUPPORTED)(ADAPTER_TITLE, () => {

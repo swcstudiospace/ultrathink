@@ -103,8 +103,8 @@ export interface DriveReport {
 }
 
 interface WatchdogTimers {
-	setTimeout(callback: () => void, ms: number): NodeJS.Timeout;
-	clearTimeout(handle: NodeJS.Timeout | undefined): void;
+	setTimeout(callback: () => void, ms: number): unknown;
+	clearTimeout(handle: unknown): void;
 }
 
 export interface DriveDeps {
@@ -186,7 +186,7 @@ export function watchdogBudgetMs(scenario: Scenario, deps: Pick<DriveDeps, "watc
 
 const platformTimers: WatchdogTimers = {
 	setTimeout: (callback, ms) => setTimeout(callback, ms),
-	clearTimeout: (handle) => clearTimeout(handle),
+	clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout | undefined),
 };
 
 /** One slot of the 16-long cycle: the prompt kinds the design names, in a fixed order so every run sees the same mix. */
@@ -343,13 +343,14 @@ function callsOf(provider: ScriptedProvider, nonce: string): PromptOutcome["call
 }
 
 // A synthetic whole Model: the native binding needs one to snapshot and hand to completeSimple; nothing reads its fields.
-const CHAOS_MODEL = {
+const CHAOS_MODEL_STUB = {
 	provider: "chaos",
 	id: "pipeline",
 	name: "pipeline",
 	api: "chaos",
 	input: ["text"],
-} as unknown as Model<Api>;
+} satisfies Partial<Model<Api>>;
+const CHAOS_MODEL = CHAOS_MODEL_STUB as Model<Api>;
 
 const CHAOS_RUNTIME: OmpNativeRuntime = {
 	models: {

@@ -22,6 +22,8 @@ export interface PlanningModel {
 		prompt: string;
 		/** The reply's output limit in tokens. Present only when a token ceiling bounds the reply. */
 		maxOutputTokens?: number;
+		/** Aborted when the per-call timeout fires. */
+		signal?: AbortSignal;
 	}): Promise<{ text: string; tokensUsed: number }>;
 }
 
@@ -37,9 +39,11 @@ export interface WorkerOptions {
 	leaseMs?: number;
 	heartbeatMs?: number;
 	maxModelAttempts?: number;
+	/** Longest wait for one model attempt; past it the attempt is aborted and counts as failed. */
+	modelTimeoutMs?: number;
 	backoffMs?: number;
 	pollMs?: number;
-	sleep?: (ms: number) => Promise<void>;
+	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 	now?: () => number;
 }
 
@@ -176,9 +180,18 @@ interface ParsedDecision {
 
 type Step = { done: true; output: string } | { done: false; result: TickResult };
 
-function defaultSleep(ms: number): Promise<void> {
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return Promise.resolve();
 	const { promise, resolve } = Promise.withResolvers<void>();
-	setTimeout(resolve, ms);
+	const onAbort = (): void => {
+		clearTimeout(timer);
+		resolve();
+	};
+	const timer = setTimeout(() => {
+		signal?.removeEventListener("abort", onAbort);
+		resolve();
+	}, ms);
+	signal?.addEventListener("abort", onAbort, { once: true });
 	return promise;
 }
 
@@ -282,13 +295,14 @@ export function createWorker(options: WorkerOptions): Worker {
 	const maxModelAttempts = options.maxModelAttempts ?? 3;
 	const backoffMs = options.backoffMs ?? 1000;
 	const pollMs = options.pollMs ?? 2000;
+	const modelTimeoutMs = options.modelTimeoutMs ?? 300_000;
 	const sleep = options.sleep ?? defaultSleep;
 	const now = options.now ?? Date.now;
 	const db = store.db;
 
-	if (!(leaseMs > 0) || !(heartbeatMs > 0) || !(maxModelAttempts >= 1)) {
+	if (!(leaseMs > 0) || !(heartbeatMs > 0) || !(modelTimeoutMs > 0) || !(maxModelAttempts >= 1)) {
 		throw new RangeError(
-			"leaseMs and heartbeatMs must be positive; maxModelAttempts must be at least 1",
+			"leaseMs, heartbeatMs and modelTimeoutMs must be positive; maxModelAttempts must be at least 1",
 		);
 	}
 
@@ -391,6 +405,32 @@ export function createWorker(options: WorkerOptions): Worker {
 	}
 
 	/**
+	 * One model attempt, bounded by `modelTimeoutMs`. The timeout aborts the call's signal and rejects the race, so a
+	 * model that ignores its signal still cannot hold the attempt open. The timer is cleared once the attempt settles,
+	 * so it never fires during a backoff sleep.
+	 */
+	async function completeWithTimeout(
+		input: ModelInput,
+		lease: Promise<never>,
+	): Promise<ModelReply> {
+		const controller = new AbortController();
+		const { promise: timedOut, reject: rejectTimedOut } = Promise.withResolvers<never>();
+		const timer = setTimeout(() => {
+			controller.abort();
+			rejectTimedOut(new Error("model call timed out"));
+		}, modelTimeoutMs);
+		try {
+			return await Promise.race([
+				model.complete({ ...input, signal: controller.signal }),
+				lease,
+				timedOut,
+			]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	/**
 	 * Calls the model with retries and exponential backoff. The lease is renewed on a
 	 * heartbeat for the whole call. A truncated reply is not retried; unavailable means every attempt failed.
 	 */
@@ -413,8 +453,10 @@ export function createWorker(options: WorkerOptions): Worker {
 
 		try {
 			for (let attempt = 1; ; attempt++) {
+				// A lease lost during the previous backoff must not start another paid call.
+				if (heartbeat.error !== null) throw boundaryError("callModel", heartbeat.error);
 				try {
-					return { kind: "reply", reply: await Promise.race([model.complete(input), lease]) };
+					return { kind: "reply", reply: await completeWithTimeout(input, lease) };
 				} catch (error) {
 					if (heartbeat.error !== null) throw boundaryError("callModel", heartbeat.error);
 					// The adapter reports a reply cut at its own output limit with error code `truncated`.
@@ -599,10 +641,10 @@ export function createWorker(options: WorkerOptions): Worker {
 							? error.name
 							: "UnknownError";
 				console.error(`worker tick failed: ${label}`);
-				await sleep(pollMs);
+				await sleep(pollMs, signal);
 				continue;
 			}
-			if (result === "idle") await sleep(pollMs);
+			if (result === "idle") await sleep(pollMs, signal);
 		}
 	}
 

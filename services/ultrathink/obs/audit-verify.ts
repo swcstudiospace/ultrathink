@@ -30,62 +30,61 @@ export interface VerifyRequest {
 	readonly identity: string;
 }
 
-/** The chain's identity on disk, or the listing failure that keeps the directory from being read. */
-type ChainIdentity = { readonly identity: string } | { readonly listingError: string };
+/** The chain's identity on disk, or why it cannot be read: the active file's stat or the audit directory's listing failed. */
+type ChainIdentity = { readonly identity: string } | { readonly failure: string };
 
 function identityOf(path: string): ChainIdentity {
-	let ino = "missing";
+	let ino: string;
 	try {
 		ino = String(nodeFs.statSync(path).ino);
 	} catch (error) {
-		// reason: Absent: the identity records that, and it never matches an observed file. Only a failure other than
-		// ENOENT is logged, because nothing downstream reports a discarded scan.
+		// reason: A missing file is the absent-file identity, and it never matches an observed file. Any other stat
+		// failure cannot tell the chain apart, so it fails the scan instead of reading as a race.
 		const code = error instanceof Error && "code" in error ? error.code : undefined;
-		if (code !== "ENOENT") logger.error("chainIdentity: stat failed", { code: String(code) });
+		if (code !== "ENOENT") {
+			logger.error("chainIdentity: stat failed", { code: String(code) });
+			return {
+				failure: `cannot stat the audit file: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+		ino = "missing";
 	}
 	let names: string[];
 	try {
 		names = listSegments(path, nodeFs).map((segment) => segment.name);
 	} catch (error) {
-		return { listingError: error instanceof Error ? error.message : String(error) };
+		return {
+			failure: `cannot list the audit directory: ${error instanceof Error ? error.message : String(error)}`,
+		};
 	}
 	return { identity: `${ino}\n${names.join("\n")}` };
 }
 
 /**
  * The identity of the chain on disk: the active file's inode, then the names of its sealed segments, in order. Throws when
- * the audit directory cannot be listed, so a caller that captures an identity never records an empty chain for it.
+ * the active file cannot be stat'd or the audit directory cannot be listed, so a caller that captures an identity never
+ * records an empty or unknown chain for it.
  */
 export function chainIdentity(path: string): string {
 	const current = identityOf(path);
-	if ("listingError" in current)
-		throw new Error(`cannot list the audit directory: ${current.listingError}`);
+	if ("failure" in current) throw new Error(current.failure);
 	return current.identity;
-}
-
-function unlistedVerdict(listingError: string): ScanReply {
-	return {
-		ok: false,
-		records: 0,
-		brokenAt: 0,
-		reason: `cannot list the audit directory: ${listingError}`,
-	};
 }
 
 /**
  * Verifies the chain as the watch observed it. The chain must still have the identity captured with the observed bytes: a
  * prune or a new sealed segment in between changes the records the observed bytes stand for, so the scan is raced, not judged.
- * The verdict stands only if the identity is also unchanged after the scan. A directory that cannot be listed is a failed
- * verdict with the same shape as an unreadable chain, never a throw.
+ * The verdict stands only if the identity is also unchanged after the scan. A chain that cannot be stat'd or listed is a
+ * failed verdict with the same shape as an unreadable chain, never a throw and never a race.
  */
 export function verifyObserved(request: VerifyRequest): ScanReply {
 	const before = identityOf(request.path);
-	if ("listingError" in before) return unlistedVerdict(before.listingError);
+	if ("failure" in before) return { ok: false, records: 0, brokenAt: 0, reason: before.failure };
 	if (before.identity !== request.identity) return "raced";
 	if (!request.identity.startsWith(`${request.activeIno}\n`)) return "raced";
 	const outcome = verifyAuditFile(request.path, { activeBytes: request.activeBytes });
 	const after = identityOf(request.path);
-	if ("listingError" in after) return unlistedVerdict(after.listingError);
+	if ("failure" in after) return { ok: false, records: 0, brokenAt: 0, reason: after.failure };
 	return after.identity === request.identity ? outcome : "raced";
 }
 

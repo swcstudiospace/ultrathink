@@ -19,6 +19,12 @@ import {
 const REPLY = "INNER-REPLY-MARK";
 const CHILD_PATH = "/usr/local/bin:/usr/bin:/bin";
 
+// Fixed latency for the delay fault under test. The absence windows below are waits that assert nothing happened;
+// no event marks their end, so each is named and documented as a window, not an observation.
+const LATENCY_MS = 250;
+const ABSENCE_MARGIN_MS = 150;
+const BLACKHOLE_ABSENCE_WINDOW_MS = 300;
+
 const roots: string[] = [];
 
 afterAll(() => {
@@ -258,14 +264,15 @@ describe("createFaultyClaude delay faults inside the timed call", () => {
 
 	test("latency 250 ms under a 50 ms deadline times out by the real kill and never reaches the real binary", async () => {
 		const { backend, starts } = realBackend(
-			plan({ count: 1, fault: { kind: "latency", ms: 250 } }),
+			plan({ count: 1, fault: { kind: "latency", ms: LATENCY_MS } }),
 			50,
 		);
 		const error = await planErrorOf(backend.complete("s", "u"));
 		expect(error.code).toBe("timeout");
 		expect(error.failure).toBe("timeout");
-		// Past the whole delay, a leaked shell would have started the real binary by now.
-		await Bun.sleep(400);
+		// Past the whole delay plus a margin, a leaked shell would have started the real binary by now. Nothing
+		// observable marks the end of that delay, so this is an absence window like the one below.
+		await Bun.sleep(LATENCY_MS + ABSENCE_MARGIN_MS);
 		expect(starts()).toBe(0);
 	});
 
@@ -298,8 +305,12 @@ describe("createFaultyClaude delay faults inside the timed call", () => {
 			() => "answered",
 			(error: unknown) => error,
 		);
-		// The guard is the test's own clock: a blackhole that timed itself out would settle first.
-		const first = await Promise.race([outcome, Bun.sleep(300).then(() => "still pending")]);
+		// Absence window, not an event: no observable marks "still no answer", so this fixed wait is the test's own
+		// clock. A blackhole that timed itself out would settle inside it.
+		const first = await Promise.race([
+			outcome,
+			Bun.sleep(BLACKHOLE_ABSENCE_WINDOW_MS).then(() => "still pending"),
+		]);
 		expect(first).toBe("still pending");
 		controller.abort();
 		const error = await outcome;

@@ -202,7 +202,7 @@ function readCappedBody(req: IncomingMessage, limit: number): Promise<Uint8Array
 }
 
 /** Writes a Web Response to the Node response, streaming its body and honouring backpressure. */
-async function writeResponse(res: ServerResponse, response: Response): Promise<void> {
+export async function writeResponse(res: ServerResponse, response: Response): Promise<void> {
 	response.headers.forEach((value, name) => {
 		if (name !== "set-cookie") res.setHeader(name, value);
 	});
@@ -222,10 +222,16 @@ async function writeResponse(res: ServerResponse, response: Response): Promise<v
 		const { done, value } = await reader.read();
 		if (done) break;
 		if (!res.write(value)) {
-			await new Promise<void>((resolve) => {
-				res.once("drain", () => resolve());
-				res.once("close", () => resolve());
-			});
+			const { promise, resolve } = Promise.withResolvers<void>();
+			// One settlement for either event. Each listener removes both, so none outlives the stall.
+			const settle = () => {
+				res.removeListener("drain", settle);
+				res.removeListener("close", settle);
+				resolve();
+			};
+			res.on("drain", settle);
+			res.on("close", settle);
+			await promise;
 		}
 	}
 	res.end();

@@ -67,6 +67,12 @@ interface Listener {
 	stop(): Promise<void>;
 }
 
+// The system error code of a caught bind failure; a thrown value without a string code reads as "unknown".
+function errnoCode(error: unknown): string {
+	if (typeof error !== "object" || error === null || !("code" in error)) return "unknown";
+	return typeof error.code === "string" ? error.code : "unknown";
+}
+
 // With TLS configured the listener is mTLS only: the handshake refuses any client that does not chain to the CA, and
 // the verified SPIFFE identity (never a header) is the only identity the router sees.
 async function startTlsListener(
@@ -95,7 +101,7 @@ async function startTlsListener(
 		);
 	} catch (error) {
 		// A bind failure names the port and the system error code only; the TLS file paths are never printed.
-		const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+		const code = errnoCode(error);
 		process.stderr.write(`mTLS listener could not bind 127.0.0.1:${config.port} (${code})\n`);
 		process.exit(1);
 	}

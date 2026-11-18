@@ -315,6 +315,51 @@ describe("span exporter", () => {
 		expect(collector.posted.length).toBe(1);
 	});
 
+	test("each batch response body is cancelled unread, on ok and failed replies", async () => {
+		for (const status of [200, 503]) {
+			let cancels = 0;
+			const exporter = createSpanExporter({
+				endpoint: collector.endpoint,
+				...RESOURCE,
+				fetch: async () => ({
+					ok: status === 200,
+					status,
+					body: {
+						cancel: async () => {
+							cancels++;
+						},
+					},
+				}),
+			});
+			exporter.record(span("cancelled"));
+			await exporter.flush();
+			expect(cancels).toBe(1);
+		}
+	});
+
+	test("shutdown is bounded by one drain deadline when every batch hangs", async () => {
+		let posts = 0;
+		const exporter = createSpanExporter({
+			endpoint: collector.endpoint,
+			...RESOURCE,
+			maxBatch: 1,
+			timeoutMs: 50,
+			fetch: (_url, init) => {
+				posts++;
+				const { promise, reject } = Promise.withResolvers<never>();
+				init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+				return promise;
+			},
+		});
+		for (const name of ["a", "b", "c", "d"]) exporter.record(span(name));
+
+		const started = performance.now();
+		await exporter.shutdown();
+
+		expect(performance.now() - started).toBeLessThan(4 * 50);
+		expect(posts).toBeLessThan(4);
+	});
+
 	test("rejects a non-positive maxBatch at construction", () => {
 		expect(() =>
 			createSpanExporter({ endpoint: collector.endpoint, ...RESOURCE, maxBatch: 0 }),

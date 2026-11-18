@@ -12,6 +12,7 @@
 // its full count as dropped, though some of its records were accepted. Error reasons never carry the token or a URL.
 
 import type { SendResult, SinkEnvelope, SinkTransport } from "./types.ts";
+import { readBodyPrefix } from "../../security/body.ts";
 
 export interface HttpTransportOptions {
 	readonly url: string;
@@ -30,6 +31,7 @@ const MIN_TOKEN_LENGTH = 16;
 const KAFKA_CONTENT_TYPE = "application/vnd.kafka.json.v2+json";
 const KAFKA_ACCEPT = "application/vnd.kafka.v2+json";
 const NDJSON_CONTENT_TYPE = "application/x-ndjson";
+const KAFKA_RESPONSE_MAX_BYTES = 1024 * 1024;
 
 /** Accepts https, or plain http only to loopback; rejects embedded credentials. The raw value is never echoed. */
 function parseEndpoint(raw: string, label: string): URL {
@@ -97,7 +99,8 @@ async function postJson(args: {
 			method: "POST",
 			headers,
 			body: args.body,
-			redirect: "error",
+			// A redirect comes back as its 3xx status and is never followed, so the token cannot reach another origin.
+			redirect: "manual",
 			signal: args.signal,
 		});
 		const status = classifyStatus(res.status);
@@ -105,12 +108,12 @@ async function postJson(args: {
 			void res.body?.cancel().catch(() => undefined);
 			return status;
 		}
-		return args.readBody(await res.text());
-	} catch (err) {
-		// Bun rejects redirect: "error" with UnexpectedRedirect before any request reaches the other origin.
-		if (!args.signal.aborted && (err as { code?: unknown } | null)?.code === "UnexpectedRedirect") {
-			return { ok: false, retryable: false, reason: "redirect refused" };
+		const body = await readBodyPrefix(res, KAFKA_RESPONSE_MAX_BYTES, args.signal);
+		if (!body.complete) {
+			return { ok: false, retryable: true, reason: "kafka response too large" };
 		}
+		return args.readBody(body.text);
+	} catch (err) {
 		return networkFailure(err, args.signal);
 	}
 }

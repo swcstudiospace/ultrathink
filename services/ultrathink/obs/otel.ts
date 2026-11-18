@@ -4,7 +4,8 @@
 // In-process span export over OTLP/JSON (https://opentelemetry.io/docs/specs/otlp/).
 // Hand-rolled on purpose: the service has zero runtime dependencies (phase 71 D1).
 // `record` queues a finished span synchronously; `flush` posts the queue in batches.
-// A failed batch is dropped and never retried, so export cannot grow memory or stall shutdown.
+// A failed batch is dropped and never retried. Each drain runs under one timeoutMs deadline, so export cannot
+// grow memory, and shutdown waits at most that deadline however many batches are queued.
 
 type SpanKind = 1 | 2 | 3; // 1 INTERNAL, 2 SERVER, 3 CLIENT
 
@@ -33,7 +34,7 @@ export interface SpanExporterOptions {
 	fetch?: (
 		url: string,
 		init: { method: "POST"; headers: Record<string, string>; body: string; signal: AbortSignal },
-	) => Promise<{ ok: boolean; status: number }>;
+	) => Promise<{ ok: boolean; status: number; body?: { cancel(): Promise<unknown> } | null }>;
 	maxQueue?: number; // default 2048
 	maxBatch?: number; // default 512
 	timeoutMs?: number; // default 5000
@@ -136,14 +137,16 @@ export function createSpanExporter(options: SpanExporterOptions): SpanExporter {
 	let closed = false;
 	let inFlight: Promise<void> | undefined;
 
-	async function delivers(batch: FinishedSpan[]): Promise<boolean> {
+	async function delivers(batch: FinishedSpan[], deadline: AbortSignal): Promise<boolean> {
 		try {
 			const response = await post(url, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify(encodeOtlpTraces(batch, resource)),
-				signal: AbortSignal.timeout(timeoutMs),
+				signal: deadline,
 			});
+			// The body is never read; cancelling it releases the connection on both outcomes.
+			void response.body?.cancel().catch(() => undefined);
 			return response.ok;
 		} catch {
 			return false;
@@ -151,10 +154,12 @@ export function createSpanExporter(options: SpanExporterOptions): SpanExporter {
 	}
 
 	async function drain(): Promise<void> {
+		// One deadline bounds the whole drain, so a hanging collector cannot cost a full timeout per queued batch.
+		const deadline = AbortSignal.timeout(timeoutMs);
 		// Spans recorded while a batch is in flight are picked up by the next iteration.
-		while (queue.length > 0) {
+		while (queue.length > 0 && !deadline.aborted) {
 			const batch = queue.splice(0, maxBatch);
-			if (!(await delivers(batch))) notify(onFailure);
+			if (!(await delivers(batch, deadline))) notify(onFailure);
 		}
 	}
 
@@ -170,6 +175,11 @@ export function createSpanExporter(options: SpanExporterOptions): SpanExporter {
 		// Closing first means no span can arrive after the final drain has started.
 		closed = true;
 		await flush();
+		// A drain stopped by its deadline leaves batches queued. Once closed nothing can send them, so each one counts as failed.
+		while (queue.length > 0) {
+			queue.splice(0, maxBatch);
+			notify(onFailure);
+		}
 	}
 
 	return {

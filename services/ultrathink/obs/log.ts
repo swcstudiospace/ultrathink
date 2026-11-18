@@ -22,6 +22,9 @@ export interface LoggerOptions {
 
 const RANK: Record<LogLevel, number> = { info: 0, warn: 1, error: 2 };
 const SECRET_KEY = /secret|password|token|authorization|api[-_]?key|cookie|connector/i;
+// Token counts such as max_tokens or inputTokens are telemetry, not credentials.
+const TOKEN_COUNT_KEY =
+	/^(?:(?:max|input|output|prompt|completion|total)[-_]?tokens|tokens?[-_]?count)$/i;
 const MAX_STRING = 512;
 const MAX_DEPTH = 3;
 const MAX_ARRAY = 50;
@@ -93,7 +96,7 @@ function serializeFields(
 	const out: Record<string, unknown> = {};
 	let kept = 0;
 	for (const key of Object.keys(fields)) {
-		if (SECRET_KEY.test(key)) continue;
+		if (SECRET_KEY.test(key) && !TOKEN_COUNT_KEY.test(key)) continue;
 		if (kept >= MAX_KEYS) break;
 		let raw: unknown;
 		try {

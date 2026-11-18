@@ -108,7 +108,7 @@ describe("createHttpTransport", () => {
 		}
 	});
 
-	test("a redirect to another origin is refused and the token never reaches it", async () => {
+	test("a redirect is not followed: it is not retryable and the token never reaches the other origin", async () => {
 		const target = serve(() => new Response("", { status: 200 }));
 		const origin = serve(
 			() =>
@@ -121,8 +121,48 @@ describe("createHttpTransport", () => {
 
 		const result = await transport.send([envelope(1)], new AbortController().signal);
 
-		expect(result).toEqual({ ok: false, retryable: false, reason: "redirect refused" });
+		expect(result).toEqual({ ok: false, retryable: false, reason: "http 302" });
 		expect(target.calls).toHaveLength(0);
+	});
+
+	test("a 307 is refused without reading its body, and a network error stays retryable", async () => {
+		let textReads = 0;
+		let cancels = 0;
+		const redirected = createHttpTransport({
+			url: "https://siem.example.test/ingest",
+			token: TOKEN,
+			fetch: (async () => ({
+				status: 307,
+				body: {
+					cancel: async () => {
+						cancels++;
+					},
+				},
+				text: async () => {
+					textReads++;
+					return "";
+				},
+			})) as unknown as typeof fetch,
+		});
+		expect(await redirected.send([envelope(1)], new AbortController().signal)).toEqual({
+			ok: false,
+			retryable: false,
+			reason: "http 307",
+		});
+		expect(textReads).toBe(0);
+		expect(cancels).toBe(1);
+
+		const reset = createHttpTransport({
+			url: "https://siem.example.test/ingest",
+			fetch: (async () => {
+				throw Object.assign(new Error("socket reset"), { code: "ECONNRESET" });
+			}) as unknown as typeof fetch,
+		});
+		expect(await reset.send([envelope(1)], new AbortController().signal)).toEqual({
+			ok: false,
+			retryable: true,
+			reason: "network error: ECONNRESET",
+		});
 	});
 
 	test("the failure reason never contains the token, even when the transport error text does", async () => {
@@ -327,6 +367,18 @@ describe("createKafkaRestTransport", () => {
 			ok: false,
 			retryable: true,
 			reason: "kafka response unreadable",
+		});
+	});
+
+	test("a produce reply larger than the response cap is refused unparsed and retryable", async () => {
+		const oversized = JSON.stringify({ offsets: [], padding: "x".repeat(1024 * 1024) });
+		const { server } = serve(() => new Response(oversized, { status: 200 }));
+		const transport = createKafkaRestTransport({ baseUrl: baseUrl(server), topic: "audit" });
+
+		expect(await transport.send([envelope(1)], new AbortController().signal)).toEqual({
+			ok: false,
+			retryable: true,
+			reason: "kafka response too large",
 		});
 	});
 

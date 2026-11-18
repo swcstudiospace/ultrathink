@@ -12,6 +12,7 @@ import {
 	type HttpFetch,
 	type HttpRequestInit,
 	httpTarget,
+	MAX_RESPONSE_BYTES,
 	parsePrometheusValue,
 } from "./observe.ts";
 
@@ -116,6 +117,31 @@ describe("httpTarget", () => {
 		});
 		await target.request("GET", "/readyz");
 		expect(seen[0]?.tls).toEqual({ ca: "CA-PEM", cert: "CERT-PEM", key: "KEY-PEM" });
+	});
+
+	test("a body longer than the cap is cut at the cap across chunks and marked truncated", async () => {
+		const chunk = new TextEncoder().encode("x".repeat(300_000));
+		const streamed: HttpFetch = async () =>
+			new Response(
+				new ReadableStream({
+					start(controller) {
+						for (let i = 0; i < 5; i += 1) controller.enqueue(chunk);
+						controller.close();
+					},
+				}),
+			);
+		const target = httpTarget("http://127.0.0.1:9", { fetch: streamed });
+		const response = await target.request("GET", "/metrics");
+		expect(response.truncated).toBe(true);
+		expect(response.text).toBe("x".repeat(MAX_RESPONSE_BYTES));
+	});
+
+	test("a body within the cap is returned whole and not marked truncated", async () => {
+		const small: HttpFetch = async () => new Response("y".repeat(1000));
+		const target = httpTarget("http://127.0.0.1:9", { fetch: small });
+		const response = await target.request("GET", "/metrics");
+		expect(response.truncated).toBe(false);
+		expect(response.text).toBe("y".repeat(1000));
 	});
 
 	test("a response that never arrives fails at the request deadline", async () => {

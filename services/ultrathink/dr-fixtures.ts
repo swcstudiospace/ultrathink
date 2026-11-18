@@ -5,7 +5,7 @@
 // `openStore` (SQLite in WAL mode) and `createAuditLog`, so every consumer test runs against real SQLite and a real
 // audit chain. Nothing here mocks the store or the file system. Callers pass a temp base; nothing is written elsewhere.
 
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { auditPath, createAuditLog } from "./obs/audit.ts";
@@ -107,6 +107,15 @@ function fixtureHome(): string {
 	scratchHome ??= mkdtempSync(join(tmpdir(), "ultrathink-dr-home-"));
 	return scratchHome;
 }
+
+/** Removes the scratch HOME if one was created. Idempotent; the next runDr call makes a fresh one. */
+export function removeFixtureHome(): void {
+	if (scratchHome !== undefined) rmSync(scratchHome, { recursive: true, force: true });
+	scratchHome = undefined;
+}
+
+// Runs at process exit, so the scratch HOME is removed even when a suite does not call removeFixtureHome.
+process.once("exit", removeFixtureHome);
 
 /**
  * Runs `bash <repo>/<scriptRelPath> ...args` synchronously with a clean environment: `PATH`, a temp `HOME`,

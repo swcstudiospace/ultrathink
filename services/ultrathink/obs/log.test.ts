@@ -69,6 +69,26 @@ describe("createLogger", () => {
 		expect(Object.keys(parsed()[0] ?? {}).sort()).toEqual(["event", "keep", "level", "ts"]);
 	});
 
+	test("keeps token-count telemetry keys and drops credential token keys", () => {
+		const { logger, lines, parsed } = capture();
+		logger.info("usage", {
+			max_tokens: 10,
+			inputTokens: 5,
+			access_token: "fake-value",
+			token: "fake-value",
+			session_token: "fake-value",
+		});
+		expect(lines[0]).not.toContain("fake-value");
+		expect(parsed()[0]).toMatchObject({ max_tokens: 10, inputTokens: 5 });
+		expect(Object.keys(parsed()[0] ?? {}).sort()).toEqual([
+			"event",
+			"inputTokens",
+			"level",
+			"max_tokens",
+			"ts",
+		]);
+	});
+
 	test("drops secret-looking keys one level down", () => {
 		const { logger, lines, parsed } = capture();
 		logger.info("req", {

@@ -37,6 +37,14 @@ describe("counter", () => {
 		m.inc("c_total", { b: "2", a: "1" });
 		expect(linesOf(m.render())).toContain('c_total{a="1",b="2"} 2');
 	});
+
+	test("label keys that sanitize to the same name keep the first value and count the rest", () => {
+		const m = createMetrics();
+		m.inc("m_total", { "a-b": "x", a_b: "y" });
+		const out = linesOf(m.render());
+		expect(out).toContain('m_total{a_b="x"} 1');
+		expect(out).toContain('ultrathink_metrics_dropped_total{metric="m_total"} 1');
+	});
 });
 
 describe("gauge", () => {

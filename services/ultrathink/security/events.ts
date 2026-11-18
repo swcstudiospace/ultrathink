@@ -56,6 +56,9 @@ function getCurrentTimestamp(): number {
 
 const LOG_LEVEL = { low: "info", medium: "warn", high: "warn", critical: "error" } as const;
 
+/** At most one sink-failure warning per window; the counter still counts every failure. */
+const SINK_WARN_INTERVAL_MS = 60_000;
+
 /** stderr, never stdout: the stdio MCP relay sends its protocol messages on stdout. */
 function writeLineToStderr(line: string): void {
 	process.stderr.write(`${line}\n`);
@@ -136,14 +139,30 @@ export class ConsoleSecurityEventLogger implements SecurityEventLogger {
 
 /**
  * Writes each event through the console logger, then hands it to `onEvent` (phase 68 streaming). A failing `onEvent`
- * never reaches the caller: the request that raised the event continues.
+ * never reaches the caller: the request that raised the event continues. Each failure is counted; at most one warning
+ * per SINK_WARN_INTERVAL_MS reports the running count, and the warning carries no event details.
  */
 export class StreamingSecurityEventLogger extends ConsoleSecurityEventLogger {
 	private readonly onEvent: (event: SecurityEvent) => void;
+	private readonly sinkLogger: Logger;
+	private readonly now: () => number;
+	private sinkFailures = 0;
+	private lastSinkWarnAt = Number.NEGATIVE_INFINITY;
 
-	constructor(logger: Logger, onEvent: (event: SecurityEvent) => void) {
+	constructor(
+		logger: Logger,
+		onEvent: (event: SecurityEvent) => void,
+		now: () => number = Date.now,
+	) {
 		super(logger);
+		this.sinkLogger = logger;
 		this.onEvent = onEvent;
+		this.now = now;
+	}
+
+	/** Failed `onEvent` calls since construction. */
+	get sinkFailureCount(): number {
+		return this.sinkFailures;
 	}
 
 	override log(event: SecurityEvent): void {
@@ -151,7 +170,13 @@ export class StreamingSecurityEventLogger extends ConsoleSecurityEventLogger {
 		try {
 			this.onEvent(event);
 		} catch {
-			// reason: A stream failure must not change what the request sees.
+			// reason: A stream failure must not change what the request sees; it is counted and warned about instead.
+			this.sinkFailures += 1;
+			const current = this.now();
+			if (current - this.lastSinkWarnAt >= SINK_WARN_INTERVAL_MS) {
+				this.lastSinkWarnAt = current;
+				this.sinkLogger.warn("security.event_sink_failed", { failures: this.sinkFailures });
+			}
 		}
 	}
 }
@@ -172,7 +197,7 @@ export function createSecurityEvent(
 ): SecurityEvent {
 	return {
 		type,
-		timestamp: Date.now(),
+		timestamp: getCurrentTimestamp(),
 		severity: "medium",
 		source: "application",
 		details: {},

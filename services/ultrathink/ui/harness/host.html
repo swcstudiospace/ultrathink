@@ -106,13 +106,20 @@
 	window.__log = [];
 	window.__state = state;
 
+	// Keeps only the newest HARNESS_KEEP entries, so a long run cannot grow the harness without bound.
+	var HARNESS_KEEP = 500;
+	function pushRecent(list, item) {
+		list.push(item);
+		if (list.length > HARNESS_KEEP) list.splice(0, list.length - HARNESS_KEEP);
+	}
+
 	function summary(msg) {
 		var s = msg.method ? msg.method : msg.error ? "error " + msg.error.code : "response";
 		if (msg.id !== undefined) s += " #" + msg.id;
 		return s;
 	}
 	function record(dir, msg) {
-		window.__log.push({ dir: dir, t: Math.round(performance.now()), msg: msg });
+		pushRecent(window.__log, { dir: dir, t: Math.round(performance.now()), msg: msg });
 		logEl.textContent += (logEl.textContent ? "\n" : "") + dir + " " + summary(msg);
 		logEl.scrollTop = logEl.scrollHeight;
 	}
@@ -229,7 +236,7 @@
 			send({ method: "ui/notifications/tool-result", params: fx.initial });
 			state.ready = true;
 		} else if (m.method === "ui/notifications/size-changed") {
-			state.sizes.push({ width: p.width, height: p.height });
+			pushRecent(state.sizes, { width: p.width, height: p.height });
 			if (cfg.display === "inline" && typeof p.height === "number") frame.style.height = Math.ceil(p.height) + "px";
 		}
 	}

@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	renameSync,
 	rmSync,
 	symlinkSync,
 	utimesSync,
@@ -279,6 +280,20 @@ describe("sweepStateDir", () => {
 		expect(names(join(stateDir, "sessions"))).toHaveLength(0);
 	});
 
+	test("a jobs directory replaced between sweeps is scanned afresh; the old scan is not read on", () => {
+		const stateDir = tmp();
+		for (let i = 0; i < 3; i += 1) writeJob(stateDir, randomUUID(), "planned", OLD);
+		expect(sweepStateDir({ stateDir, ...RETENTION, maxEntries: 1 }).removed.jobs).toBe(1);
+		// The old directory is renamed, not removed, so its inode stays allocated and the replacement cannot reuse it.
+		renameSync(join(stateDir, "jobs"), join(stateDir, "jobs-old"));
+		const fresh = randomUUID();
+		writeJob(stateDir, fresh, "planned", OLD);
+		const result = sweepStateDir({ stateDir, ...RETENTION, maxEntries: 10 });
+		expect(result.removed.jobs).toBe(1);
+		expect(result.errors).toBe(0);
+		expect(names(join(stateDir, "jobs"))).toEqual([]);
+	});
+
 	test("uses Date.now when no clock is injected", () => {
 		const stateDir = tmp();
 		const stale = randomUUID();
@@ -444,7 +459,8 @@ describe("createSweeper", () => {
 			return EMPTY;
 		});
 		h.sweeper.start();
-		expect(() => h.timers[0]?.run()).not.toThrow();
+		expect(h.timers).toHaveLength(1);
+		expect(() => h.timers[0]!.run()).not.toThrow();
 		expect(h.errors[0]?.message).toBe("not even an Error");
 		h.timers[0]?.run();
 		expect(h.results).toHaveLength(1);

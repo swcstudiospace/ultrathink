@@ -11,6 +11,7 @@ import {
 	CEILING_RUN,
 	CeilingError,
 	createLedger,
+	LedgerStateError,
 	LedgerWriteError,
 	type LedgerLimits,
 } from "./ledger.ts";
@@ -202,6 +203,21 @@ describe("token ledger", () => {
 		expect((error as CeilingError).reason).toBe(CEILING_RUN);
 	});
 
+	test("when both ceilings bind, reserve names CEILING_RUN and headroom the smaller", () => {
+		const { ledger, runId } = setup({
+			runTokenCeiling: 100,
+			dailyTokenCeiling: 70,
+		});
+		ledger.reserve({ runId, phase: "a", attempt: 1, estimatedTokens: 50 });
+		expect(ledger.headroom(runId)).toEqual({ tokens: 20, reason: CEILING_DAY });
+
+		const error = captureError(() =>
+			ledger.reserve({ runId, phase: "b", attempt: 1, estimatedTokens: 150 }),
+		);
+		expect(error).toBeInstanceOf(CeilingError);
+		expect((error as CeilingError).reason).toBe(CEILING_RUN);
+	});
+
 	test("the daily total resets on the next UTC day", () => {
 		const { store, ledger, runId, clock } = setup({
 			runTokenCeiling: 10_000,
@@ -265,8 +281,8 @@ describe("token ledger", () => {
 		ledger.abandon(reservationId);
 
 		expect(ledger.spentForRun(runId)).toBe(400);
-		expect(() => ledger.settle(reservationId, 10)).toThrow();
-		expect(() => ledger.abandon(reservationId)).toThrow();
+		expect(() => ledger.settle(reservationId, 10)).toThrow(LedgerStateError);
+		expect(() => ledger.abandon(reservationId)).toThrow(LedgerStateError);
 	});
 
 	test("a non-positive or non-integer estimate is rejected", () => {

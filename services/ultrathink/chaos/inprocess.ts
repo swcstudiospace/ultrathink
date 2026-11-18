@@ -8,10 +8,10 @@ import { createAuth } from "../auth/auth.ts";
 import { type UltrathinkConfig, loadConfig } from "../config/config.ts";
 import { createPlanBackend } from "../engine/plan.ts";
 import { createLogger } from "../obs/log.ts";
-import { createApp } from "../routes/router.ts";
+import { type App, createApp } from "../routes/router.ts";
 import { openStore } from "../store/store.ts";
 import { createFaultyClaude } from "./faults.ts";
-import type { ChaosResponse, ChaosTarget } from "./observe.ts";
+import { type ChaosResponse, type ChaosTarget, readBoundedText } from "./observe.ts";
 import type { ExperimentTemplate } from "./schema.ts";
 
 // Public origin the requests are addressed to. The app never listens; requests go straight to `app.handle`.
@@ -77,36 +77,45 @@ export async function createInProcessTarget(
 		cookieSecure: true,
 	});
 	const store = openStore(config.dbPath);
-	const shimDir = join(stateDir, "chaos-shims");
-	mkdirSync(shimDir, { recursive: true, mode: 0o700 });
-	const noUpstream = join(shimDir, "no-upstream.sh");
-	writeFileSync(noUpstream, `#!/bin/sh\necho "${NO_UPSTREAM_MESSAGE}" >&2\nexit 1\n`, {
-		mode: 0o700,
-	});
-	const planBackend = createPlanBackend({
-		model: PLANNING_MODEL,
-		fallback: "none",
-		concurrency: config.planConcurrency ?? 2,
-		timeoutMs: config.modelTimeoutMs,
-		env: { PATH: CHILD_PATH },
-		// The stand-in stands for the `claude` binary, so readiness holds without one installed.
-		which: () => noUpstream,
-		claude: createFaultyClaude(template.plan, { dir: shimDir, bin: noUpstream }),
-	});
-	const app = createApp({
-		config,
-		store,
-		auth,
-		logger: createLogger({ write: () => undefined }),
-		planBackend,
-		...(now === undefined ? {} : { now: () => now().getTime() }),
-	});
+	let app: App;
+	try {
+		const shimDir = join(stateDir, "chaos-shims");
+		mkdirSync(shimDir, { recursive: true, mode: 0o700 });
+		const noUpstream = join(shimDir, "no-upstream.sh");
+		writeFileSync(noUpstream, `#!/bin/sh\necho "${NO_UPSTREAM_MESSAGE}" >&2\nexit 1\n`, {
+			mode: 0o700,
+		});
+		const planBackend = createPlanBackend({
+			model: PLANNING_MODEL,
+			fallback: "none",
+			concurrency: config.planConcurrency ?? 2,
+			timeoutMs: config.modelTimeoutMs,
+			env: { PATH: CHILD_PATH },
+			// The stand-in stands for the `claude` binary, so readiness holds without one installed.
+			which: () => noUpstream,
+			claude: createFaultyClaude(template.plan, { dir: shimDir, bin: noUpstream }),
+		});
+		app = createApp({
+			config,
+			store,
+			auth,
+			logger: createLogger({ write: () => undefined }),
+			planBackend,
+			...(now === undefined ? {} : { now: () => now().getTime() }),
+		});
+	} catch (error) {
+		store.close();
+		throw error;
+	}
 
 	let closing: Promise<void> | undefined;
 	const close = (): Promise<void> => {
 		closing ??= (async () => {
-			await app.shutdown();
-			store.close();
+			try {
+				await app.shutdown();
+			} finally {
+				store.close();
+			}
 		})();
 		return closing;
 	};
@@ -120,7 +129,8 @@ export async function createInProcessTarget(
 				init.body = JSON.stringify(body);
 			}
 			const response = await app.handle(new Request(`${ORIGIN}${path}`, init), PEER_IP);
-			return { status: response.status, headers: response.headers, text: await response.text() };
+			const { text, truncated } = await readBoundedText(response);
+			return { status: response.status, headers: response.headers, text, truncated };
 		},
 		close,
 	};

@@ -11,7 +11,7 @@
  * on), each with an allowlisted env.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ClaudeCompleter } from "../../../src/claude/complete.ts";
 import { OMP_LOCK, readSession } from "../../../src/claude/state.ts";
@@ -30,11 +30,18 @@ import { type CompletionReport, readReport } from "../../../src/types.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
 import { currentRequestContext } from "../obs/context.ts";
-import { type Admission, createFairShare, type FairShareTimers } from "../obs/fair-share.ts";
+import {
+	type Admission,
+	type AdmitResult,
+	createFairShare,
+	type FairShare,
+	type FairShareTimers,
+} from "../obs/fair-share.ts";
 import { failureLabel, type Logger } from "../obs/log.ts";
 import type { SpanSink } from "../obs/otel.ts";
 import { childSpan } from "../obs/trace.ts";
 import type { Store } from "../store/store.ts";
+import { writeAtomic } from "../worker/atomic.ts";
 import type { BreakerState, CircuitBreaker, ReleaseOutcome } from "./breaker.ts";
 import type { GraphView } from "./graph-view.ts";
 import {
@@ -46,7 +53,7 @@ import {
 	isolatedConfigEnv,
 	fail,
 } from "./journal.ts";
-import { clientPlanView, serverPlanView } from "./plan-view.ts";
+import { clientPlanView, type ServerJobSnapshot, serverPlanView } from "./plan-view.ts";
 import {
 	type PlanBackend,
 	PlanCompleterError,
@@ -243,6 +250,8 @@ const PLANNER_OWNER = "ultrathink-server-planner";
 const RESERVATION_ALLOWANCE_TOKENS = 16000;
 /** Settled jobs whose file could not be written stay readable in memory up to this many; the oldest are dropped. */
 export const UNPERSISTED_JOBS_MAX = 50;
+/** Ids of evicted jobs whose file was never written are answered failed from memory; past this many the oldest go. */
+const EVICTED_JOBS_MAX = 1000;
 const JOB_STATUSES: Record<string, true> = {
 	running: true,
 	planned: true,
@@ -349,6 +358,125 @@ function isJobFile(value: unknown): value is JobFile {
 	);
 }
 
+/**
+ * The job files under `jobsDir`, one `<sessionId>.json` per job, each written atomically so a reader never sees half of
+ * one. `recoverInterrupted` fails every job a previous process left running: nothing is left to finish it.
+ */
+function createJobFiles(options: {
+	jobsDir: string;
+	now: () => number;
+	logger: Logger | undefined;
+	store: Pick<Store, "updateRun">;
+}): {
+	persist: (file: JobFile) => void;
+	readJobFile: (sessionId: string) => JobFile | undefined;
+	recoverInterrupted: () => void;
+} {
+	const { jobsDir, now, logger, store } = options;
+
+	function persist(file: JobFile): void {
+		const body: JobFile = {
+			sessionId: file.sessionId,
+			runId: file.runId,
+			status: file.status,
+			createdAt: file.createdAt,
+			updatedAt: file.updatedAt,
+			...(file.error === undefined ? {} : { error: file.error }),
+			usage: { ...file.usage },
+			promptSha256: file.promptSha256,
+			...(file.principal === undefined ? {} : { principal: file.principal }),
+		};
+		writeAtomic(jobsDir, `${file.sessionId}.json`, `${JSON.stringify(body)}\n`);
+	}
+
+	function readJobFile(sessionId: string): JobFile | undefined {
+		try {
+			const raw = readFileSync(join(jobsDir, `${sessionId}.json`), "utf8");
+			const parsed: unknown = JSON.parse(raw);
+			return isJobFile(parsed) ? parsed : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	function recoverInterrupted(): void {
+		let names: string[];
+		try {
+			names = readdirSync(jobsDir);
+		} catch {
+			return;
+		}
+		for (const name of names) {
+			if (!name.endsWith(".json")) continue;
+			const file = readJobFile(name.slice(0, -".json".length));
+			if (file?.status !== "running") continue;
+			try {
+				persist({ ...file, status: "failed", error: "interrupted", updatedAt: now() });
+			} catch (error) {
+				// reason: the file keeps its running status; the other jobs are still recovered.
+				logger?.error(`recoverInterrupted: ${failureLabel(error)}`);
+				continue;
+			}
+			try {
+				store.updateRun(file.runId, { status: "failed", reason: "interrupted" });
+			} catch (error) {
+				// reason: the run row is bookkeeping only.
+				logger?.error(`recoverInterrupted: ${failureLabel(error)}`);
+			}
+		}
+	}
+
+	return { persist, readJobFile, recoverInterrupted };
+}
+
+type Slot = { ok: true; release: () => void } | { ok: false; refusal: StartResult };
+
+/**
+ * Plan slots for the starts: at once when the budget allows, otherwise after a bounded wait in arrival order. A wait ends
+ * early when the request aborts or `drain` fires, and a principal already at its share of the queue is answered busy at
+ * once. `isStopping` reports a planner that is closed or draining, whose waits are refused as not ready.
+ */
+function createSlotAdmission(options: {
+	slots: FairShare;
+	queuedPerPrincipalMax: number;
+	drain: AbortSignal;
+	isStopping: () => boolean;
+}): { takeSlot: (asked: Admission, signal: AbortSignal | undefined) => Promise<Slot> } {
+	const { slots, queuedPerPrincipalMax, drain, isStopping } = options;
+	/** Starts waiting for a slot, per principal. */
+	const queuedByPrincipal = new Map<string, number>();
+
+	async function takeSlot(asked: Admission, signal: AbortSignal | undefined): Promise<Slot> {
+		const busy = (): Slot => ({
+			ok: false,
+			refusal: { ok: false, code: "busy", retryAfterSec: BUSY_RETRY_AFTER_SEC },
+		});
+		const immediate = slots.acquire(asked);
+		if (immediate.ok) return { ok: true, release: immediate.release };
+		const waiting = queuedByPrincipal.get(asked.principal) ?? 0;
+		if (waiting >= queuedPerPrincipalMax) return busy();
+		queuedByPrincipal.set(asked.principal, waiting + 1);
+		const ends = [drain, ...(signal === undefined ? [] : [signal])];
+		let outcome: AdmitResult;
+		try {
+			outcome = await slots.admit(asked, { signal: AbortSignal.any(ends) });
+		} finally {
+			const left = (queuedByPrincipal.get(asked.principal) ?? 1) - 1;
+			if (left > 0) queuedByPrincipal.set(asked.principal, left);
+			else queuedByPrincipal.delete(asked.principal);
+		}
+		if (outcome.ok) return { ok: true, release: outcome.release };
+		if (outcome.cause === "aborted")
+			return {
+				ok: false,
+				refusal: isStopping() ? fail("not_ready") : { ok: false, code: "aborted" },
+			};
+		return busy();
+	}
+
+	return { takeSlot };
+}
+
 /** Why a plan threw: the error's class or code and its redacted, single-line, bounded message. Never a prompt or a key. */
 function causeOf(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
@@ -435,83 +563,28 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 		perPrincipalMax: Math.ceil(config.maxConcurrentPlans / 2),
 		queue: { depth: queueDepth, waitMs: QUEUE_WAIT_MS, timers: queueTimers },
 	});
-	/** Starts waiting for a slot, per principal. */
-	const queuedByPrincipal = new Map<string, number>();
 	/** Ends every wait for a slot when the planner drains. */
 	const drainWaiters = new AbortController();
+	const { takeSlot } = createSlotAdmission({
+		slots,
+		queuedPerPrincipalMax,
+		drain: drainWaiters.signal,
+		isStopping: () => closed || draining,
+	});
 	/** Session ids of settled jobs kept only in memory, oldest first. */
 	const unpersisted: string[] = [];
+	/** Settled jobs dropped from memory after their file could not be written: answered failed, never read from disk. */
+	const evicted = new Map<string, ServerJobSnapshot>();
 	const enabled = config.serverPlanning;
 	let closed = false;
 	let draining = false;
 
-	const jobPath = (sessionId: string): string => join(jobsDir, `${sessionId}.json`);
-
-	function persist(file: JobFile): void {
-		mkdirSync(jobsDir, { recursive: true, mode: 0o700 });
-		const path = jobPath(file.sessionId);
-		const tmp = `${path}.${process.pid}.tmp`;
-		const body: JobFile = {
-			sessionId: file.sessionId,
-			runId: file.runId,
-			status: file.status,
-			createdAt: file.createdAt,
-			updatedAt: file.updatedAt,
-			...(file.error === undefined ? {} : { error: file.error }),
-			usage: { ...file.usage },
-			promptSha256: file.promptSha256,
-			...(file.principal === undefined ? {} : { principal: file.principal }),
-		};
-		try {
-			writeFileSync(tmp, `${JSON.stringify(body)}\n`, { mode: 0o600 });
-			renameSync(tmp, path);
-		} catch (error) {
-			// reason: a failed write or rename must not leave its temp file behind; no sweep or recovery matches it.
-			try {
-				rmSync(tmp, { force: true });
-			} catch {
-				// reason: the original failure is the one to report; a temp file that cannot be removed stays.
-			}
-			throw error;
-		}
-	}
-
-	function readJobFile(sessionId: string): JobFile | undefined {
-		try {
-			const parsed: unknown = JSON.parse(readFileSync(jobPath(sessionId), "utf8"));
-			return isJobFile(parsed) ? parsed : undefined;
-		} catch {
-			return undefined;
-		}
-	}
-
-	// A job left running by a previous process has no one to finish it.
-	function recoverInterrupted(): void {
-		let names: string[];
-		try {
-			names = readdirSync(jobsDir);
-		} catch {
-			return;
-		}
-		for (const name of names) {
-			if (!name.endsWith(".json")) continue;
-			const file = readJobFile(name.slice(0, -".json".length));
-			if (file?.status !== "running") continue;
-			try {
-				persist({ ...file, status: "failed", error: "interrupted", updatedAt: now() });
-			} catch (error) {
-				// reason: the file keeps its running status; the other jobs are still recovered.
-				opts.logger?.error(`recoverInterrupted: ${failureLabel(error)}`);
-				continue;
-			}
-			try {
-				store.updateRun(file.runId, { status: "failed", reason: "interrupted" });
-			} catch (error) {
-				// reason: the run row is bookkeeping only.
-				opts.logger?.error(`recoverInterrupted: ${failureLabel(error)}`);
-			}
-		}
-	}
+	const { persist, readJobFile, recoverInterrupted } = createJobFiles({
+		jobsDir,
+		now,
+		logger: opts.logger,
+		store,
+	});
 
 	function plannerEnv(): Record<string, string | undefined> {
 		const base = opts.env ?? process.env;
@@ -794,7 +867,32 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 		unpersisted.push(job.sessionId);
 		while (unpersisted.length > UNPERSISTED_JOBS_MAX) {
 			const oldest = unpersisted.shift();
-			if (oldest !== undefined) jobs.delete(oldest);
+			if (oldest !== undefined) evict(oldest);
+		}
+	}
+
+	/**
+	 * Drops a settled job whose file was never written. Its id keeps a tombstone, so a poll answers failed rather than the
+	 * stale running file or not_found; the tombstones are bounded the same way as the jobs they stand for.
+	 */
+	function evict(sessionId: string): void {
+		const job = jobs.get(sessionId);
+		jobs.delete(sessionId);
+		if (job === undefined) return;
+		evicted.set(sessionId, {
+			sessionId,
+			status: "failed",
+			error: "persist_failed",
+			usage: { ...job.usage },
+		});
+		if (evicted.size > EVICTED_JOBS_MAX) {
+			const oldest = evicted.keys().next().value;
+			if (oldest !== undefined) evicted.delete(oldest);
+		}
+		try {
+			opts.logger?.error("job_evicted", { sessionId, status: job.status });
+		} catch {
+			// reason: logging must never affect the job.
 		}
 	}
 
@@ -942,40 +1040,6 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 	/** A start whose request already went away must not begin a plan nobody will read. */
 	function lateAbort(signal: AbortSignal | undefined): StartResult | undefined {
 		return signal?.aborted ? { ok: false, code: "aborted" } : undefined;
-	}
-
-	type Slot = { ok: true; release: () => void } | { ok: false; refusal: StartResult };
-
-	/**
-	 * One plan slot for `asked`: at once when the budget allows, otherwise after a bounded wait in arrival order. The wait
-	 * ends early when the request aborts or the planner drains, and a principal at its share of the queue is not queued.
-	 */
-	async function takeSlot(asked: Admission, signal: AbortSignal | undefined): Promise<Slot> {
-		const busy = (): Slot => ({
-			ok: false,
-			refusal: { ok: false, code: "busy", retryAfterSec: BUSY_RETRY_AFTER_SEC },
-		});
-		const immediate = slots.acquire(asked);
-		if (immediate.ok) return { ok: true, release: immediate.release };
-		const waiting = queuedByPrincipal.get(asked.principal) ?? 0;
-		if (waiting >= queuedPerPrincipalMax) return busy();
-		queuedByPrincipal.set(asked.principal, waiting + 1);
-		const ends = [drainWaiters.signal, ...(signal === undefined ? [] : [signal])];
-		let outcome: Awaited<ReturnType<typeof slots.admit>>;
-		try {
-			outcome = await slots.admit(asked, { signal: AbortSignal.any(ends) });
-		} finally {
-			const left = (queuedByPrincipal.get(asked.principal) ?? 1) - 1;
-			if (left > 0) queuedByPrincipal.set(asked.principal, left);
-			else queuedByPrincipal.delete(asked.principal);
-		}
-		if (outcome.ok) return { ok: true, release: outcome.release };
-		if (outcome.cause === "aborted")
-			return {
-				ok: false,
-				refusal: closed || draining ? fail("not_ready") : { ok: false, code: "aborted" },
-			};
-		return busy();
 	}
 
 	/** What an id's existing owner makes of a start: a conflict, or the job the start joins. */
@@ -1171,7 +1235,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			try {
 				const live = jobs.get(sessionId);
 				if (live) await waitFor(live, waitSeconds * 1000);
-				const file = live ?? readJobFile(sessionId);
+				const file = live ?? evicted.get(sessionId) ?? readJobFile(sessionId);
 				return file
 					? serverPlanView(stateDir, file, detail)
 					: clientPlanView(stateDir, sessionId, detail);
@@ -1184,7 +1248,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 		status(input) {
 			const sessionId = input.sessionId;
 			if (!isSessionId(sessionId)) return null;
-			const file = jobs.get(sessionId) ?? readJobFile(sessionId);
+			const file = jobs.get(sessionId) ?? evicted.get(sessionId) ?? readJobFile(sessionId);
 			if (!file) return null;
 			return { ok: true, data: { sessionId, status: file.status, pendingCount: 0, pending: [] } };
 		},

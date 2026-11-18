@@ -1059,6 +1059,8 @@ export function createApp(deps: RouterDeps): App {
 	}
 
 	async function createRunRoute(req: Request, ctx: RequestCtx): Promise<Response> {
+		// Refused before the rate limit and the pool: a foreign origin spends neither.
+		if (req.headers.get("origin") !== config.publicOrigin) return fail(403, "forbidden");
 		const session = sessionFor(req, ctx);
 		if (!session) return fail(401, "unauthenticated");
 
@@ -1074,13 +1076,12 @@ export function createApp(deps: RouterDeps): App {
 		);
 	}
 
-	/** Origin, envelope, input and flags, then the run is queued. Runs only while the owner holds a pool slot. */
+	/** Envelope, input and flags, then the run is queued. Runs only while the owner holds a pool slot. */
 	async function startRun(
 		req: Request,
 		ctx: RequestCtx,
 		session: { ownerId: "owner" },
 	): Promise<Response> {
-		if (req.headers.get("origin") !== config.publicOrigin) return fail(403, "forbidden");
 		if (!isJsonRequest(req)) return fail(415, "unsupported_media_type");
 
 		const parsed = await readJson(req, config.maxBodyBytes);
@@ -1208,7 +1209,8 @@ export function createApp(deps: RouterDeps): App {
 		if (
 			LOOPBACK_PEERS[ctx.peerIp] !== true ||
 			req.headers.has("x-forwarded-for") ||
-			req.headers.has("x-real-ip")
+			req.headers.has("x-real-ip") ||
+			req.headers.has("forwarded")
 		) {
 			return fail(404, "not_found");
 		}

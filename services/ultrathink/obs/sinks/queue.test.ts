@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { yieldTurn } from "../../../../src/test.helpers.ts";
 import {
 	type ClearTimer,
@@ -404,5 +404,32 @@ describe("createSinkQueue", () => {
 		expect(() => createSinkQueue({ ...base, capacity: 1, maxBatch: 1, maxAttempts: 0 })).toThrow(
 			RangeError,
 		);
+	});
+
+	test("default timers clear the timeout handle they armed", async () => {
+		const setSpy = spyOn(globalThis, "setTimeout");
+		const clearSpy = spyOn(globalThis, "clearTimeout");
+		try {
+			const { transport } = scriptedTransport(okResult);
+			const queue = createSinkQueue({
+				transport,
+				capacity: 10,
+				maxBatch: 10,
+				maxAttempts: 1,
+				backoffMs: () => BACKOFF_MS,
+				requestTimeoutMs: REQUEST_TIMEOUT_MS,
+				onEvent: () => {
+					// reason: test double, no events are asserted in this test
+				},
+			});
+			queue.enqueue(envelope(1));
+			expect(await queue.flush(FLUSH_MS)).toBe(true);
+			const index = setSpy.mock.calls.findIndex(([, ms]) => ms === REQUEST_TIMEOUT_MS);
+			expect(index).toBeGreaterThanOrEqual(0);
+			expect(clearSpy).toHaveBeenCalledWith(setSpy.mock.results[index]?.value);
+		} finally {
+			setSpy.mockRestore();
+			clearSpy.mockRestore();
+		}
 	});
 });
