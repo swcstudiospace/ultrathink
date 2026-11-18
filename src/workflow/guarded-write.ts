@@ -10,6 +10,7 @@ import {
 	renameSync,
 	rmSync,
 	writeFileSync,
+	writeSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
@@ -35,8 +36,8 @@ export class ConcurrentWriteError extends Error {
 }
 
 /**
- * Thrown by writeGuarded when `<path>.lock` already exists. The lock is not removed: it belongs to
- * another writer or to a crashed one, and only an operator clears it.
+ * Thrown by writeGuarded when `<path>.lock` is still held after the wait budget: by a live writer,
+ * or by a body that is not a pid. The lock is not removed.
  */
 export class LockHeldError extends Error {
 	readonly lockPath: string;
@@ -65,6 +66,16 @@ export function readGuarded(path: string): { text: string; hash: string } {
 	return { text, hash: hashContent(text) };
 }
 
+/** Options for writeGuarded. */
+export interface WriteGuardedOptions {
+	/** Milliseconds to wait for a live lock holder before LockHeldError. Defaults to 30 seconds. */
+	lockWaitMs?: number;
+}
+
+const DEFAULT_LOCK_WAIT_MS = 30_000;
+const LOCK_RETRY_MS = 10;
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+
 /**
  * Replaces the file with `next` only when its current hash equals `expectedHash`. Under the lock
  * `<path>.lock`, the file is re-read and compared. A match writes a temp file, fsyncs it, renames
@@ -73,10 +84,18 @@ export function readGuarded(path: string): { text: string; hash: string } {
  *
  * A failure before the rename leaves the file unchanged. A failure in the directory fsync comes
  * after the rename, so the file already holds `next` when that error is thrown.
+ *
+ * A lock whose body names a dead pid is taken over. A live or unreadable holder is waited for up
+ * to `options.lockWaitMs`, then LockHeldError is thrown.
  */
-export function writeGuarded(path: string, expectedHash: string, next: string): { hash: string } {
+export function writeGuarded(
+	path: string,
+	expectedHash: string,
+	next: string,
+	options: WriteGuardedOptions = {},
+): { hash: string } {
 	const lockPath = `${path}.lock`;
-	acquireLock(lockPath);
+	acquireLock(lockPath, options.lockWaitMs ?? DEFAULT_LOCK_WAIT_MS);
 	try {
 		const { hash: actualHash } = readGuarded(path);
 		if (actualHash !== expectedHash) {
@@ -89,14 +108,85 @@ export function writeGuarded(path: string, expectedHash: string, next: string): 
 	}
 }
 
-/** Creates the lock file exclusively. The caller removes it only after this returns. */
-function acquireLock(lockPath: string): void {
+/**
+ * Takes `<path>.lock`, retrying until `waitMs` elapses. A lock whose body names a dead pid is
+ * removed and retried at once. A lock taken here holds this process's pid as its body.
+ */
+function acquireLock(lockPath: string, waitMs: number): void {
+	const startedAt = Date.now();
+	for (;;) {
+		if (tryCreateLock(lockPath)) return;
+		const heldBody = readLockBody(lockPath);
+		if (heldBody !== undefined && isDeadHolder(heldBody) && removeStaleLock(lockPath, heldBody)) {
+			continue;
+		}
+		if (Date.now() - startedAt >= waitMs) throw new LockHeldError(lockPath);
+		sleepMs(LOCK_RETRY_MS + Math.floor(Math.random() * LOCK_RETRY_MS));
+	}
+}
+
+/**
+ * Creates the lock file exclusively, with this process's pid as its body. False when it exists.
+ */
+function tryCreateLock(lockPath: string): boolean {
+	let fd: number;
 	try {
-		closeSync(openSync(lockPath, "wx"));
+		fd = openSync(lockPath, "wx");
 	} catch (error) {
-		if (errorCode(error) === "EEXIST") throw new LockHeldError(lockPath);
+		if (errorCode(error) === "EEXIST") return false;
 		throw error;
 	}
+	let written = false;
+	try {
+		writeSync(fd, String(process.pid));
+		written = true;
+	} finally {
+		closeSync(fd);
+		if (!written) rmSync(lockPath, { force: true });
+	}
+	return true;
+}
+
+/** The lock body, or undefined when the lock no longer exists. */
+function readLockBody(lockPath: string): string | undefined {
+	try {
+		return readFileSync(lockPath, "utf8");
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+/**
+ * True when the body is a pid that no longer exists (process.kill throws ESRCH). A body that is not
+ * a pid is never dead: its writer may still be creating it.
+ */
+function isDeadHolder(body: string): boolean {
+	const text = body.trim();
+	if (!/^[1-9]\d*$/.test(text)) return false;
+	try {
+		process.kill(Number(text), 0);
+		return false;
+	} catch (error) {
+		return errorCode(error) === "ESRCH";
+	}
+}
+
+/**
+ * Removes a dead holder's lock only while its body still equals `staleBody`, the content read
+ * before the pid was checked. Returns false when the body changed: a live writer replaced it.
+ */
+function removeStaleLock(lockPath: string, staleBody: string): boolean {
+	const current = readLockBody(lockPath);
+	if (current === undefined) return true;
+	if (current !== staleBody) return false;
+	rmSync(lockPath, { force: true });
+	return true;
+}
+
+/** Blocks the calling thread for `ms`. The buffer is never notified, so the wait always runs out. */
+function sleepMs(ms: number): void {
+	Atomics.wait(sleepCell, 0, 0, ms);
 }
 
 /** Writes `next` to a unique temp file in the same directory, then renames it over `path`. */

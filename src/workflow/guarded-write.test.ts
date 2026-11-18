@@ -96,12 +96,37 @@ describe("guarded writer", () => {
 		const base = readGuarded(path).hash;
 		writeFileSync(`${path}.lock`, "held");
 
-		const error = thrownBy(() => writeGuarded(path, base, "next\n"));
+		const error = thrownBy(() => writeGuarded(path, base, "next\n", { lockWaitMs: 50 }));
 
 		expect(error).toBeInstanceOf(LockHeldError);
 		expect((error as LockHeldError).message).toContain(`${path}.lock`);
 		expect(readFileSync(path, "utf8")).toBe("base\n");
 		expect(readFileSync(`${path}.lock`, "utf8")).toBe("held");
+	});
+
+	test("a lock left by a dead holder is taken over and the write lands", async () => {
+		writeGuarded(path, ABSENT, "base\n");
+		const base = readGuarded(path).hash;
+		const child = Bun.spawn([process.execPath, "-e", "process.exit(0)"]);
+		await child.exited;
+		writeFileSync(`${path}.lock`, String(child.pid));
+
+		writeGuarded(path, base, "next\n", { lockWaitMs: 1_000 });
+
+		expect(readFileSync(path, "utf8")).toBe("next\n");
+		expect(existsSync(`${path}.lock`)).toBe(false);
+	});
+
+	test("a lock held by a live pid refuses with LockHeldError after the wait budget", () => {
+		writeGuarded(path, ABSENT, "base\n");
+		const base = readGuarded(path).hash;
+		writeFileSync(`${path}.lock`, String(process.pid));
+
+		const error = thrownBy(() => writeGuarded(path, base, "next\n", { lockWaitMs: 50 }));
+
+		expect(error).toBeInstanceOf(LockHeldError);
+		expect(readFileSync(path, "utf8")).toBe("base\n");
+		expect(readFileSync(`${path}.lock`, "utf8")).toBe(String(process.pid));
 	});
 
 	test("a missing file reads as ABSENT; creating it succeeds once and a second create fails", () => {
