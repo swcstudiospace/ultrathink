@@ -42,14 +42,15 @@ describe("desk rules are never silently dropped", () => {
 	test("eleven desk rules are rejected, not truncated to ten", () => {
 		const rules = Array.from({ length: 11 }, (_, i) => `rule ${i + 1}`);
 		expect(() => buildCloudPrompt(record(), { ...base, rules })).toThrow(
-			"DESK_RULES must have 1-10 rules (got 11)",
+			"unit DESK_RULES may add at most 10 rules to the 10 mandatory ones (got 11)",
 		);
 	});
 
 	test("ten desk rules are all kept in the prompt", () => {
 		const rules = Array.from({ length: 10 }, (_, i) => `rule ${i + 1}`);
 		const xml = buildCloudPrompt(record(), { ...base, rules });
-		expect(xml.match(/<RULE>/g)?.length).toBe(10);
+		// The ten mandatory rules plus the ten unit rules (the cap allows ten additions to the mandatory set).
+		expect(xml.match(/<RULE>/g)?.length).toBe(20);
 		for (const rule of rules) expect(xml).toContain(`<RULE>${rule}</RULE>`);
 	});
 });

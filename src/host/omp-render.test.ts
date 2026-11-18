@@ -1106,20 +1106,20 @@ describe("swarm card", () => {
 			lanes: [
 				{
 					laneId: "lane-a",
-					summary: flag.repeat(20),
+					summary: flag.repeat(40),
 					logPath: "/tmp/swarm/aa11-1-x/run.log",
 					done: 1,
 					total: 1,
 				},
 			],
 		};
-		// width 25 leaves 21 content columns: ten whole flags per row, never a lone regional indicator
+		// width 25 leaves 21 content columns; 40 flags overflow that under either width model (one or two columns each)
 		const { plain } = swarmCard(details, true, 25);
 		const fragments = plain
 			.map((row) => row.replace(/^│/, "").replace(/│$/, "").trim())
 			.filter((row) => row.includes("🇺") || row.includes("🇸"));
 		expect(fragments.length).toBeGreaterThan(1);
-		expect(fragments.join("")).toBe(flag.repeat(20));
+		expect(fragments.join("")).toBe(flag.repeat(40));
 		for (const row of fragments) expect(row.replaceAll(flag, "")).toBe("");
 	});
 
