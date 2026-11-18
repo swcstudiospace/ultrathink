@@ -3,6 +3,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { redactSecrets } from "../redact.ts";
+import { asObj, parseJson } from "../shared.ts";
 import { defaultRun } from "./run.ts";
 import type { PrRef, PrStatus, Run, ShipConfig } from "./types.ts";
 
@@ -103,20 +104,6 @@ const THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $af
 	}
 }`;
 
-function parseJson(text: string): unknown {
-	try {
-		return JSON.parse(text);
-	} catch {
-		return undefined;
-	}
-}
-
-function obj(value: unknown): Record<string, unknown> | undefined {
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: undefined;
-}
-
 function str(value: unknown): string | undefined {
 	return typeof value === "string" && value ? value : undefined;
 }
@@ -129,7 +116,7 @@ function errorOf(result: { stdout: string; stderr: string; exitCode: number }): 
 }
 
 function toPrRef(value: unknown): PrRef | undefined {
-	const o = obj(value);
+	const o = asObj(value);
 	if (!o || typeof o.number !== "number") return undefined;
 	const url = str(o.url);
 	const head = str(o.headRefName);
@@ -142,7 +129,7 @@ export function classifyChecks(rollup: unknown): PrStatus["checks"] {
 	if (!Array.isArray(rollup) || rollup.length === 0) return "none";
 	let pending = false;
 	for (const entry of rollup) {
-		const o = obj(entry) ?? {};
+		const o = asObj(entry) ?? {};
 		const conclusion = str(o.conclusion)?.toUpperCase();
 		const state = str(o.state)?.toUpperCase();
 		const status = str(o.status)?.toUpperCase();
@@ -161,27 +148,27 @@ type ThreadsPage =
 
 /** Parses one page of the reviewThreads response; `next` is the cursor of the following page when there is one. */
 function parseThreadsPage(stdout: string): ThreadsPage {
-	const root = obj(parseJson(stdout));
+	const root = asObj(parseJson(stdout));
 	if (!root) return { ok: false, error: "unparseable review threads response" };
 	const errors = root.errors;
 	if (Array.isArray(errors) && errors.length > 0) {
-		return { ok: false, error: str(obj(errors[0])?.message)?.slice(0, 300) ?? "graphql error" };
+		return { ok: false, error: str(asObj(errors[0])?.message)?.slice(0, 300) ?? "graphql error" };
 	}
-	const threads = obj(obj(obj(obj(root.data)?.repository)?.pullRequest)?.reviewThreads);
+	const threads = asObj(asObj(asObj(asObj(root.data)?.repository)?.pullRequest)?.reviewThreads);
 	if (!threads || !Array.isArray(threads.nodes))
 		return { ok: false, error: "pull request review threads missing" };
-	const pageInfo = obj(threads.pageInfo);
+	const pageInfo = asObj(threads.pageInfo);
 	if (!pageInfo || typeof pageInfo.hasNextPage !== "boolean")
 		return { ok: false, error: "malformed review threads pageInfo" };
 	const next = pageInfo?.hasNextPage === true ? str(pageInfo.endCursor) : undefined;
 	if (pageInfo?.hasNextPage === true && !next) return { ok: false, error: PAGINATION_STALLED };
 	const out: ReviewThread[] = [];
 	for (const node of threads.nodes) {
-		const thread = obj(node);
+		const thread = asObj(node);
 		const id = str(thread?.id);
-		const comments = obj(thread?.comments)?.nodes;
-		const first = obj(Array.isArray(comments) ? comments[0] : undefined);
-		const author = str(obj(first?.author)?.login);
+		const comments = asObj(thread?.comments)?.nodes;
+		const first = asObj(Array.isArray(comments) ? comments[0] : undefined);
+		const author = str(asObj(first?.author)?.login);
 		const body = str(first?.body);
 		if (!thread || !id || !first) return { ok: false, error: "malformed review thread" };
 		// A null author is GitHub's valid representation of a deleted account.
@@ -247,9 +234,9 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			timeoutMs,
 		});
 		if (r.exitCode !== 0) return undefined;
-		const o = obj(parseJson(r.stdout));
+		const o = asObj(parseJson(r.stdout));
 		const name = str(o?.nameWithOwner);
-		const defaultBranch = str(obj(o?.defaultBranchRef)?.name);
+		const defaultBranch = str(asObj(o?.defaultBranchRef)?.name);
 		return name && defaultBranch ? { name, defaultBranch } : undefined;
 	};
 
@@ -398,7 +385,7 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 				"state,headRefOid,mergeable,statusCheckRollup,url",
 			]);
 			if (r.exitCode !== 0) return undefined;
-			const o = obj(parseJson(r.stdout));
+			const o = asObj(parseJson(r.stdout));
 			const state = str(o?.state);
 			const headSha = str(o?.headRefOid);
 			const url = str(o?.url);
@@ -444,7 +431,7 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 				"--json",
 				"squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed",
 			]);
-			const o = r.exitCode === 0 ? obj(parseJson(r.stdout)) : undefined;
+			const o = r.exitCode === 0 ? asObj(parseJson(r.stdout)) : undefined;
 			if (!o) return [];
 			const methods: ShipConfig["mergeMethod"][] = [];
 			if (o.squashMergeAllowed === true) methods.push("squash");

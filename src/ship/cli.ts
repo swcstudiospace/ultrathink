@@ -18,6 +18,7 @@ import { findPhaseDirectory, openHtilEntries, verificationEntryId } from "../hos
 import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import type { McpClient } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
+import type { ToolCaller } from "../track/create.ts";
 import { fileStore } from "../workflow/phase-loop-store.ts";
 import {
 	confirmShip,
@@ -30,7 +31,6 @@ import { CLAUDE_REVIEW_TIMEOUT_MS, reviewWithClaude, usesClaudeReviewer } from "
 import { createGithub } from "./github.ts";
 import type { Github, ReviewThreadsOptions } from "./github.ts";
 import { openThreadComments, runReview } from "./greptile.ts";
-import type { ToolCaller } from "./greptile.ts";
 import { mergeGate, reviewPasses } from "./merge.ts";
 import { buildPr } from "./pr-body.ts";
 import { defaultRun } from "./run.ts";

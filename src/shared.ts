@@ -17,6 +17,25 @@ export function asObj(value: unknown): Record<string, unknown> | undefined {
 	return isRecord(value) ? value : undefined;
 }
 
+/** The value when it is a string, else `undefined`. */
+export function asStr(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+/** The value when it is an array, else `[]`. */
+export function asArr(value: unknown): unknown[] {
+	return Array.isArray(value) ? value : [];
+}
+
+/** Parsed JSON of `text`, or `undefined` when it is not valid JSON. */
+export function parseJson(text: string): unknown {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+}
+
 export function isDirectory(path: string): boolean {
 	try {
 		return statSync(path).isDirectory();

@@ -5,23 +5,12 @@
  * spans several organizations refuses every call until one is chosen; this names that refusal the same way wherever
  * it surfaces.
  */
-import { asObj } from "../shared.ts";
-
-const asStr = (value: unknown): string | undefined =>
-	typeof value === "string" ? value : undefined;
-
-const parsePayload = (text: string): Record<string, unknown> | undefined => {
-	try {
-		return asObj(JSON.parse(text));
-	} catch {
-		return undefined;
-	}
-};
+import { asObj, asStr, parseJson } from "../shared.ts";
 
 /** Organization ids/handles a tenant_required error offers, from a JSON payload or a `candidates: a, b` list. */
 function tenantCandidates(message: string): string[] {
 	const start = message.indexOf("{");
-	const payload = start >= 0 ? parsePayload(message.slice(start)) : undefined;
+	const payload = start >= 0 ? asObj(parseJson(message.slice(start))) : undefined;
 	const offered = payload?.candidates ?? asObj(payload?.error)?.candidates;
 	const listed = Array.isArray(offered) ? offered : [];
 	const names = listed

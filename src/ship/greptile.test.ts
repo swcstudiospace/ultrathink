@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import { tenantReason } from "../greptile/tenant.ts";
+import type { ToolCaller } from "../track/create.ts";
 import {
 	findGreptileRepo,
 	GREPTILE_SETUP,
@@ -9,7 +10,6 @@ import {
 	reviewCli,
 	reviewPr,
 	runReview,
-	type ToolCaller,
 } from "./greptile.ts";
 import type { Run, ShipConfig } from "./types.ts";
 
