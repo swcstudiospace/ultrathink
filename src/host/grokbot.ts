@@ -255,7 +255,8 @@ export function createJournalCompleter(opts: {
 	let scheduled = false;
 	const complete = async (system: string, user: string, signal?: AbortSignal): Promise<string> => {
 		const key = requestKey(system, user);
-		const answer = readAnswer(opts.dir, key);
+		// A stored answer is replayed only for a stage with a known shape, never for an unrecognised request.
+		const answer = stageOf(system) === "other" ? undefined : readAnswer(opts.dir, key);
 		if (answer !== undefined) {
 			replayed++;
 			return answer;
@@ -525,7 +526,8 @@ function validateAnswer(
 		case "distill":
 			return validateDistill(raw);
 		default:
-			return { ok: true, errors: [] };
+			// Only the planner's own stages have a known shape; an answer for any other request is refused, never stored.
+			return { ok: false, errors: ["answers for an unrecognised request are not accepted"] };
 	}
 }
 
@@ -702,6 +704,8 @@ export interface GrokbotPlanInput {
 	replan?: boolean;
 	/** Plugin entry point; defaults to `planPrompt`. A test seam, never a behavior switch. */
 	plan?: typeof planPrompt;
+	/** The session lock's options; a test seam for a held lock, never a behavior switch. */
+	lock?: LockOptions;
 }
 
 export interface GrokbotPlanResult {
@@ -770,37 +774,44 @@ export async function runGrokbotPlan(input: GrokbotPlanInput): Promise<GrokbotPl
 	};
 	const stateDir = input.stateDir ?? grokbotStateDir(env);
 	const dir = journalDir(stateDir, input.sessionId);
-	const meta = readMeta(dir);
-	if (meta?.original !== undefined && meta.original !== input.prompt)
-		throw new Error("session already holds a different original prompt; use a new session id");
+	// The original check, the planned short-circuit and the meta write share the session lock, so two plans for one
+	// session cannot both record their original: the second reads the first one's original and is refused.
 	const existing = sessionRecordPath(stateDir, input.sessionId);
-	if (meta?.status === "planned" && !input.replan && existsSync(existing)) {
-		const record = JSON.parse(readFileSync(existing, "utf8")) as SessionRecord;
-		return {
-			status: "planned",
-			sessionId: input.sessionId,
-			journal: dir,
-			pending: [],
-			replayed: 0,
-			check: checkRecord(record, { thinkOff: thinkingOff(stateDir, input.cwd, env) }),
-			response: {
-				statePath: existing,
-				specPath: existing.replace(/\.json$/, ".xml"),
-			} as PlanResponse,
-		};
-	}
-	writeMeta(dir, {
-		...meta,
-		sessionId: input.sessionId,
-		original: input.prompt,
-		cwd: input.cwd,
-		...(input.transcriptPath ? { transcriptPath: input.transcriptPath } : {}),
-		status: "needs-model",
-	});
-	withFileLock(sessionRecordPath(stateDir, input.sessionId), () => clearAbandonedPending(dir), {
-		...CLI_LOCK,
-		createParent: true,
-	});
+	const early = withFileLock(
+		existing,
+		(): GrokbotPlanResult | undefined => {
+			const meta = readMeta(dir);
+			if (meta?.original !== undefined && meta.original !== input.prompt)
+				throw new Error("session already holds a different original prompt; use a new session id");
+			if (meta?.status === "planned" && !input.replan && existsSync(existing)) {
+				const record = JSON.parse(readFileSync(existing, "utf8")) as SessionRecord;
+				return {
+					status: "planned",
+					sessionId: input.sessionId,
+					journal: dir,
+					pending: [],
+					replayed: 0,
+					check: checkRecord(record, { thinkOff: thinkingOff(stateDir, input.cwd, env) }),
+					response: {
+						statePath: existing,
+						specPath: existing.replace(/\.json$/, ".xml"),
+					} as PlanResponse,
+				};
+			}
+			writeMeta(dir, {
+				...meta,
+				sessionId: input.sessionId,
+				original: input.prompt,
+				cwd: input.cwd,
+				...(input.transcriptPath ? { transcriptPath: input.transcriptPath } : {}),
+				status: "needs-model",
+			});
+			clearAbandonedPending(dir);
+			return undefined;
+		},
+		{ ...CLI_LOCK, createParent: true, ...input.lock },
+	);
+	if (early) return early;
 	const owner = runOwner(randomUUID());
 	const controller = new AbortController();
 	const journal = createJournalCompleter({
