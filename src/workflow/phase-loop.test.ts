@@ -702,4 +702,38 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 			},
 		]);
 	});
+
+	test("after Ship is recorded, open, resolve and recordAudit are refused and write nothing", () => {
+		const { store, saves } = countingStore(dir);
+		reachVerify("claude", store);
+		expect(confirmShip("claude", passing(), CONNECTED, store).accepted).toBe(true);
+		const before = saves();
+		expect(open("claude", { id: "h2", owner: "alice" }, store).refusals).toEqual([
+			"loop is closed by Ship; HTIL entry h2 is not recorded",
+		]);
+		expect(resolve("claude", "h1", { state: "done", evidenceId: "e1" }, store).refusals).toEqual([
+			"loop is closed by Ship; HTIL entry h1 is not resolved",
+		]);
+		expect(recordAudit("claude", { ...PASSING_AUDIT, id: "audit-2" }, store).refusals).toEqual([
+			"loop is closed by Ship; audit audit-2 is not recorded",
+		]);
+		expect(saves()).toBe(before);
+		expect(storedRecord(dir, "claude")?.humanItems).toEqual([]);
+		expect(storedRecord(dir, "claude")?.audits).toBeUndefined();
+	});
+
+	test("after Ship, a failing re-record of the audit the close cites is refused and the pass stands", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		recordAudit("claude", PASSING_AUDIT, store);
+		expect(confirmShip("claude", passing(), CONNECTED, store).accepted).toBe(true);
+		const replaced = recordAudit("claude", { ...PASSING_AUDIT, result: "fail" }, store);
+		expect(replaced.accepted).toBe(false);
+		expect(storedRecord(dir, "claude")?.audits).toEqual([PASSING_AUDIT]);
+		expect(storedRecord(dir, "claude")?.closedBy).toEqual({
+			kind: "audit",
+			recordId: "audit-1",
+			recordedAt: AT,
+		});
+	});
 });

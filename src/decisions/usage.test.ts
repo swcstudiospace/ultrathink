@@ -16,7 +16,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	appendUsage,
-	LOCK_STALE_MS,
 	summarizeUsage,
 	USAGE_FILE,
 	USAGE_MAX_BYTES,
@@ -139,17 +138,33 @@ describe("appendUsage", () => {
 		expect(readFileSync(path, "utf8").trimEnd().split("\n")).toHaveLength(1);
 	});
 
-	test("a stale lock from a crashed holder is taken over", () => {
+	test("a stale lock is never taken over: rotation stays off, the lock is left in place and the row still lands", () => {
 		const dir = tempDir();
 		const path = join(dir, USAGE_FILE);
 		const lock = join(dir, "decisions-usage.lock");
 		writeFileSync(path, `${"x".repeat(USAGE_MAX_BYTES)}\n`);
 		writeFileSync(lock, "");
-		const old = new Date(Date.now() - LOCK_STALE_MS - 1000);
+		const old = new Date(Date.now() - 60_000);
 		utimesSync(lock, old, old);
 		appendUsage(dir, record({ point: "ship" }));
-		expect(readFileSync(`${path}.1`, "utf8")).toStartWith("xxxx");
+		expect(existsSync(`${path}.1`)).toBe(false);
 		expect(readFileSync(path, "utf8")).toContain('"point":"ship"');
+		expect(existsSync(lock)).toBe(true);
+	});
+
+	test("once a crashed holder's lock is removed by hand, the next writer rotates", () => {
+		const dir = tempDir();
+		const path = join(dir, USAGE_FILE);
+		const lock = join(dir, "decisions-usage.lock");
+		writeFileSync(path, `${"x".repeat(USAGE_MAX_BYTES)}\n`);
+		writeFileSync(lock, "");
+		const old = new Date(Date.now() - 60_000);
+		utimesSync(lock, old, old);
+		appendUsage(dir, record({ point: "ship" }));
+		rmSync(lock);
+		appendUsage(dir, record({ point: "plan" }));
+		expect(readFileSync(`${path}.1`, "utf8")).toStartWith("xxxx");
+		expect(readFileSync(path, "utf8")).toContain('"point":"plan"');
 		expect(existsSync(lock)).toBe(false);
 	});
 

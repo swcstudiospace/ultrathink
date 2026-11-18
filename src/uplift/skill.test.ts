@@ -181,6 +181,20 @@ describe("resolveSkillFile", () => {
 		expect(resolveSkillFile("plug:sk", { cwd, home })).toEqual({ path, summary: "plugged" });
 	});
 
+	test("a skill file larger than the read cap still resolves its frontmatter description", () => {
+		const path = join(home, ".claude/skills/big/SKILL.md");
+		put(path, `---\ndescription: Big skill\n---\n${"x".repeat(200 * 1024)}`);
+		expect(resolveSkillFile("big", { cwd, home })).toEqual({ path, summary: "Big skill" });
+	});
+
+	test("frontmatter ending past the read cap falls back to the body summary of the prefix", () => {
+		const path = join(home, ".claude/skills/late/SKILL.md");
+		put(path, `---\ndescription: Late\n${"x".repeat(70 * 1024)}\n---\n\nTail paragraph`);
+		const summary = resolveSkillFile("late", { cwd, home })?.summary;
+		expect(summary?.startsWith("--- description: Late")).toBe(true);
+		expect(summary).not.toContain("Tail paragraph");
+	});
+
 	test("rejects traversal and misses", () => {
 		put(join(dir, "etc/SKILL.md"), "x");
 		expect(resolveSkillFile("../etc", { cwd, home })).toBeUndefined();

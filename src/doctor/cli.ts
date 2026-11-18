@@ -24,9 +24,10 @@ import type { DoctorDeps, DoctorSection, Finding, PythonCommand } from "./types.
 const USAGE = "Usage: ultrathink doctor [--json]";
 const VERSION_TIMEOUT_MS = 3_000;
 const CLAUDE_PROBE_TIMEOUT_MS = 8_000;
+const CLAUDE_PROBE_OUTPUT_BYTES = 64 * 1024;
 
-/** Stdout of `<bin> <args>`, or undefined when the CLI cannot run or printed nothing. A logged-out status exits non-zero but still prints its JSON. */
-function runClaude(
+/** The first 64 KiB of stdout of `<bin> <args>`, or undefined when the CLI cannot run or printed nothing. A logged-out status exits non-zero but still prints its JSON. */
+export function runClaude(
 	bin: string,
 	args: string[],
 	env: Record<string, string | undefined>,
@@ -41,7 +42,7 @@ function runClaude(
 			stderr: "ignore",
 			timeout: CLAUDE_PROBE_TIMEOUT_MS,
 		});
-		return proc.stdout.toString().trim() || undefined;
+		return proc.stdout.subarray(0, CLAUDE_PROBE_OUTPUT_BYTES).toString().trim() || undefined;
 	} catch {
 		// reason: a missing or hanging claude is the answer; the check reports it as absent.
 		return undefined;

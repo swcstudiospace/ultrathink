@@ -233,6 +233,7 @@ describe("probeDecisions when a dependency throws", () => {
 			member: "decisions",
 			status: "unavailable",
 			reason: "Decisions probe failed unexpectedly",
+			affects: ["plan gate", "ship gate", "knowledge, blocking and teachable decisions"],
 			via: "none",
 		});
 		expect(JSON.stringify(conn)).not.toContain("boom");

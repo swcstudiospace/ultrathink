@@ -259,6 +259,22 @@ describe("generated skill store", () => {
 		expect(await listGenerated(storeDir)).toMatchObject({ ok: true, entries: [{ name: SKILL }] });
 	});
 
+	test("concurrent setStatus and removeSkill keep both manifest changes", async () => {
+		const OTHER = "another-generated-skill";
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+		await writeGeneratedSkill(storeDir, skillFixture({ name: OTHER }), NOW);
+
+		const [status, removal] = await Promise.all([
+			setGeneratedStatus(storeDir, SKILL, "disabled"),
+			removeGeneratedSkill(storeDir, OTHER),
+		]);
+
+		expect(status).toMatchObject({ ok: true, entry: { name: SKILL, status: "disabled" } });
+		expect(removal).toMatchObject({ ok: true, name: OTHER });
+		expect(await manifestSkills()).toMatchObject([{ name: SKILL, status: "disabled" }]);
+		expect(existsSync(join(storeDir, OTHER))).toBe(false);
+	});
+
 	test("a corrupt manifest is a typed error and is left unchanged", async () => {
 		await mkdir(storeDir, { recursive: true });
 		const corrupt = '{"schema": 1, "skills": [';

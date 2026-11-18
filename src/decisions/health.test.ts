@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -574,4 +574,47 @@ describe("failures of calls that began before the last recovery", () => {
 			expect(health.read().coolDownMs).toBe(600_000);
 		},
 	);
+});
+
+describe("breaker diagnostics under ULTRATHINK_DEBUG=1", () => {
+	/** Runs `run` with the debug flag set and returns every stderr chunk it wrote. */
+	const captureDebug = (run: () => void): string[] => {
+		const prior = process.env.ULTRATHINK_DEBUG;
+		process.env.ULTRATHINK_DEBUG = "1";
+		const written: string[] = [];
+		const spy = spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+			written.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write);
+		try {
+			run();
+		} finally {
+			spy.mockRestore();
+			if (prior === undefined) delete process.env.ULTRATHINK_DEBUG;
+			else process.env.ULTRATHINK_DEBUG = prior;
+		}
+		return written;
+	};
+
+	test("a corrupt breaker file reads as closed and logs one line naming the file and error class, never its contents", () => {
+		const dir = tempDir();
+		writeFileSync(join(dir, FILE), '{"v":1,"state":"open" SECRET-BODY');
+		let state: string | undefined;
+		const written = captureDebug(() => {
+			state = open(dir).read().state;
+		});
+		expect(state).toBe("closed");
+		expect(written).toHaveLength(1);
+		expect(written[0]).toContain(FILE);
+		expect(written[0]).toContain("SyntaxError");
+		expect(written[0]).not.toContain("SECRET-BODY");
+	});
+
+	test("a missing breaker file is the normal first state and logs nothing", () => {
+		const dir = tempDir();
+		const written = captureDebug(() => {
+			expect(open(dir).read().state).toBe("closed");
+		});
+		expect(written).toHaveLength(0);
+	});
 });

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
 import { supervise, type TimerPort } from "./launch-supervisor.ts";
 import { readRuns } from "./runlog.ts";
@@ -16,6 +17,8 @@ interface FakeTimers extends TimerPort {
 	delays: number[];
 	/** Handles passed to clearTimeout, in order. */
 	cleared: unknown[];
+	/** Handles returned by setTimeout, in order. */
+	scheduled: unknown[];
 	/** Runs every callback still scheduled, as if its delay had elapsed. */
 	fire(): void;
 }
@@ -26,10 +29,12 @@ function fakeTimers(): FakeTimers {
 	const timers: FakeTimers = {
 		delays: [],
 		cleared: [],
+		scheduled: [],
 		setTimeout(fn, ms) {
 			next += 1;
 			callbacks.set(next, fn);
 			timers.delays.push(ms);
+			timers.scheduled.push(next);
 			return next;
 		},
 		clearTimeout(handle) {
@@ -41,6 +46,43 @@ function fakeTimers(): FakeTimers {
 		},
 	};
 	return timers;
+}
+
+/**
+ * Polls `check` until it passes or about five seconds elapse. The processes here are real and exit on the OS clock,
+ * which no fake timer reaches, so this bounded poll is the exception to deterministic time; it returns as soon as
+ * the condition holds.
+ */
+async function eventually(check: () => boolean): Promise<boolean> {
+	for (let i = 0; i < 500; i++) {
+		if (check()) return true;
+		await Bun.sleep(10);
+	}
+	return false;
+}
+
+/** The pid a shell wrote to `file`; fails instead of returning a non-pid. */
+async function readPid(file: string): Promise<number> {
+	const pidText = (): string => (existsSync(file) ? readFileSync(file, "utf8").trim() : "");
+	if (!(await eventually(() => /^\d+$/.test(pidText()))))
+		throw new Error(`no pid was written to ${file}`);
+	return Number(pidText());
+}
+
+/** Whether `pid` runs. A killed process its parent never reaped is a zombie, which has exited. */
+function isAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+	} catch {
+		// reason: no such process: it exited and was reaped
+		return false;
+	}
+	try {
+		return !/\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+	} catch {
+		// reason: no /proc (not Linux): the signal probe is all there is
+		return true;
+	}
 }
 
 describe("supervise", () => {
@@ -69,7 +111,8 @@ describe("supervise", () => {
 			5_000,
 		);
 		expect(outcome).toEqual({ reason: "exited", exitCode: 3 });
-		expect(timers.cleared).toEqual([1]);
+		expect(timers.scheduled).toHaveLength(1);
+		expect(timers.cleared).toEqual(timers.scheduled);
 		expect(readRuns(stateDir)).toMatchObject([
 			{ sessionId: "s2", outcome: "skipped", skipped: "launch exited", exitCode: 3 },
 		]);
@@ -84,7 +127,33 @@ describe("supervise", () => {
 			5_000,
 		);
 		expect(outcome).toEqual({ reason: "exited", exitCode: 0 });
-		expect(timers.cleared).toEqual([1]);
+		expect(timers.scheduled).toHaveLength(1);
+		expect(timers.cleared).toEqual(timers.scheduled);
 		expect(readRuns(stateDir)).toEqual([]);
+	});
+
+	test("deadline kill reaches a child that outlives its parent", async () => {
+		const stateDir = makeTempDir("ut-launch-grandchild-", roots);
+		const pidFile = join(stateDir, "grandchild.pid");
+		const timers = fakeTimers();
+		const settled = supervise(
+			{
+				stateDir,
+				sessionId: "s4",
+				command: "sh",
+				args: ["-c", 'sleep 60 & echo $! > "$0"; wait', pidFile],
+			},
+			timers,
+			5_000,
+		);
+		const grandchild = await readPid(pidFile);
+		try {
+			timers.fire();
+			expect(await settled).toEqual({ reason: "timeout" });
+			expect(await eventually(() => !isAlive(grandchild))).toBe(true);
+		} finally {
+			// reason: a grandchild the kill missed is stopped here, so it cannot outlive the test
+			if (isAlive(grandchild)) process.kill(grandchild, "SIGKILL");
+		}
 	});
 });

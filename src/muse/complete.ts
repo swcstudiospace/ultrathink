@@ -25,7 +25,7 @@ import { runChild, withTempDir } from "../resilience/child.ts";
 import type { RetrySeams } from "../resilience/retry.ts";
 import { dropJevKeys } from "../route-defaults.ts";
 import { CHILD_PROMPT_SENTINEL } from "../uplift/skill.ts";
-import type { MuseEffort } from "./types.ts";
+import { DEFAULT_MUSE_CONFIG, type MuseEffort } from "./types.ts";
 
 type MuseProvider = "meta" | "echo";
 
@@ -64,7 +64,7 @@ export function buildMuseArgs(
 		args.push("--provider", "echo");
 	} else {
 		if (opts.model?.trim()) args.push("--model", opts.model.trim());
-		args.push("--reasoning-effort", opts.reasoningEffort ?? "high");
+		args.push("--reasoning-effort", opts.reasoningEffort ?? DEFAULT_MUSE_CONFIG.reasoningEffort);
 	}
 	args.push("--prompt-file", promptFile);
 	return args;

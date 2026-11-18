@@ -74,6 +74,11 @@ export interface ReviewThreadsOptions {
 
 const LONG_TIMEOUT_MS = 180_000;
 const PR_FIELDS = "number,url,headRefName,baseRefName";
+// The Greptile app's GraphQL login, and its `[bot]` form, lowercase. Own keys only: no other login counts as Greptile.
+const GREPTILE_BOT_LOGINS: Record<string, true> = {
+	"greptile-apps": true,
+	"greptile-apps[bot]": true,
+};
 const FAILED_CONCLUSIONS: Record<string, true> = {
 	FAILURE: true,
 	CANCELLED: true,
@@ -182,8 +187,7 @@ function parseThreadsPage(stdout: string): ThreadsPage {
 		// A null author is GitHub's valid representation of a deleted account.
 		if (first.author === null) continue;
 		if (!author) return { ok: false, error: "malformed review thread" };
-		// The Greptile app posts as `greptile-apps[bot]`; GraphQL reports the login without the suffix.
-		if (!author.toLowerCase().startsWith("greptile")) continue;
+		if (!Object.hasOwn(GREPTILE_BOT_LOGINS, author.toLowerCase())) continue;
 		if (!body || typeof thread.isResolved !== "boolean" || typeof thread.isOutdated !== "boolean") {
 			return { ok: false, error: "malformed review thread" };
 		}
@@ -413,9 +417,10 @@ export function createGithub(input: { cwd: string; run?: Run }): Github {
 			);
 			const state = gh.prStatus(number)?.state;
 			if (state === "MERGED") return { ok: true };
+			if (r.exitCode !== 0) return { ok: false, error: errorOf(r) };
 			return {
 				ok: false,
-				error: r.exitCode !== 0 ? errorOf(r) : `PR is ${state ?? "unknown"} after merge`,
+				error: state === undefined ? "state unverified after merge" : `PR is ${state} after merge`,
 			};
 		},
 		deleteRemoteBranch(branch) {

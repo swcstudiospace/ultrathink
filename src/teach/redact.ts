@@ -15,6 +15,7 @@
  * or one of its ancestors exempts nothing, so a session started in `~` still hides `~/.ssh/...`.
  */
 
+import { posix } from "node:path";
 import { redactSecretShapes } from "../redact.ts";
 
 const REDACTED = "[redacted]";
@@ -43,9 +44,12 @@ function redactPaths(text: string, home: string, repoRoot: string | undefined): 
 		let end = match.length;
 		while (end > 0 && (match[end - 1] === "." || match[end - 1] === ":")) end--;
 		const trailing = match.slice(end);
-		const path = match.slice(0, end);
+		// reason: `..` segments resolve first, so a path that climbs out of the exempt root is judged where it lands.
+		const path = posix.normalize(match.slice(0, end));
 		if (exempt && (path === exempt || path.startsWith(`${exempt}/`))) return match;
-		const segments = path.slice(base.length).split("/").filter(Boolean);
+		// A path that climbs out of the home directory shows only `~`: nothing past the escape is revealed.
+		const inHome = path === base || path.startsWith(`${base}/`);
+		const segments = inHome ? path.slice(base.length).split("/").filter(Boolean) : [];
 		const shown = segments.length <= 2 ? segments.join("/") : `.../${segments.slice(-2).join("/")}`;
 		return `${shown ? `~/${shown}` : "~"}${trailing}`;
 	});

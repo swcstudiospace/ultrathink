@@ -9,6 +9,7 @@
 import type { RecallHit } from "../hindsight/types.ts";
 import { PREVIEW_MAX_CHARS } from "../recall/panel-model.ts";
 import { hindsightFor, teachEnabled, tryStore } from "./context.ts";
+import type { TimerPort } from "./launch-supervisor.ts";
 import { lessonFromHit, projectOf, sanitizeTag } from "./mapping.ts";
 import { redactLine } from "./redact.ts";
 import { newestFirst } from "./store.ts";
@@ -291,15 +292,10 @@ async function findLessons(
 		: { lessons: [], source: "none", error };
 }
 
-/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
-type TimerPort = {
-	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
-	clearTimeout(handle: NodeJS.Timeout | undefined): void;
-};
-
+/** The platform timers; the port's `unknown` handle is passed straight back to `clearTimeout`, so no cast is needed. */
 const platformTimers: TimerPort = {
 	setTimeout: (fn, ms) => setTimeout(fn, ms),
-	clearTimeout: (handle) => clearTimeout(handle),
+	clearTimeout,
 };
 
 export const recallLessons = async (

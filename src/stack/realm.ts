@@ -120,6 +120,8 @@ const MAX_SESSION_FILES = 16;
 const MAX_REPLY_BYTES = 1_048_576;
 const STATUS_REQUEST = `${JSON.stringify({ id: 1, method: "status" })}\n`;
 const OPT_OUT_VARIABLE = "ULTRATHINK_REALM";
+/** Realm's unavailable and degraded outcomes all cut write containment, so they name it. */
+const AFFECTS = ["containment"] as const;
 
 const STATES = ["unbound", "connecting", "active", "degraded", "error", "stopping"] as const;
 const LABELS = ["realm active", "realm disconnected"] as const;
@@ -615,10 +617,10 @@ async function detectInner(
 	budget: number,
 ): Promise<Detected> {
 	if (isOptedOut(env)) return { probe: { kind: "unknown", why: "disabled" } };
-	const startedAt = Date.now();
-	const remaining = (): number => Math.max(1, budget - (Date.now() - startedAt));
-	const nowMs = (opts.now ?? Date.now)();
-	const probedAt = new Date(nowMs).toISOString();
+	const clock = opts.now ?? Date.now;
+	const startedAt = clock();
+	const remaining = (): number => Math.max(1, budget - (clock() - startedAt));
+	const probedAt = new Date(clock()).toISOString();
 	const configPath = resolveConfigPath(env);
 	let stateDir: string | undefined;
 	if (configPath !== undefined) {
@@ -733,7 +735,7 @@ function fromPresent(
 			: {
 					status: "degraded",
 					reason: "Realm active, advisory mode: writes are not contained",
-					affects: ["containment"],
+					affects: AFFECTS,
 				};
 	}
 	if (probe.state === "degraded") {
@@ -743,28 +745,42 @@ function fromPresent(
 				: "advisory mode, writes are not contained";
 		return { status: "degraded", reason: `Realm degraded (${oneLine(probe.reason)}): ${tail}` };
 	}
-	return { status: "unavailable", reason: `Realm ${probe.state}: ${oneLine(probe.reason)}` };
+	return {
+		status: "unavailable",
+		reason: `Realm ${probe.state}: ${oneLine(probe.reason)}`,
+		affects: AFFECTS,
+	};
 }
 
 function fromUnknown(
 	why: Extract<RealmProbe, { kind: "unknown" }>["why"],
 	budgetMs: number,
-): Pick<StackConnection, "status" | "reason" | "fix"> {
+): Pick<StackConnection, "status" | "reason" | "affects" | "fix"> {
 	switch (why) {
 		case "timeout":
 			// The budget this probe actually used (the caller's value clamped to MAX_BUDGET_MS), never the caller's own.
 			return {
 				status: "unavailable",
 				reason: `Realm did not answer within ${budgetMs} ms`,
+				affects: AFFECTS,
 			};
 		case "schema":
-			return { status: "unavailable", reason: "Realm returned an unexpected reply" };
+			return {
+				status: "unavailable",
+				reason: "Realm returned an unexpected reply",
+				affects: AFFECTS,
+			};
 		case "io":
-			return { status: "unavailable", reason: "Realm state could not be read" };
+			return {
+				status: "unavailable",
+				reason: "Realm state could not be read",
+				affects: AFFECTS,
+			};
 		case "untrusted-socket":
 			return {
 				status: "unavailable",
 				reason: "Realm control socket failed the trust check (owner, mode or path)",
+				affects: AFFECTS,
 			};
 		case "disabled":
 			return {
@@ -807,6 +823,7 @@ function mapDetection(detection: Detection, latencyMs: number): StackConnection 
 						? "Realm daemon is not running"
 						: `Realm daemon is not running (state dir ${probe.stateDir})`,
 				fix: "realm up",
+				affects: AFFECTS,
 				via: probe.stateDir === "" ? "cli" : "socket",
 			};
 		case "present":

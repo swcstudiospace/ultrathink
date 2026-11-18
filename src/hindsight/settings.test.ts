@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,6 +78,27 @@ describe("resolveHindsightKey", () => {
 		expect(
 			resolveHindsightKey(join(tmpdir(), "ut-hindsight-missing", "nope.json"), env)?.source,
 		).toBe("HINDSIGHT_API_KEY");
+	});
+
+	test("an unreadable store falls back to the environment key and logs one line naming the store", () => {
+		const path = store(undefined, "{ not json");
+		const written: string[] = [];
+		const spy = spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+			written.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write);
+		try {
+			expect(resolveHindsightKey(path, { HINDSIGHT_API_KEY: "env-key" })).toEqual({
+				key: "env-key",
+				source: "HINDSIGHT_API_KEY",
+			});
+		} finally {
+			spy.mockRestore();
+		}
+		expect(written).toHaveLength(1);
+		expect(written[0]).toContain(path);
+		expect(written[0]).toContain("invalid_json");
+		expect(written[0]).not.toContain("env-key");
 	});
 
 	test("without an explicit path the store location comes from ULTRATHINK_MCP_STORE", () => {
@@ -289,6 +310,44 @@ describe("hindsightStatusLine", () => {
 			expect(line).not.toContain("stored-key-123");
 			expect(line).not.toContain("env-key-value");
 			expect(line).not.toContain("secret-prefix");
+		}
+	});
+
+	test("gateway backend names the origin, seat and token source, never the token", () => {
+		const gatewayConfig: HindsightConfig = { ...ON, backend: "gateway", url: "" };
+		const gatewayUrl = { DESK_GATEWAY_URL: "https://gw.example.test" };
+		expect(
+			hindsightStatusLine(
+				gatewayConfig,
+				{ ...gatewayUrl, DESK_GATEWAY_TOKEN: "gw-env-token" },
+				noKey,
+			),
+		).toBe(
+			"Hindsight: gateway · ready · https://gw.example.test · seat lead · token from DESK_GATEWAY_TOKEN",
+		);
+		const gatewayStore = store(
+			undefined,
+			JSON.stringify({
+				version: 1,
+				providers: { "desk-gateway": { kind: "api_key", apiKey: "gw-stored-token", updatedAt: 1 } },
+			}),
+		);
+		expect(hindsightStatusLine(gatewayConfig, gatewayUrl, gatewayStore)).toBe(
+			"Hindsight: gateway · ready · https://gw.example.test · seat lead · token from store",
+		);
+		expect(hindsightStatusLine(gatewayConfig, gatewayUrl, noKey)).toBe(
+			"Hindsight: gateway · unready · no token (set DESK_GATEWAY_TOKEN or store a desk-gateway credential)",
+		);
+		for (const line of [
+			hindsightStatusLine(
+				gatewayConfig,
+				{ ...gatewayUrl, DESK_GATEWAY_TOKEN: "gw-env-token" },
+				noKey,
+			),
+			hindsightStatusLine(gatewayConfig, gatewayUrl, gatewayStore),
+		]) {
+			expect(line).not.toContain("gw-env-token");
+			expect(line).not.toContain("gw-stored-token");
 		}
 	});
 });

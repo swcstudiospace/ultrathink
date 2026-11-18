@@ -267,4 +267,35 @@ describe("checkPstack", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	test("an invalid ULTRATHINK_CONFIG_DIR file is reported, not skipped silently", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pstack-doctor-override-bad-"));
+		try {
+			const configDir = join(dir, "config");
+			mkdirSync(configDir, { recursive: true });
+			const file = join(configDir, "config.json");
+			writeFileSync(file, "{");
+			const findings = checkPstack(deps(dir, { ULTRATHINK_CONFIG_DIR: configDir }));
+			expect(byId(findings, "pstack.config-invalid")).toMatchObject({
+				level: "info",
+				detail: `File: ${file}`,
+			});
+			expect(byId(findings, "pstack.enabled").detail).toContain("Deciding source: default");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("an invalid standard config file is left to config-check", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pstack-doctor-standard-bad-"));
+		try {
+			const home = join(dir, "home");
+			mkdirSync(join(home, ".config", "ultrathink"), { recursive: true });
+			writeFileSync(join(home, ".config", "ultrathink", "config.json"), "{");
+			const findings = checkPstack(deps(dir));
+			expect(findings.some((finding) => finding.id === "pstack.config-invalid")).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });

@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { writeStore } from "../mcp/store.ts";
-import { runDoctorCommand } from "./cli.ts";
+import { runClaude, runDoctorCommand } from "./cli.ts";
 import type { DoctorDeps, DoctorReport } from "./types.ts";
 
 const FAKE_KEY = "sk-test-not-a-real-key-4242424242";
@@ -126,6 +126,23 @@ describe("runDoctorCommand", () => {
 		expect(log).not.toContain("AI_GATEWAY_API_KEY");
 		expect(log).not.toContain(planted);
 		expect(log).not.toContain(plantedGateway);
+	});
+
+	test("a claude probe keeps only the first 64 KiB of its stdout", () => {
+		const bin = join(dir, "bin");
+		mkdirSync(bin);
+		const claude = join(bin, "claude");
+		// `--version` writes 100 KiB of `x`; any other call writes a normal logged-in reply.
+		writeFileSync(
+			claude,
+			`#!/bin/sh\nif [ "$1" = "--version" ]; then head -c 102400 /dev/zero | tr '\\0' x; else echo '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}'; fi\n`,
+			{ mode: 0o755 },
+		);
+		const env = { PATH: process.env.PATH };
+		expect(runClaude(claude, ["--version"], env)).toBe("x".repeat(64 * 1024));
+		expect(runClaude(claude, ["auth", "status", "--json"], env)).toBe(
+			'{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}',
+		);
 	});
 
 	test("the python version probe never hands the Jev key variables to the child", async () => {
@@ -291,10 +308,14 @@ describe("runDoctorCommand", () => {
 	test("it opens no network connection", async () => {
 		const original = globalThis.fetch;
 		const calls: unknown[] = [];
-		globalThis.fetch = ((...args: unknown[]) => {
-			calls.push(args);
-			throw new Error("network is off in this test");
-		}) as unknown as typeof fetch;
+		const stub: typeof fetch = Object.assign(
+			(...args: Parameters<typeof fetch>): Promise<Response> => {
+				calls.push(args);
+				throw new Error("network is off in this test");
+			},
+			{ preconnect: original.preconnect },
+		);
+		globalThis.fetch = stub;
 		try {
 			await runDoctorCommand(["--json"], deps);
 		} finally {
@@ -310,10 +331,14 @@ describe("runDoctorCommand", () => {
 		const tokens = join(dir, "no-tokens");
 		mkdirSync(tokens);
 		const original = globalThis.fetch;
-		globalThis.fetch = ((..._args: unknown[]) => {
-			events.push("probe");
-			return Promise.resolve(new Response("ok", { status: 200 }));
-		}) as unknown as typeof fetch;
+		const stub: typeof fetch = Object.assign(
+			(..._args: Parameters<typeof fetch>): Promise<Response> => {
+				events.push("probe");
+				return Promise.resolve(new Response("ok", { status: 200 }));
+			},
+			{ preconnect: original.preconnect },
+		);
+		globalThis.fetch = stub;
 		try {
 			const { exitCode } = await runDoctorCommand([], {
 				...deps,

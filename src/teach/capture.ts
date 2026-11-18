@@ -495,13 +495,16 @@ export async function forgetMoment(
 	const store = tryStore(ctx);
 	const moment = store?.get(id);
 	if (!store || !moment) return { removed: false, remote: "none" };
+	// Hoisted so the catch can tell a possibly remote copy apart from a purely local lesson.
+	let mayHaveRemote = Boolean(moment.retained);
 	try {
 		const inOutbox = store
 			.outbox()
 			.some((entry) => entry.op.op === "retain" && entry.op.momentId === id);
+		mayHaveRemote ||= inOutbox;
 		dropRetainOps(store, id);
 		const removed = store.remove(id);
-		if (!moment.retained && !inOutbox) return { removed, remote: "none" };
+		if (!mayHaveRemote) return { removed, remote: "none" };
 		const documentId = documentIdFor(id);
 		const client = teachEnabled(ctx) ? hindsightFor(ctx).client : undefined;
 		if (client) {
@@ -516,7 +519,11 @@ export async function forgetMoment(
 		}
 		return { removed, remote: "queued" };
 	} catch {
-		return { removed: store.get(id) === undefined, remote: "none" };
+		// reason: a failure during the local removal may still leave a remote copy, so it is never "none" here.
+		return {
+			removed: store.get(id) === undefined,
+			remote: mayHaveRemote ? "retained" : "none",
+		};
 	}
 }
 

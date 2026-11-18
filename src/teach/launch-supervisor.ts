@@ -59,6 +59,20 @@ const platformTimers: TimerPort = {
 	clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout | undefined),
 };
 
+/**
+ * Sends SIGTERM to the command's process group. `detached: true` made the command its group's leader, so a grandchild
+ * that stays in the group (a shell's background job, say) is stopped with it. Windows has no groups: the command alone.
+ */
+function signalGroup(child: ChildProcess | undefined): void {
+	if (!child) return;
+	try {
+		if (child.pid === undefined || process.platform === "win32") child.kill();
+		else process.kill(-child.pid, "SIGTERM");
+	} catch {
+		// reason: the group is already gone (ESRCH); there is nothing left to signal
+	}
+}
+
 /** How the command ended: its exit code (null when killed by a signal or never started), or the deadline that killed it. */
 export type LaunchOutcome = { reason: "exited"; exitCode: number | null } | { reason: "timeout" };
 
@@ -88,7 +102,7 @@ function runToExit(
 		child.on("exit", (code) => settle({ reason: "exited", exitCode: code }));
 		// A hung command would keep this process alive forever, so it is killed at the deadline.
 		deadline = timers.setTimeout(() => {
-			child?.kill();
+			signalGroup(child);
 			settle({ reason: "timeout" });
 		}, deadlineMs);
 	} catch {

@@ -53,8 +53,6 @@ export const USAGE_FILE = "decisions-usage.jsonl";
 /** One generation of history: the file rolls to `.1` past this size. */
 export const USAGE_MAX_BYTES = 1_048_576;
 const DAY_MS = 86_400_000;
-/** A rotation takes milliseconds; a lock older than this belongs to a crashed process. */
-export const LOCK_STALE_MS = 5000;
 
 /** Copies only the declared fields so an over-full caller object cannot leak a body, prompt or key into the file. */
 function sanitize(record: UsageRecord): UsageRecord {
@@ -84,22 +82,18 @@ function fileSize(path: string): number {
 	}
 }
 
-/** Takes the rotation lock, replacing one older than LOCK_STALE_MS (a crashed holder must not wedge rotation). */
+/**
+ * Takes the rotation lock and never replaces one. Unlinking a lock because it looked stale is a check-then-unlink: a
+ * second taker can delete a lock another process has just created. A rotation takes milliseconds, so a lock that
+ * stays put belongs to a crashed holder; rotation then stays off until someone removes `decisions-usage.lock` by hand.
+ */
 function takeLock(lockPath: string): number | undefined {
-	for (let attempt = 0; attempt < 2; attempt++) {
-		try {
-			return openSync(lockPath, "wx", 0o600);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined;
-			try {
-				if (Date.now() - statSync(lockPath).mtimeMs < LOCK_STALE_MS) return undefined;
-				unlinkSync(lockPath);
-			} catch {
-				return undefined;
-			}
-		}
+	try {
+		return openSync(lockPath, "wx", 0o600);
+	} catch {
+		// reason: the lock is held (or the directory is unwritable); the append still lands and the holder rotates
+		return undefined;
 	}
-	return undefined;
 }
 
 /**

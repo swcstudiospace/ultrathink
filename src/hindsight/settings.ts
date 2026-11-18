@@ -33,18 +33,19 @@ export function resolveHindsightKey(
 	env: NodeJS.ProcessEnv,
 ): { key: string; source: HindsightKeySource } | undefined {
 	try {
-		const providers = readStore(storePath ?? defaultStorePath(env)).providers as Record<
-			string,
-			unknown
-		>;
+		const providers = readStore(storePath ?? defaultStorePath(env), { strict: true })
+			.providers as Record<string, unknown>;
 		const credential = providers[PROVIDER] as { kind?: unknown; apiKey?: unknown } | undefined;
 		const stored =
 			credential?.kind === "api_key" && typeof credential.apiKey === "string"
 				? credential.apiKey.trim()
 				: "";
 		if (stored) return { key: stored, source: "store" };
-	} catch {
-		// reason: unreadable store falls back to the environment; the failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
+	} catch (error) {
+		// An unreadable store is named once on stderr; the environment key is used instead.
+		process.stderr.write(
+			`[ultrathink] hindsight: ${error instanceof Error ? error.message : String(error)}; using the environment key\n`,
+		);
 	}
 	for (const name of HINDSIGHT_KEY_ENVS) {
 		const value = env[name]?.trim();
@@ -73,7 +74,7 @@ export function resolveHindsight(
 			return {
 				readiness: {
 					state: "unready",
-					reason: resolved.reason === "no-token" ? "no-token" : resolved.reason,
+					reason: resolved.reason,
 					detail: resolved.detail,
 				},
 			};
@@ -126,20 +127,20 @@ export function hindsightStatusLine(
 	gateway?: GatewayConfig,
 ): string {
 	const { readiness } = resolveHindsight(config, env, { storePath, gateway });
-	if (readiness.state === "ready" && "backend" in readiness) {
-		return `Hindsight: gateway · ${gatewayStatus({ ok: true, gateway: { url: readiness.url, seat: readiness.seat, token: "", tokenSource: readiness.tokenSource, timeoutMs: config.timeoutMs } })}`;
-	}
-	if (
-		readiness.state === "unready" &&
-		serviceBackend(config.backend, env, HINDSIGHT_BACKEND_ENV) === "gateway"
-	) {
+	const gatewayLine = (): string => {
 		const resolved = resolveGateway(
 			gateway ?? { url: "", seat: "lead", timeoutMs: config.timeoutMs },
 			env,
 			{ storePath },
 		);
 		return `Hindsight: gateway · ${gatewayStatus(resolved)}`;
-	}
+	};
+	if (readiness.state === "ready" && "backend" in readiness) return gatewayLine();
+	if (
+		readiness.state === "unready" &&
+		serviceBackend(config.backend, env, HINDSIGHT_BACKEND_ENV) === "gateway"
+	)
+		return gatewayLine();
 	if (readiness.state === "off") {
 		return readiness.reason === "killed"
 			? `Hindsight: off (${HINDSIGHT_KILL_ENV}=0)`

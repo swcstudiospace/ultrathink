@@ -10,13 +10,25 @@
  * unlisted directory that would later read as user-authored. Files are written through a temporary file in the same
  * directory and a rename, so a reader sees the old or the new content, never a mix.
  *
+ * Each mutation runs under the manifest's file lock, so concurrent writers take turns and never drop each other's entries.
+ *
  * Each successful create, update, disable and delete also appends one record to `audit.ndjson` at the store root
  * (see `skill-audit.ts`). A failed append is reported in the result and never undoes the mutation.
  */
 import { randomBytes } from "node:crypto";
-import type { Stats } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import {
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmdirSync,
+	rmSync,
+	type Stats,
+	writeFileSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { withFileLock } from "../claude/atomic.ts";
 import { isRecord } from "../shared.ts";
 import {
 	appendAudit,
@@ -115,7 +127,12 @@ export async function writeGeneratedSkill(
 	provenance: WriteProvenance = {},
 ): Promise<WriteResult> {
 	try {
-		const { action, entry } = await writeSkill(storeDir, skill, nowIso);
+		requireSlug(skill.name);
+		const problem = inputProblem(skill, nowIso);
+		if (problem !== undefined) throw new StoreError("invalid_input", `${problem} is invalid`);
+		const { action, entry } = underManifestLock(storeDir, true, () =>
+			writeSkill(storeDir, skill, nowIso),
+		);
 		const audit = appendAudit(storeDir, {
 			ts: nowIso,
 			action: action === "created" ? "create" : "update",
@@ -135,7 +152,8 @@ export async function setGeneratedStatus(
 	status: GeneratedStatus,
 ): Promise<StatusResult> {
 	try {
-		const entry = await setStatus(storeDir, name, status);
+		requireSlug(name);
+		const entry = underManifestLock(storeDir, false, () => setStatus(storeDir, name, status));
 		const audit = appendAudit(storeDir, {
 			ts: new Date().toISOString(),
 			action: status === "disabled" ? "disable" : "update",
@@ -150,7 +168,8 @@ export async function setGeneratedStatus(
 /** Removes a generated skill: its `SKILL.md`, its directory and its manifest entry. Nothing else is touched. */
 export async function removeGeneratedSkill(storeDir: string, name: string): Promise<RemoveResult> {
 	try {
-		const entry = await removeSkill(storeDir, name);
+		requireSlug(name);
+		const entry = underManifestLock(storeDir, false, () => removeSkill(storeDir, name));
 		const audit = appendAudit(storeDir, {
 			ts: new Date().toISOString(),
 			action: "delete",
@@ -165,23 +184,33 @@ export async function removeGeneratedSkill(storeDir: string, name: string): Prom
 /** The manifest's entries in the order they were written. A missing manifest lists as empty. */
 export async function listGenerated(storeDir: string): Promise<ListResult> {
 	try {
-		return { ok: true, entries: await readManifest(storeDir) };
+		return { ok: true, entries: readManifest(storeDir) };
 	} catch (error) {
 		return failureOf(error);
 	}
 }
 
-async function writeSkill(
+/**
+ * Runs one manifest read-modify-write under the manifest's file lock, so overlapping writers take turns instead of
+ * each dropping the other's entries. The lock is held across the read as well as the write. A lock still held past
+ * the wait throws rather than running the mutation unlocked.
+ */
+function underManifestLock<T>(storeDir: string, createParent: boolean, fn: () => T): T {
+	return withFileLock(join(storeDir, MANIFEST), fn, { createParent, onTimeout: "throw" });
+}
+
+/** Throws invalid_name before any lock or directory is created, so a rejected name writes nothing. */
+function requireSlug(name: string): void {
+	if (!isSlug(name)) throw new StoreError("invalid_name", SLUG_RULE);
+}
+
+function writeSkill(
 	storeDir: string,
 	skill: AutoSkill,
 	nowIso: string,
-): Promise<{ action: WriteAction; entry: GeneratedEntry }> {
-	if (!isSlug(skill.name)) throw new StoreError("invalid_name", SLUG_RULE);
-	const problem = inputProblem(skill, nowIso);
-	if (problem !== undefined) throw new StoreError("invalid_input", `${problem} is invalid`);
-
-	const entries = await readManifest(storeDir);
-	await assertOwnedOrAbsent(storeDir, skill.name, entries);
+): { action: WriteAction; entry: GeneratedEntry } {
+	const entries = readManifest(storeDir);
+	assertOwnedOrAbsent(storeDir, skill.name, entries);
 	const prior = entries.find((entry) => entry.name === skill.name);
 	const entry: GeneratedEntry = {
 		name: skill.name,
@@ -201,60 +230,53 @@ async function writeSkill(
 		signature_hash: skill.signature_hash,
 	};
 
-	await writeManifest(storeDir, [...entries.filter((other) => other.name !== entry.name), entry]);
+	writeManifest(storeDir, [...entries.filter((other) => other.name !== entry.name), entry]);
 	const dir = join(storeDir, skill.name);
-	await mkdir(dir, { recursive: true, mode: 0o700 });
-	await writeAtomic(join(dir, SKILL_FILE), renderSkill(skill, entry));
+	mkdirSync(dir, { recursive: true, mode: 0o700 });
+	writeAtomic(join(dir, SKILL_FILE), renderSkill(skill, entry));
 	return { action: prior === undefined ? "created" : "updated", entry };
 }
 
-async function setStatus(
-	storeDir: string,
-	name: string,
-	status: GeneratedStatus,
-): Promise<GeneratedEntry> {
-	if (!isSlug(name)) throw new StoreError("invalid_name", SLUG_RULE);
+function setStatus(storeDir: string, name: string, status: GeneratedStatus): GeneratedEntry {
 	if (!isStatus(status)) throw new StoreError("invalid_input", "status is invalid");
 
-	const entries = await readManifest(storeDir);
-	await assertOwnedOrAbsent(storeDir, name, entries);
+	const entries = readManifest(storeDir);
+	assertOwnedOrAbsent(storeDir, name, entries);
 	const prior = entries.find((entry) => entry.name === name);
 	if (prior === undefined) throw new StoreError("not_found", "no generated skill with that name");
 
 	const file = join(storeDir, name, SKILL_FILE);
-	await assertRegularFile(file);
-	const updated = withFrontmatterStatus(await readFile(file, "utf8"), status);
+	assertRegularFile(file);
+	const updated = withFrontmatterStatus(readFileSync(file, "utf8"), status);
 	if (updated === undefined) {
 		throw new StoreError("skill_corrupt", "SKILL.md has no status line in its frontmatter");
 	}
 
 	const entry: GeneratedEntry = { ...prior, status };
-	await writeManifest(storeDir, [...entries.filter((other) => other.name !== entry.name), entry]);
-	await writeAtomic(file, updated);
+	writeManifest(storeDir, [...entries.filter((other) => other.name !== entry.name), entry]);
+	writeAtomic(file, updated);
 	return entry;
 }
 
-async function removeSkill(storeDir: string, name: string): Promise<GeneratedEntry> {
-	if (!isSlug(name)) throw new StoreError("invalid_name", SLUG_RULE);
-
-	const entries = await readManifest(storeDir);
-	await assertOwnedOrAbsent(storeDir, name, entries);
+function removeSkill(storeDir: string, name: string): GeneratedEntry {
+	const entries = readManifest(storeDir);
+	assertOwnedOrAbsent(storeDir, name, entries);
 	const removed = entries.find((entry) => entry.name === name);
 	if (removed === undefined) {
 		throw new StoreError("not_found", "no generated skill with that name");
 	}
 
 	const dir = join(storeDir, name);
-	if ((await lstatIfPresent(dir)) !== undefined) {
+	if (lstatIfPresent(dir) !== undefined) {
 		// Only `SKILL.md` is the store's: anything else in the directory was put there by someone else and stays.
-		const children = await readdir(dir, { withFileTypes: true });
+		const children = readdirSync(dir, { withFileTypes: true });
 		if (children.some((child) => child.name !== SKILL_FILE || !child.isFile())) {
 			throw new StoreError("user_authored", "skill directory holds files the store did not write");
 		}
-		await rm(join(dir, SKILL_FILE), { force: true });
-		await rmdir(dir);
+		rmSync(join(dir, SKILL_FILE), { force: true });
+		rmdirSync(dir);
 	}
-	await writeManifest(
+	writeManifest(
 		storeDir,
 		entries.filter((entry) => entry.name !== name),
 	);
@@ -262,11 +284,11 @@ async function removeSkill(storeDir: string, name: string): Promise<GeneratedEnt
 }
 
 /** The manifest's entries. Missing manifest: none. Unreadable, unparseable or off-schema: `manifest_corrupt`, never replaced. */
-async function readManifest(storeDir: string): Promise<GeneratedEntry[]> {
+function readManifest(storeDir: string): GeneratedEntry[] {
 	const path = join(storeDir, MANIFEST);
 	let text: string;
 	try {
-		text = await readFile(path, "utf8");
+		text = readFileSync(path, "utf8");
 	} catch (error) {
 		if (errnoOf(error) === "ENOENT") return [];
 		throw error;
@@ -337,36 +359,36 @@ function parseEntry(raw: unknown): GeneratedEntry | undefined {
 	};
 }
 
-async function writeManifest(storeDir: string, entries: readonly GeneratedEntry[]): Promise<void> {
-	await mkdir(storeDir, { recursive: true, mode: 0o700 });
+function writeManifest(storeDir: string, entries: readonly GeneratedEntry[]): void {
+	mkdirSync(storeDir, { recursive: true, mode: 0o700 });
 	const sorted = [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	const body = `${JSON.stringify({ schema: MANIFEST_SCHEMA, skills: sorted }, null, "\t")}\n`;
-	await writeAtomic(join(storeDir, MANIFEST), body);
+	writeAtomic(join(storeDir, MANIFEST), body);
 }
 
 /** Temp file in the same directory, then rename. The temp file is removed when either step fails. */
-async function writeAtomic(path: string, content: string): Promise<void> {
+function writeAtomic(path: string, content: string): void {
 	const temp = join(
 		dirname(path),
 		`.${basename(path)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`,
 	);
 	let renamed = false;
 	try {
-		await writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: 0o644 });
-		await rename(temp, path);
+		writeFileSync(temp, content, { encoding: "utf8", flag: "wx", mode: 0o644 });
+		renameSync(temp, path);
 		renamed = true;
 	} finally {
-		if (!renamed) await rm(temp, { force: true });
+		if (!renamed) rmSync(temp, { force: true });
 	}
 }
 
 /** Refuses a skill path that is not a plain directory, or a plain directory the manifest does not list. */
-async function assertOwnedOrAbsent(
+function assertOwnedOrAbsent(
 	storeDir: string,
 	name: string,
 	entries: readonly GeneratedEntry[],
-): Promise<void> {
-	const stat = await lstatIfPresent(join(storeDir, name));
+): void {
+	const stat = lstatIfPresent(join(storeDir, name));
 	if (stat === undefined) return;
 	if (!stat.isDirectory())
 		throw new StoreError("unsafe_path", "skill path is not a plain directory");
@@ -375,15 +397,15 @@ async function assertOwnedOrAbsent(
 	}
 }
 
-async function assertRegularFile(path: string): Promise<void> {
-	const stat = await lstatIfPresent(path);
+function assertRegularFile(path: string): void {
+	const stat = lstatIfPresent(path);
 	if (stat === undefined) throw new StoreError("skill_corrupt", "SKILL.md is missing");
 	if (!stat.isFile()) throw new StoreError("unsafe_path", "SKILL.md is not a regular file");
 }
 
-async function lstatIfPresent(path: string): Promise<Stats | undefined> {
+function lstatIfPresent(path: string): Stats | undefined {
 	try {
-		return await lstat(path);
+		return lstatSync(path);
 	} catch (error) {
 		if (errnoOf(error) === "ENOENT") return undefined;
 		throw error;

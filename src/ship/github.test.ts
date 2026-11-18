@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionRecord } from "../claude/state.ts";
+import type { TrackPlan } from "../track/types.ts";
 import { classifyChecks, createGithub } from "./github.ts";
 import type { ReviewThread, ReviewThreads } from "./github.ts";
 import { mergeGate } from "./merge.ts";
@@ -262,6 +263,19 @@ describe("createGithub", () => {
 		).toBe(true);
 	});
 
+	test("a merge that exits 0 but whose state cannot be read is unverified, not refused", () => {
+		const unread = fakeRun((argv) =>
+			argv[2] === "view" ? { exitCode: 1, stderr: "gh: HTTP 502" } : {},
+		);
+		expect(
+			createGithub({ cwd: "/w", run: unread.run }).merge({
+				number: 7,
+				method: "squash",
+				headSha: "x",
+			}),
+		).toEqual({ ok: false, error: "state unverified after merge" });
+	});
+
 	test("a credential-bearing URL in gh stderr is masked in the merge error", () => {
 		const denied = fakeRun((argv) =>
 			argv[2] === "view"
@@ -371,6 +385,16 @@ describe("createGithub", () => {
 			"non-Greptile and deleted authors are dropped",
 			graphql([node({ login: "octocat" }), node({ login: null })]),
 			{ ok: true, threads: [] },
+		],
+		[
+			"a look-alike login is not Greptile",
+			graphql([node({ login: "greptile-fan" })]),
+			{ ok: true, threads: [] },
+		],
+		[
+			"the [bot] login is Greptile, matched case-insensitively",
+			graphql([node({ login: "Greptile-Apps[bot]" })]),
+			{ ok: true, threads: [{ ...thread, author: "Greptile-Apps[bot]" }] },
 		],
 		[
 			"gh failure",
@@ -1294,11 +1318,20 @@ describe("createGithub", () => {
 });
 
 describe("buildPr", () => {
-	const base = {
-		sessionId: "s",
-		at: 1,
-		result: { xml: "", original: "Fix the widget\nmore detail in /root/secret/file.ts", root: "" },
-	} as unknown as SessionRecord;
+	/** A buildPr record. Overrides are typed as Partial<SessionRecord>, so a misspelled or mistyped top-level field fails typecheck. */
+	const makeRecord = (overrides: Partial<SessionRecord> = {}): SessionRecord =>
+		({
+			sessionId: "s",
+			at: 1,
+			result: {
+				xml: "",
+				original: "Fix the widget\nmore detail in /root/secret/file.ts",
+				root: "",
+				source: "llm",
+			},
+			...overrides,
+		}) as SessionRecord;
+	const base = makeRecord();
 
 	test("title from first line of original, sections without assessment", () => {
 		const { title, body } = buildPr(base);
@@ -1311,11 +1344,12 @@ describe("buildPr", () => {
 	});
 
 	test("goal truncated to 72 chars; linked issues, assessment and footer", () => {
-		const record = {
-			...base,
+		const record = makeRecord({
 			graph: { goal: "x".repeat(100), nodes: [] },
-			plan: { graphId: "g-1" },
+			plan: { graphId: "g-1" } as TrackPlan,
 			tracking: {
+				graphId: "g-1",
+				status: "complete",
 				linear: {
 					nodes: {
 						n1: {
@@ -1328,8 +1362,10 @@ describe("buildPr", () => {
 					steps: {},
 				},
 				notion: { taskUrl: "https://notion.so/t", nodes: {}, steps: {} },
+				errors: [],
+				updatedAt: 1,
 			},
-		} as unknown as SessionRecord;
+		});
 		const { title, body } = buildPr(record, {
 			done: true,
 			confidence: 0.9,

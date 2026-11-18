@@ -138,6 +138,20 @@ describe("checkUpliftXml names why a reply was refused (G-7)", () => {
 		});
 	});
 
+	test("a longer tag name with the same prefix does not satisfy a required child", () => {
+		const scopeX = FULL_CHILDREN.replace("<SCOPE>s</SCOPE>", "<SCOPE_X>x</SCOPE>");
+		expect(checkUpliftXml(`<BUILD_PROMPT>${scopeX}</BUILD_PROMPT>`, "o")).toEqual({
+			ok: false,
+			reason: "missing_child",
+			missing: ["SCOPE"],
+		});
+		const scoped = FULL_CHILDREN.replace(
+			"<SCOPE>s</SCOPE>",
+			"<SCOPE_X>x</SCOPE_X><SCOPE>s</SCOPE>",
+		);
+		expect(checkUpliftXml(`<BUILD_PROMPT>${scoped}</BUILD_PROMPT>`, "o").ok).toBe(true);
+	});
+
 	test("a complete reply is accepted with the code-owned ORIGINAL", () => {
 		const checked = checkUpliftXml(fullSpec(), "hello");
 		expect(checked.ok).toBe(true);

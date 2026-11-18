@@ -196,15 +196,16 @@ describe("decide: request", () => {
 	test("a success returns the parsed response, one attempt and a latency from the injected clock", async () => {
 		const r = recordingFetch([JEV(0.97)]);
 		let clock = 1000;
-		const outcome = await run(r.fetch, {
-			now: () => {
-				clock += 10;
-				return clock;
-			},
-		});
+		const outcome = await run(
+			(async (input: string | URL | Request, init?: RequestInit) => {
+				clock += 37; // the request itself takes 37 ms on the injected clock
+				return r.fetch(input, init);
+			}) as typeof fetch,
+			{ now: () => clock },
+		);
 		if (!outcome.ok) throw new Error("expected success");
 		expect(outcome.attempts).toBe(1);
-		expect(outcome.latencyMs).toBeGreaterThan(0);
+		expect(outcome.latencyMs).toBe(37);
 		expect(outcome.response).toEqual({
 			id: "gen-dec-test",
 			model: "typesafe/jev-1.13-20260917",
@@ -774,18 +775,16 @@ describe("decide: retry (D6)", () => {
 		expect(r.calls).toHaveLength(2);
 	});
 
-	test("AC-5.5: a Retry-After that does not fit is replaced by one jittered wait under 500 ms", async () => {
+	test("AC-5.5: a Retry-After that does not fit is replaced by one jittered wait of 250 ms at random 0.5", async () => {
 		const r = recordingFetch([ERR(429, { "Retry-After": "10" }), JEV(0.5)]);
 		const sleeps: number[] = [];
 		const outcome = await run(r.fetch, {
 			now: () => 0,
 			sleep: async (ms) => void sleeps.push(ms),
-			random: Math.random,
+			random: () => 0.5,
 		});
 		expect(outcome).toMatchObject({ ok: true, attempts: 2 });
-		expect(sleeps).toHaveLength(1);
-		expect(sleeps[0]).toBeGreaterThan(0);
-		expect(sleeps[0]).toBeLessThan(500);
+		expect(sleeps).toEqual([250]);
 		expect(r.calls).toHaveLength(2);
 	});
 

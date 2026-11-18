@@ -24,7 +24,7 @@ export interface GreptileRepo {
 }
 
 /** A repository as Greptile lists it; `reviewsEnabled` is absent when Greptile does not say. */
-export type ListedGreptileRepo = GreptileRepo & { reviewsEnabled?: boolean };
+type ListedGreptileRepo = GreptileRepo & { reviewsEnabled?: boolean };
 
 type Obj = Record<string, unknown>;
 
@@ -85,12 +85,18 @@ export function tenantReason(message: string): string | undefined {
 	return `Greptile account has several organizations; set ship.greptileOrganization in ~/.config/ultrathink/config.json${choose}`;
 }
 
-/** Lookup errors mean "not listed", except tenant_required, which throws the ship.greptileOrganization reason. */
+/** What the Greptile repository lookup found: `repo` when Greptile lists it; otherwise `note` says why the CLI path runs. */
+export interface GreptileLookup {
+	repo?: ListedGreptileRepo;
+	note?: string;
+}
+
+/** Lookup errors and unsupported remotes come back as `note`; tenant_required throws the ship.greptileOrganization reason. */
 export async function findGreptileRepo(
 	client: ToolCaller,
 	repo: string,
 	organization?: string,
-): Promise<ListedGreptileRepo | undefined> {
+): Promise<GreptileLookup> {
 	const wanted = repo.toLowerCase();
 	const limit = 100;
 	try {
@@ -110,22 +116,29 @@ export async function findGreptileRepo(
 				const remote = asStr(item?.remote);
 				const defaultBranch = asStr(item?.defaultBranch);
 				if (!item || !name || name.toLowerCase() !== wanted || !defaultBranch) continue;
-				if (remote !== "github" && remote !== "gitlab") return undefined;
+				if (remote !== "github" && remote !== "gitlab") {
+					const shown = redactSecrets(remote ?? "unknown");
+					return {
+						note: `Greptile lists ${name} on remote "${shown}", which PR review does not support`,
+					};
+				}
 				const found: ListedGreptileRepo = { name, remote, defaultBranch };
 				const remoteUrl = asStr(item.remoteUrl);
 				if (remoteUrl) found.remoteUrl = remoteUrl;
 				if (typeof item.reviewsEnabled === "boolean") found.reviewsEnabled = item.reviewsEnabled;
-				return found;
+				return { repo: found };
 			}
-			const total = asNum(result?.total) ?? 0;
-			if (repos.length === 0 || (page + 1) * limit >= total) return undefined;
+			// Without a total, keep paging until a page comes back empty.
+			const total = asNum(result?.total);
+			if (repos.length === 0 || (total !== undefined && (page + 1) * limit >= total)) return {};
 		}
 	} catch (error) {
-		const reason = tenantReason(errorText(error));
+		const message = errorText(error);
+		const reason = tenantReason(message);
 		if (reason) throw new Error(reason);
-		return undefined;
+		return { note: `Greptile repository lookup failed: ${redactSecrets(message).slice(0, 300)}` };
 	}
-	return undefined;
+	return {};
 }
 
 function mapComment(value: unknown): ReviewComment | undefined {
@@ -378,12 +391,19 @@ export async function reviewCli(input: {
 		});
 		const info = parseJson(checked.stdout);
 		// Records may carry full or abbreviated shas; any sha naming another commit means no review for headSha.
-		const matches = [asStr(info?.commit), asStr(info?.headSha)].every(
-			(sha) =>
-				sha === undefined ||
-				sha === input.headSha ||
-				(sha.length >= 7 && (input.headSha.startsWith(sha) || sha.startsWith(input.headSha))),
+		// A parsed record naming no sha cannot be tied to headSha, so it is no review either; an unparsed reply keeps
+		// the exit-code rule below.
+		const shas = [asStr(info?.commit), asStr(info?.headSha)].filter(
+			(sha): sha is string => sha !== undefined,
 		);
+		const matches =
+			info === undefined ||
+			(shas.length > 0 &&
+				shas.every(
+					(sha) =>
+						sha === input.headSha ||
+						(sha.length >= 7 && (input.headSha.startsWith(sha) || sha.startsWith(input.headSha))),
+				));
 		const staleRun = staleRuns.has(asStr(info?.runId) ?? "");
 		const inFlight =
 			matches &&
@@ -471,15 +491,18 @@ export async function runReview(input: {
 		error,
 		at: (input.now ?? Date.now)(),
 	});
+	let lookupNote: string | undefined;
 	if (!input.client) {
 		if (cliNotSetUp(run, input.cwd)) return blocked("cli", GREPTILE_SETUP);
 	} else {
-		let found: ListedGreptileRepo | undefined;
+		let lookup: GreptileLookup;
 		try {
-			found = await findGreptileRepo(input.client, input.repo, organization);
+			lookup = await findGreptileRepo(input.client, input.repo, organization);
 		} catch (error) {
 			return blocked("pr", errorText(error));
 		}
+		const { repo: found, note } = lookup;
+		lookupNote = note;
 		if (found && found.reviewsEnabled !== false) {
 			const { reviewsEnabled: _, ...repo } = found;
 			return reviewPr({
@@ -496,7 +519,7 @@ export async function runReview(input: {
 			});
 		}
 	}
-	return reviewCli({
+	const cli = await reviewCli({
 		run,
 		cwd: input.cwd,
 		base: input.base,
@@ -506,4 +529,7 @@ export async function runReview(input: {
 		...(input.staleReviewIds ? { staleRunIds: input.staleReviewIds } : {}),
 		...(input.restart ? { restart: true } : {}),
 	});
+	// The CLI review stands in for PR review; a lookup problem rides along so the reason is recorded, not dropped.
+	if (!lookupNote) return cli;
+	return { ...cli, error: [lookupNote, cli.error].filter(Boolean).join("; ") };
 }
