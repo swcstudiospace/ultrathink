@@ -19,6 +19,7 @@ export interface TurnPanels {
 	knowledge?: PanelEnvelope;
 	lessons?: PanelEnvelope;
 	skills?: PanelEnvelope;
+	moments?: PanelEnvelope;
 	substrate?: PanelEnvelope;
 }
 

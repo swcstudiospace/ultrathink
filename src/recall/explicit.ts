@@ -17,7 +17,6 @@ import {
 	type RecallRuntimeState,
 	planRecall,
 } from "./engine.ts";
-import type { TurnPanels } from "./turn-panels.ts";
 
 /** Fetchers for the query. An absent fetcher means its source was not fetched, so its audit entry is `no_source`. */
 export interface ExplicitFetchers {
@@ -36,9 +35,12 @@ export interface ExplicitRecallInput {
 	fetch: ExplicitFetchers;
 }
 
+/** The panels one explicit recall returns: the planner's own panels, so every source the planner fires is typed here. */
+type ExplicitPanels = Extract<RecallPlan, { ok: true }>["panels"];
+
 /** An empty query and a switched-off recall are refused before any fetch; a planner refusal is passed through. */
 export type ExplicitRecallResult =
-	| { ok: true; panels: TurnPanels; audit: RecallAuditEntry[]; next: RecallRuntimeState }
+	| { ok: true; panels: ExplicitPanels; audit: RecallAuditEntry[]; next: RecallRuntimeState }
 	| {
 			ok: false;
 			reason: "recall_off" | "empty_query" | Extract<RecallPlan, { ok: false }>["reason"];
