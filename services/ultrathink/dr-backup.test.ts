@@ -18,7 +18,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { type StateDirSpec, hasTool, makeStateDir, runDr } from "./dr-fixtures.ts";
+import {
+	type StateDirSpec,
+	hasTool,
+	makeStateDir,
+	removeFixtureHome,
+	runDr,
+} from "./dr-fixtures.ts";
 
 const SCRIPT = "deploy/ultrathink-backup.sh";
 const AGE_AVAILABLE = hasTool("age") && hasTool("age-keygen");
@@ -85,6 +91,8 @@ function regenerateSums(top: string): void {
 		);
 	writeFileSync(join(top, "SHA256SUMS"), lines.join(""));
 }
+
+afterAll(removeFixtureHome);
 
 // The script calls sha256sum, which the stock macOS runner does not have (it has only shasum), so these cases run on Linux.
 describe.skipIf(process.platform !== "linux")("ultrathink-backup.sh", () => {

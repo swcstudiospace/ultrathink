@@ -20,7 +20,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { hasTool, makeStateDir, ringNames, runDr } from "./dr-fixtures.ts";
+import { hasTool, makeStateDir, removeFixtureHome, ringNames, runDr } from "./dr-fixtures.ts";
 import { formatStamp } from "./store/snapshots.ts";
 import { makeTempDir } from "./test.helpers.ts";
 
@@ -45,6 +45,7 @@ const bases: string[] = [];
 afterAll(() => {
 	for (const dir of bases) rmSync(dir, { recursive: true, force: true });
 });
+afterAll(removeFixtureHome);
 
 interface Fixture {
 	base: string;

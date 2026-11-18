@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { thrownBy } from "../../../src/test.helpers.ts";
 import { TOOL_DEFINITIONS } from "./mcp.ts";
-import { compileSchema, SchemaCompileError, validateAgainst } from "./validate.ts";
+import { compileSchema, matchesType, SchemaCompileError, validateAgainst } from "./validate.ts";
 
 // Pins the runtime enforcement of tool input schemas on tools/call arguments (SPE-17437): which schemas compile, which
 // arguments pass, and the exact path and reason of every refusal, because the reasons travel back to MCP clients.
@@ -486,5 +486,23 @@ describe("compiling schemas", () => {
 				default: 0,
 			}),
 		).not.toThrow();
+	});
+});
+
+describe("matchesType", () => {
+	test("each schema type accepts the JSON values it names and rejects the rest", () => {
+		expect(matchesType("string", "x")).toBe(true);
+		expect(matchesType("string", 0)).toBe(false);
+		expect(matchesType("integer", 0)).toBe(true);
+		expect(matchesType("integer", 1.5)).toBe(false);
+		expect(matchesType("integer", Number.NaN)).toBe(false);
+		expect(matchesType("number", 1.5)).toBe(true);
+		expect(matchesType("number", Number.NaN)).toBe(false);
+		expect(matchesType("number", Number.POSITIVE_INFINITY)).toBe(false);
+		expect(matchesType("boolean", true)).toBe(true);
+		expect(matchesType("null", null)).toBe(true);
+		expect(matchesType("array", [])).toBe(true);
+		expect(matchesType("object", {})).toBe(true);
+		expect(matchesType("object", [])).toBe(false);
 	});
 });

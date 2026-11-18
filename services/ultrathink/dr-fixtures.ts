@@ -109,7 +109,7 @@ function fixtureHome(): string {
 }
 
 /** Removes the scratch HOME if one was created. Idempotent; the next runDr call makes a fresh one. */
-function removeFixtureHome(): void {
+export function removeFixtureHome(): void {
 	if (scratchHome !== undefined) rmSync(scratchHome, { recursive: true, force: true });
 	scratchHome = undefined;
 }

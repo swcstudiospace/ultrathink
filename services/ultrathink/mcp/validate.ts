@@ -38,9 +38,9 @@ export class SchemaCompileError extends Error {
 	}
 }
 
-type SchemaType = "string" | "number" | "integer" | "boolean" | "object" | "array" | "null";
+export type SchemaType = "string" | "number" | "integer" | "boolean" | "object" | "array" | "null";
 
-const SCHEMA_TYPES: readonly SchemaType[] = [
+export const SCHEMA_TYPES: readonly SchemaType[] = [
 	"string",
 	"number",
 	"integer",
@@ -49,7 +49,8 @@ const SCHEMA_TYPES: readonly SchemaType[] = [
 	"array",
 	"null",
 ];
-const SCHEMA_KEYWORDS: readonly string[] = [
+/** The keywords every schema node may carry; anything else is a violation (this catches typos such as `requird`). */
+export const SCHEMA_KEYWORDS: readonly string[] = [
 	"type",
 	"properties",
 	"required",
@@ -92,7 +93,7 @@ interface Node {
 	items: Node | undefined;
 }
 
-function isFiniteNumber(value: unknown): value is number {
+export function isFiniteNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value);
 }
 
@@ -105,7 +106,8 @@ function isPrimitive(value: unknown): value is Primitive {
 	);
 }
 
-function matchesType(type: SchemaType, value: unknown): boolean {
+/** Whether `value` satisfies one schema type. The one definition: tool-definition checks reuse it. */
+export function matchesType(type: SchemaType, value: unknown): boolean {
 	switch (type) {
 		case "string":
 			return typeof value === "string";

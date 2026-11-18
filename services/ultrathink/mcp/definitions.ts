@@ -9,7 +9,15 @@
 
 // Type-only import: mcp.ts and the entry points import this module, a runtime import would be a cycle.
 import type { ToolDefinition } from "./mcp.ts";
-import { compileSchema, SchemaCompileError } from "./validate.ts";
+import {
+	compileSchema,
+	isFiniteNumber,
+	matchesType,
+	SCHEMA_KEYWORDS,
+	SCHEMA_TYPES,
+	SchemaCompileError,
+	type SchemaType,
+} from "./validate.ts";
 import { isRecord } from "../../../src/shared.ts";
 
 export interface ToolDefinitionViolation {
@@ -53,23 +61,6 @@ const SECRET_PATTERNS: readonly { kind: string; pattern: RegExp }[] = [
 ];
 const LONG_TOKEN = /[A-Za-z0-9+/_=-]{32,}/g;
 
-const SCHEMA_TYPES = ["string", "number", "integer", "boolean", "object", "array", "null"];
-// The keywords every schema node may carry; anything else is a violation (this catches typos such as `requird`).
-const SCHEMA_KEYWORDS = [
-	"type",
-	"properties",
-	"required",
-	"additionalProperties",
-	"description",
-	"enum",
-	"default",
-	"minimum",
-	"maximum",
-	"minLength",
-	"maxLength",
-	"items",
-	"title",
-];
 const FORBIDDEN_AT_ROOT = ["anyOf", "oneOf", "allOf", "not", "enum"];
 const FORBIDDEN_ANYWHERE = ["$schema", "$ref", "$defs"];
 const BOUND_KEYS = ["minimum", "maximum", "minLength", "maxLength"];
@@ -77,34 +68,6 @@ const BOUND_PAIRS = [
 	["minimum", "maximum"],
 	["minLength", "maxLength"],
 ] as const;
-
-function isFiniteNumber(value: unknown): value is number {
-	return typeof value === "number" && Number.isFinite(value);
-}
-
-function matchesType(types: readonly string[], value: unknown): boolean {
-	return types.some((type) => {
-		switch (type) {
-			case "string":
-				return typeof value === "string";
-			case "integer":
-				return Number.isInteger(value);
-			case "number":
-				return isFiniteNumber(value);
-			case "boolean":
-				return typeof value === "boolean";
-			case "array":
-				return Array.isArray(value);
-			case "object":
-				return isRecord(value);
-			case "null":
-				return value === null;
-			default:
-				// declaredTypes refuses unknown names before this runs, so an unknown name matches nothing here.
-				return false;
-		}
-	});
-}
 
 function secretKind(text: string): string | undefined {
 	const known = SECRET_PATTERNS.find(({ pattern }) => pattern.test(text));
@@ -143,7 +106,7 @@ function declaredTypes(
 	const list: unknown[] = Array.isArray(node.type) ? node.type : [node.type];
 	if (
 		list.length > 0 &&
-		list.every((type) => typeof type === "string" && SCHEMA_TYPES.includes(type))
+		list.every((type) => typeof type === "string" && SCHEMA_TYPES.includes(type as SchemaType))
 	) {
 		return list as string[];
 	}
@@ -190,7 +153,7 @@ function checkDefault(
 ): void {
 	if (!("default" in node)) return;
 	const value = node.default;
-	if (types && !matchesType(types, value))
+	if (types && !types.some((type) => matchesType(type as SchemaType, value)))
 		add("schema-default", `${path}.default does not match the type`);
 	if (Array.isArray(node.enum) && !node.enum.includes(value))
 		add("schema-default", `${path}.default is not in the enum`);
@@ -232,7 +195,10 @@ function checkNode(node: unknown, path: string, isRoot: boolean, add: Report): v
 		const values = node.enum;
 		if (!Array.isArray(values) || values.length === 0)
 			add("schema-enum", `${path}.enum must be a non-empty array`);
-		else if (types && !values.every((value) => matchesType(types, value))) {
+		else if (
+			types &&
+			!values.every((value) => types.some((type) => matchesType(type as SchemaType, value)))
+		) {
 			add("schema-enum", `${path}.enum has a member that does not match the type`);
 		}
 	}
