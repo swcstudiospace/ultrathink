@@ -94,7 +94,7 @@ export type TimerPort = {
 };
 
 /** A platform timer handle. `unref` exists on Node and Bun timers; injected handles may omit it. */
-export type TimerHandle = { unref?: () => unknown };
+type TimerHandle = { unref?: () => unknown };
 
 /** Timer seam: one-shot and repeating timers. `clear*` takes any handle the seam returned. */
 export type TimerSeam = {
