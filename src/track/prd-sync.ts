@@ -532,9 +532,16 @@ interface Ctx {
 	refused: Partial<Record<TrackerName, Failure>>;
 }
 
+/** A ledger as read: its entries by key; `foreign` marks a file this build does not read (another version). */
+interface LedgerRead {
+	entries: Map<string, LedgerEntry>;
+	foreign: boolean;
+}
+
 /** The ledger file's entries by key: a missing file is empty; an unreadable one is logged and read as empty. */
-function readLedger(ledgerPath: string, log: (message: string) => void): Map<string, LedgerEntry> {
+function readLedger(ledgerPath: string, log: (message: string) => void): LedgerRead {
 	const entries = new Map<string, LedgerEntry>();
+	let foreign = false;
 	try {
 		const parsed = asRecord(JSON.parse(readFileSync(ledgerPath, "utf8")));
 		if (parsed?.version === 1 && Array.isArray(parsed.entries)) {
@@ -542,13 +549,16 @@ function readLedger(ledgerPath: string, log: (message: string) => void): Map<str
 				const entry = parseEntry(raw);
 				if (entry) entries.set(entry.key, entry);
 			}
+		} else {
+			foreign = true;
+			log(`prd-sync: ledger is not a version 1 ledger, not overwriting it: ${ledgerPath}`);
 		}
 	} catch (error) {
 		if (asRecord(error)?.code !== "ENOENT") {
 			log(`prd-sync: ledger unreadable, starting empty: ${shortText(error)}`);
 		}
 	}
-	return entries;
+	return { entries, foreign };
 }
 
 /** Records that this sync changed `key`: its local copy, and the `tracker` state when one is given. */
@@ -590,7 +600,8 @@ function persist(ctx: Ctx): void {
 	withFileLock(
 		ctx.ledgerPath,
 		() => {
-			const entries = readLedger(ctx.ledgerPath, ctx.log);
+			const { entries, foreign } = readLedger(ctx.ledgerPath, ctx.log);
+			if (foreign) throw new Error("prd-sync: ledger is not version 1; refusing to overwrite it");
 			for (const [key, trackers] of ctx.dirty) {
 				const ours = ctx.entries.get(key);
 				if (ours) entries.set(key, mergeEntry(entries.get(key), ours, trackers));
@@ -616,7 +627,7 @@ function makeCtx(deps: SyncDeps): Ctx {
 		notionTools: { ...DEFAULT_NOTION_TOOLS, ...deps.notionTools },
 		root,
 		ledgerPath,
-		entries: readLedger(ledgerPath, log),
+		entries: readLedger(ledgerPath, log).entries,
 		dirty: new Map(),
 		now: deps.now ?? Date.now,
 		log,
@@ -828,6 +839,15 @@ async function writeLinear(
 			? region
 			: `${trimmed}\n\n${region}`;
 	await callTracker(ctx, caller, counter, "save_issue", { id: issueId, description: next });
+	// Linear has no revision check: another writer can replace the description after it was read or saved.
+	// Only a readback that still holds this region is recorded as synced.
+	const readback = asRecord(
+		await callTracker(ctx, caller, counter, "get_issue", { id: issueId, fields: ["description"] }),
+	);
+	const stored = readback?.description;
+	if (typeof stored !== "string" || !stored.includes(region)) {
+		throw new Error("linear save_issue: PRD region missing from the description after the write");
+	}
 	return { outcome: found ? "updated" : "created", ...(url === undefined ? {} : { url }) };
 }
 
