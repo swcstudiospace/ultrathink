@@ -262,7 +262,7 @@ export async function evaluateFlowOutput(input: FlowEvalInput): Promise<FlowReco
 			fetch: input.fetch,
 			now,
 			signal: input.signal,
-			timeoutMs: 3000,
+			timeoutMs: (input.config ?? DEFAULT_DECISIONS_CONFIG).timeoutMs,
 			onAttempt: usageListener(input.stateDir, {
 				point: "flow",
 				model: request.model,
