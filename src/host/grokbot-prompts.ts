@@ -13,6 +13,7 @@ import type { TrackingRefs } from "../track/types.ts";
 import { escapeXml } from "../uplift/xml.ts";
 import { stripTrackingXml } from "../track/render.ts";
 import { MAX_STEPS, MIN_STEPS } from "../think/types.ts";
+import { hasSecretShape } from "../redact.ts";
 
 const MAX_DESK_RULES = 10;
 
@@ -81,7 +82,11 @@ export function buildCloudPrompt(record: SessionRecord, dispatch: UnitDispatch):
 	const tracking: TrackingRefs | undefined = record.tracking;
 	const steps = nodeStepTitles(node);
 	const rawSteps = splitRationaleSteps(node.thinking ?? "");
-	const rules = (dispatch.rules ?? DEFAULT_DESK_RULES).slice(0, MAX_DESK_RULES);
+	const rules = dispatch.rules ?? DEFAULT_DESK_RULES;
+	if (rules.length > MAX_DESK_RULES)
+		throw new Error(
+			`DESK_RULES must have 1-${MAX_DESK_RULES} rules (got ${rules.length}); trim the unit's rules`,
+		);
 	const issue = tracking?.linear.nodes[node.id];
 	const notion = tracking?.notion.nodes[node.id];
 	const workflow = workflowOf(record);
@@ -206,14 +211,6 @@ export function wellFormed(xml: string): string[] {
 	return errors;
 }
 
-const SECRET_PATTERNS = [
-	/sk-or-[A-Za-z0-9]{8,}/,
-	/gh[pousr]_[A-Za-z0-9]{20,}/,
-	/-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-	/lin_api_[A-Za-z0-9]{8,}/,
-	/SWARM_(?:ED25519|SIGNING)_KEY\s*=\s*\S{8,}/,
-];
-
 export function validateCloudPrompt(
 	xml: string,
 	dispatch: UnitDispatch,
@@ -247,7 +244,7 @@ export function validateCloudPrompt(
 	const generated = xml.replace(/<ORIGINAL>[\s\S]*?<\/ORIGINAL>/g, "");
 	if (/\{\{|\bTODO\b|\bTBD\b|lorem ipsum/i.test(generated))
 		errors.push("template placeholder text found");
-	for (const pattern of SECRET_PATTERNS)
-		if (pattern.test(xml)) errors.push(`secret-like string matched ${pattern.source}`);
+	if (hasSecretShape(xml))
+		errors.push("secret-like string found (matches a shared redaction pattern)");
 	return { ok: errors.length === 0, errors, chars: xml.length };
 }
