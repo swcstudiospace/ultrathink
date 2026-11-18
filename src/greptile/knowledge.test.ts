@@ -487,6 +487,33 @@ describe("createKnowledgeReader", () => {
 		});
 	});
 
+	test("a lookup records its routing query and scope: one line, secrets masked, capped", async () => {
+		const fake = fakeClient(happyHandlers());
+		const topic = `${SHIP_TOPIC}\nAPI_KEY=fixture-secret-value-123\n${"ship gate ".repeat(80)}`;
+		const { lookup } = await createKnowledgeReader({
+			client: () => fake.client,
+			organization: "acme-org",
+			maxDocs: 3,
+		})
+			.start({ repo: "acme/widgets" })
+			.read(topic);
+		expect(lookup.query?.text).not.toContain("fixture-secret-value-123");
+		expect(lookup.query?.text).not.toContain("\n");
+		expect(lookup.query?.text.length).toBeLessThanOrEqual(400);
+		expect(lookup.query?.truncated).toBe(true);
+		expect(lookup.query?.chars).toBe(topic.length);
+		expect(lookup.filters).toEqual({ organization: true, maxDocs: 3 });
+	});
+
+	test("a short query is recorded whole, and an unset organization is recorded as not sent", async () => {
+		const fake = fakeClient(happyHandlers());
+		const { lookup } = await createKnowledgeReader({ client: () => fake.client, maxDocs: 2 })
+			.start({ repo: "acme/widgets" })
+			.read(SHIP_TOPIC);
+		expect(lookup.query).toEqual({ text: SHIP_TOPIC, chars: SHIP_TOPIC.length, truncated: false });
+		expect(lookup.filters).toEqual({ organization: false, maxDocs: 2 });
+	});
+
 	describe("circuit breaker", () => {
 		test("two error outcomes open it; the third call makes no client call and returns breaker_open", async () => {
 			const fake = fakeClient({

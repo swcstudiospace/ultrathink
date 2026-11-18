@@ -77,4 +77,8 @@ export interface KnowledgeLookup {
 	settled?: number;
 	/** Stage ladder of this lookup, in run order. */
 	stages?: KnowledgeStage[];
+	/** The routing query this lookup matched against: one line, secrets masked, capped; `chars` is its raw length. */
+	query?: { text: string; chars: number; truncated: boolean };
+	/** The scope the lookup ran under: whether an organization was sent, and the document cap. */
+	filters?: { organization: boolean; maxDocs: number };
 }

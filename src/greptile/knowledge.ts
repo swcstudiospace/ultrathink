@@ -9,6 +9,7 @@
 import type { UltrathinkConfig } from "../config.ts";
 import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
+import { redactSecrets } from "../redact.ts";
 import { tenantReason } from "../ship/greptile.ts";
 import { asObj } from "../shared.ts";
 import type { ToolCaller } from "../track/create.ts";
@@ -90,6 +91,19 @@ const errorMessage = (error: unknown): string =>
 function oneLine(text: string, max: number): string {
 	const line = text.replace(/\s+/g, " ").trim();
 	return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/** Longest routing query the lookup record keeps. */
+const KNOWLEDGE_QUERY_CHARS = 400;
+
+/** The routing query for the record: one line, secrets masked, capped. `chars` is the raw length. */
+function queryRecord(topic: string): NonNullable<KnowledgeLookup["query"]> {
+	const line = redactSecrets(topic).replace(/\s+/g, " ").trim();
+	return {
+		text: oneLine(line, KNOWLEDGE_QUERY_CHARS),
+		chars: topic.length,
+		truncated: line.length > KNOWLEDGE_QUERY_CHARS,
+	};
 }
 
 /** A bounded identifier from a payload, or undefined. */
@@ -617,6 +631,8 @@ export function createKnowledgeReader(opts: {
 						lookup: {
 							...(repo ? { repo } : {}),
 							...lookup,
+							query: queryRecord(topic),
+							filters: { organization: org.organization !== undefined, maxDocs },
 							stages: [...log.stages],
 							ms: Math.max(0, now() - startedAt),
 						},
