@@ -44,7 +44,8 @@ export interface SessionSummary {
  * lookup never reaches it, and an owner sees every session. A session that names no principal (a job file from before
  * principals, a journal whose first run died before it was stamped, one seeded outside the service) belongs to nobody: an
  * owner sees it, and so does a caller with no principal (stdio), but no other principal does.
- * No caller at all is the stdio and legacy path, and nothing is scoped.
+ * With no request context (stdio, in-process) the caller is LOCAL_OWNER and sees every session.
+ * A request context without an admission sees no session.
  */
 export interface SessionCaller {
 	principal: string;

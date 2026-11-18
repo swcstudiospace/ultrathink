@@ -289,7 +289,7 @@ describe("phase102 tracer", () => {
 				address: PUBLIC,
 				family: 4,
 				hostname: "client.example",
-				authority: "client.example:443",
+				authority: "client.example",
 				port: 443,
 				path: "/meta.json",
 			});
@@ -900,7 +900,9 @@ describe("phase102 boundaries — B02 encodings and parsed literals", () => {
 			"https://",
 			"",
 			"not a url",
+			// reason: deliberately non-string input (null) that the guard must refuse as INVALID_TARGET without throwing.
 			null as unknown as string,
+			// reason: deliberately non-string input (the number 42) that the guard must refuse as INVALID_TARGET without throwing.
 			42 as unknown as string,
 		];
 		for (const target of malformed)
@@ -1042,6 +1044,7 @@ describe("phase102 boundaries — B03 DNS completeness", () => {
 			expect(memory.requests).toHaveLength(0);
 		}
 		const nonArray = new MemoryPrimitives();
+		// reason: deliberately a string where an address array is expected; the guard must answer DNS_FAILURE.
 		nonArray.v4 = PUBLIC as unknown as readonly string[];
 		expect(await createOutboundFetchGuard(POLICY, nonArray.deps)(URL_ID)).toEqual({
 			ok: false,
@@ -1245,6 +1248,24 @@ describe("phase102 boundaries — B04 pin, identity and target shape", () => {
 		await defaulted.cleanup();
 		await pendingDefault;
 	});
+
+	test("B04 Host header is built from the normalised hostname and port: default port omitted, IPv6 bracketed", async () => {
+		const cases: [string, string][] = [
+			["https://client.example:0443/x", "client.example"],
+			["https://client.example:/x", "client.example"],
+			["https://client.example:443/x", "client.example"],
+			["https://client.example:8443/", "client.example:8443"],
+			["https://[2606:4700:4700::1111]:8443/", "[2606:4700:4700::1111]:8443"],
+		];
+		for (const [url, authority] of cases) {
+			const memory = new MemoryPrimitives();
+			const pending = createOutboundFetchGuard(POLICY, memory.deps)(url);
+			await pump();
+			expect(memory.request().target).toMatchObject({ authority });
+			await memory.cleanup();
+			await pending;
+		}
+	});
 });
 
 describe("phase102 boundaries — B05 status and empty body", () => {
@@ -1300,6 +1321,7 @@ describe("phase102 boundaries — B05 status and empty body", () => {
 			memory,
 			createOutboundFetchGuard(POLICY, memory.deps),
 		);
+		// reason: deliberately omits the boolean completion flag; the reader must treat the body as INVALID_RESPONSE.
 		request.events.end(undefined as unknown as boolean);
 		expect(await pending).toEqual({ ok: false, code: "INVALID_RESPONSE" });
 		await memory.cleanup();
@@ -2206,6 +2228,7 @@ describe("phase102 boundaries — B10 terminal races", () => {
 
 	test("B10 terminal branches leak no timers or caller listeners", async () => {
 		const listeners = new Set<() => void>();
+		// reason: partial AbortSignal test double exposing only aborted and the listener methods the guard uses.
 		const callerSignal = {
 			aborted: false,
 			addEventListener: (_type: string, listener: () => void) => {

@@ -40,6 +40,11 @@ async function main(): Promise<number> {
 		stdout: "inherit",
 		stderr: "inherit",
 	});
+	// Forward the signals a caller can send, so the real binary never outlives the slot it was counted against. SIGKILL
+	// cannot be caught, so a hard kill of the shim still leaves the child running.
+	for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+		process.on(sig, () => child.kill(sig));
+	}
 	return (await child.exited) ?? 1;
 }
 

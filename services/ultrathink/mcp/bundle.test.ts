@@ -171,11 +171,19 @@ describe("plugin bundle manifest and connector", () => {
 		expect(read("README.md")).toContain("ultrathink-connector-<version>.zip");
 	});
 
-	const canBuild = Bun.which("zip") !== null || Bun.which("python3") !== null;
-	const canList = Bun.which("unzip") !== null || Bun.which("python3") !== null;
-	test.skipIf(!canBuild || !canList)(
+	// On CI a missing tool fails the test by name; a local run without one reports the test as skipped.
+	const requireTools = process.env.CI !== undefined;
+	const missingBuildTools = [
+		Bun.which("zip") === null && Bun.which("python3") === null ? "zip or python3 (to build)" : null,
+		Bun.which("unzip") === null && Bun.which("python3") === null
+			? "unzip or python3 (to list)"
+			: null,
+	].filter((tool): tool is string => tool !== null);
+	test.skipIf(!requireTools && missingBuildTools.length > 0)(
 		"running package.sh packs exactly the allowlist, whatever else sits in the working tree (skipped without zip or python3 to build, or unzip or python3 to list)",
 		async () => {
+			if (missingBuildTools.length > 0)
+				throw new Error(`package.sh test cannot run without ${missingBuildTools.join(" and ")}`);
 			const copy = mkdtempSync(join(tmpdir(), "ut-bundle-"));
 			try {
 				cpSync(BUNDLE, copy, { recursive: true, filter: (source) => basename(source) !== "dist" });
@@ -250,11 +258,12 @@ describe("plugin bundle manifest and connector", () => {
 		"python3",
 	];
 	const noZipPaths = noZipTools.map((tool) => [tool, Bun.which(tool)] as const);
-	const canRunWithoutZip =
-		noZipPaths.every(([, found]) => found !== null) && Bun.which("python3") !== null;
-	test.skipIf(!canRunWithoutZip)(
+	const missingNoZip = noZipPaths.filter(([, found]) => found === null).map(([tool]) => tool);
+	test.skipIf(!requireTools && missingNoZip.length > 0)(
 		"package.sh without zip(1) still keeps the .claude-plugin/, commands/ and skills/ prefixes (skipped without python3 or the POSIX tools it calls)",
 		async () => {
+			if (missingNoZip.length > 0)
+				throw new Error(`package.sh without zip(1) cannot run: missing ${missingNoZip.join(", ")}`);
 			const copy = mkdtempSync(join(tmpdir(), "ut-bundle-nozip-"));
 			const tools = mkdtempSync(join(tmpdir(), "ut-bundle-tools-"));
 			try {

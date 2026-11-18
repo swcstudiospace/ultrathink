@@ -13,6 +13,9 @@ import {
 	ArrayValidator,
 	validateRequestBody,
 	commonValidators,
+	ValidationException,
+	type ValidationResult,
+	type Validator,
 } from "./validation.ts";
 
 describe("Validation", () => {
@@ -116,6 +119,13 @@ describe("Validation", () => {
 			const validator = new UrlValidator();
 			expect(validator.validate("http://localhost:3000").valid).toBe(false);
 		});
+
+		test("rejects http://[::1]/ unless allowLocalhost", () => {
+			expect(new UrlValidator().validate("http://[::1]/").valid).toBe(false);
+			expect(new UrlValidator().validate("http://127.0.0.2/").valid).toBe(false);
+			const local = new UrlValidator({ allowLocalhost: true });
+			expect(local.validate("http://[::1]/").valid).toBe(true);
+		});
 	});
 
 	describe("UuidValidator", () => {
@@ -166,6 +176,13 @@ describe("Validation", () => {
 			const result = validator.validate({ name: "Ada", extra: 1 });
 			expect(result.valid).toBe(true);
 			expect(result.value).toEqual({ name: "Ada", extra: 1 });
+		});
+
+		test("strips unknown fields from the value unless allowExtraKeys is set", () => {
+			const validator = new ObjectValidator({ a: new StringValidator() });
+			const result = validator.validate({ a: "x", b: 1 });
+			expect(result.valid).toBe(true);
+			expect(result.value).toEqual({ a: "x" });
 		});
 	});
 
@@ -297,17 +314,26 @@ describe("Validation", () => {
 			expect(validateOrThrow("hello", validator)).toBe("hello");
 		});
 
-		test("throws ValidationException on invalid", () => {
+		test("throws ValidationException on invalid, carrying the errors", () => {
 			const validator = new StringValidator({ minLength: 5 });
-			expect(() => validateOrThrow("hi", validator)).toThrow();
+			expect(() => validateOrThrow("hi", validator)).toThrow(ValidationException);
 			try {
 				validateOrThrow("hi", validator);
+				throw new Error("expected validateOrThrow to throw");
 			} catch (e: unknown) {
-				expect(e).toBeInstanceOf(Error);
-				if (e instanceof Error) {
+				expect(e).toBeInstanceOf(ValidationException);
+				if (e instanceof ValidationException) {
 					expect(e.name).toBe("ValidationException");
+					expect(e.errors).toMatchObject([{ code: "TOO_SHORT" }]);
 				}
 			}
+		});
+
+		test("throws when a valid result carries no value", () => {
+			const validator: Validator<string> = {
+				validate: () => ({ valid: true, errors: [] }) as unknown as ValidationResult<string>,
+			};
+			expect(() => validateOrThrow("hi", validator)).toThrow(ValidationException);
 		});
 	});
 });

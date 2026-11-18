@@ -106,14 +106,17 @@ function realSetTimer(run: () => void, intervalMs: number): object {
 	return timer;
 }
 
-/** Open directory scans, kept between sweeps: each sweep resumes where the previous one stopped, so no entry is re-read. */
-const scans = new Map<string, Dir>();
+/**
+ * Open directory scans, kept between sweeps: each sweep resumes where the previous one stopped, so no entry is re-read.
+ * A scan remembers the device and inode it was opened on, so a directory replaced since then is scanned afresh.
+ */
+const scans = new Map<string, { handle: Dir; dev: number; ino: number }>();
 
 function closeScan(dir: string): void {
-	const handle = scans.get(dir);
+	const scan = scans.get(dir);
 	scans.delete(dir);
 	try {
-		handle?.closeSync();
+		scan?.handle.closeSync();
 	} catch {
 		// reason: Nothing left to release.
 	}
@@ -127,10 +130,16 @@ function closeScan(dir: string): void {
 function listNames(dir: string, max: number): string[] | undefined {
 	const names: string[] = [];
 	try {
-		const handle = scans.get(dir) ?? opendirSync(dir);
-		scans.set(dir, handle);
+		const { dev, ino } = lstatSync(dir);
+		let scan = scans.get(dir);
+		if (scan !== undefined && (scan.dev !== dev || scan.ino !== ino)) {
+			closeScan(dir);
+			scan = undefined;
+		}
+		scan ??= { handle: opendirSync(dir), dev, ino };
+		scans.set(dir, scan);
 		while (names.length < max) {
-			const entry = handle.readSync();
+			const entry = scan.handle.readSync();
 			if (entry === null) {
 				closeScan(dir);
 				break;
@@ -146,14 +155,22 @@ function listNames(dir: string, max: number): string[] | undefined {
 
 type Kind = "file" | "directory" | "other" | "missing";
 
-/** `lstat` of a path: a symlink is reported as "other", never followed. */
-function kindOf(path: string): { kind: Kind; mtime: number; size: number } {
+/** `lstat` of a path: a symlink is reported as "other", never followed. `dev` and `ino` name the entry itself. */
+interface Entry {
+	kind: Kind;
+	mtime: number;
+	size: number;
+	dev: number;
+	ino: number;
+}
+
+function kindOf(path: string): Entry {
 	try {
 		const stat = lstatSync(path);
 		const kind: Kind = stat.isFile() ? "file" : stat.isDirectory() ? "directory" : "other";
-		return { kind, mtime: Math.trunc(stat.mtimeMs), size: stat.size };
+		return { kind, mtime: Math.trunc(stat.mtimeMs), size: stat.size, dev: stat.dev, ino: stat.ino };
 	} catch {
-		return { kind: "missing", mtime: 0, size: 0 };
+		return { kind: "missing", mtime: 0, size: 0, dev: 0, ino: 0 };
 	}
 }
 
@@ -318,6 +335,12 @@ function sweepJournals(stateDir: string, walk: Walk): void {
 		}
 		if (time >= walk.cutoff) {
 			tally.kept += 1;
+			continue;
+		}
+		// The age decision was made on the entry seen above; a directory swapped in since then is not that one and stays.
+		const current = kindOf(dir);
+		if (current.kind !== "directory" || current.dev !== entry.dev || current.ino !== entry.ino) {
+			tally.skipped += 1;
 			continue;
 		}
 		try {

@@ -492,6 +492,33 @@ describe("asCompleteSimple", () => {
 		expect(provider.byStage("uplift")).toHaveLength(1);
 	});
 
+	test("stub assistant message satisfies AssistantMessage with zeroed usage", async () => {
+		const provider = createScriptedProvider([]);
+		const complete = asCompleteSimple(provider);
+
+		const message = await complete(
+			{} as never,
+			context(upliftPayload("pl-1-000000")) as never,
+			undefined,
+		);
+
+		expect(message).toMatchObject({
+			role: "assistant",
+			api: "chaos",
+			provider: "chaos",
+			model: "pipeline",
+			stopReason: "stop",
+		});
+		expect(message.usage).toEqual({
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		});
+	});
+
 	test("a scripted failure rejects with its status and reports the Retry-After header", async () => {
 		const provider = createScriptedProvider([
 			{ stage: "fill", effect: { kind: "error", status: 429, retryAfterSec: 3 } },

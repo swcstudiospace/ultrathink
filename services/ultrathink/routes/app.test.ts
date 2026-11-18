@@ -1574,7 +1574,7 @@ describe("readiness and metrics endpoints", () => {
 		for (const peer of ["203.0.113.5", "10.0.0.1"]) {
 			expect((await h.app.handle(new Request(`${ORIGIN}/metrics`), peer)).status).toBe(404);
 		}
-		for (const header of ["X-Forwarded-For", "X-Real-IP"]) {
+		for (const header of ["X-Forwarded-For", "X-Real-IP", "Forwarded"]) {
 			const proxied = await h.app.handle(
 				new Request(`${ORIGIN}/metrics`, { headers: { [header]: "203.0.113.5" } }),
 				PEER,

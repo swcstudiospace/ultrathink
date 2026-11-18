@@ -31,10 +31,11 @@
  * Approval proofs are `<kid>.<mac>` and verify with the ring key named by the
  * key id, so consents issued before a rotation survive it.
  *
- * Request limits (fixed one-minute windows sharing one bounded table, checked
- * in this order): 120 per client IP, 60 per principal (an opaque id the router
- * derives, e.g. `bearer:<sha256 prefix>` or `key:connector`), and 60 per owner
- * unless the caller passes `ownerLimit`.
+ * Request limits (fixed one-minute windows, checked in this order): 120 per
+ * client IP, 60 per principal (an opaque id the router derives, e.g.
+ * `bearer:<sha256 prefix>` or `key:connector`), and 60 per owner unless the
+ * caller passes `ownerLimit`. Each kind has its own bounded table, so churn in
+ * one cannot refuse keys of another.
  */
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -66,6 +67,13 @@ export interface ApprovalProof {
 /** Which window refused a request. */
 type RequestLimitScope = "ip" | "principal" | "owner";
 
+/**
+ * Error model. Values the router supplies (`clientIp`, `ownerId`, `principal`,
+ * `ownerLimit`, the proof given to `signApproval`) are invariants: a malformed
+ * one throws. Values a client supplies (password, cookie, approval signature)
+ * are refused instead: login returns `{ ok: false, reason: "invalid" }`,
+ * sessionFor returns null and verifyApproval returns false.
+ */
 export interface Auth {
 	login(input: {
 		password: string;
@@ -183,9 +191,10 @@ interface Hit {
 }
 
 /**
- * Fixed-window counter with a hard cap on tracked keys. When the table is full
- * and no expired window can be reclaimed, a new key is refused (hit returns null)
- * so that churning keys cannot evict live windows and reset a limit.
+ * Fixed-window counter with a hard cap on tracked keys. When the table is full,
+ * a new key is refused (hit returns null), so churning keys cannot evict live
+ * windows and reset a limit. Expired windows are reclaimed by pruneIfDue, at most
+ * once per PRUNE_INTERVAL_MS, so a full table is not rescanned on every call.
  */
 class FixedWindowLimiter {
 	private readonly windows = new Map<string, Window>();
@@ -203,7 +212,6 @@ class FixedWindowLimiter {
 		this.pruneIfDue(t);
 		let window = this.live(key, t);
 		if (!window) {
-			if (this.windows.size >= this.maxKeys) this.prune(t);
 			if (this.windows.size >= this.maxKeys) return null;
 			window = { count: 0, resetAt: t + windowMs };
 			this.windows.set(key, window);
@@ -267,29 +275,37 @@ function scaledLimit(base: number, factor: number): number {
 	return Math.max(1, Math.floor(base * factor));
 }
 
+/** Verify-only hash that equalises login timing for a malformed stored hash. Created once, with the async API, on first use. */
+let dummyHashPromise: Promise<string> | undefined;
+function dummyHash(): Promise<string> {
+	dummyHashPromise ??= Bun.password.hash(randomBytes(32).toString("base64url"));
+	return dummyHashPromise;
+}
+
 export function createAuth(options: AuthOptions): Auth {
 	const { ownerPasswordHash, sessionSecret, cookieSecure } = options;
 	const now = options.now ?? (() => Date.now());
 	const secretsByKid = buildKeyRing(sessionSecret, options.previousSessionSecrets ?? []);
 	const signingKid = keyIdOf(sessionSecret);
 	const cookieName = sessionCookieName(cookieSecure);
-	const dummyHash = Bun.password.hashSync(randomBytes(32).toString("base64url"));
 	const loginsByIp = new FixedWindowLimiter(now, MAX_TRACKED_KEYS);
 	const ownerFailures = new FixedWindowLimiter(now, MAX_TRACKED_KEYS);
-	const requests = new FixedWindowLimiter(now, MAX_TRACKED_KEYS);
+	const ipRequests = new FixedWindowLimiter(now, MAX_TRACKED_KEYS);
+	const principalRequests = new FixedWindowLimiter(now, MAX_TRACKED_KEYS);
+	const ownerRequests = new FixedWindowLimiter(now, MAX_TRACKED_KEYS);
 	const approvalAttempts = new FixedWindowLimiter(now, MAX_TRACKED_KEYS);
 
 	// Always performs one Argon2/bcrypt verify so a malformed stored hash
 	// takes the same time as a well-formed one.
 	async function passwordMatches(password: string): Promise<boolean> {
 		if (!HASH_FORMAT.test(ownerPasswordHash)) {
-			await Bun.password.verify(password, dummyHash);
+			await Bun.password.verify(password, await dummyHash());
 			return false;
 		}
 		try {
 			return await Bun.password.verify(password, ownerPasswordHash);
 		} catch {
-			await Bun.password.verify(password, dummyHash);
+			await Bun.password.verify(password, await dummyHash());
 			return false;
 		}
 	}
@@ -304,9 +320,7 @@ export function createAuth(options: AuthOptions): Auth {
 
 	function approvalMac(secret: string, proof: ApprovalProof): string | null {
 		const times = [proof.issuedAt, proof.expiresAt, proof.refreshedAt];
-		const timesOk = times.every(
-			(value) => Number.isSafeInteger(value) && value >= 0 && value <= 10_000_000_000_000_000,
-		);
+		const timesOk = times.every((value) => Number.isSafeInteger(value) && value >= 0);
 		if (!APPROVAL_TOKEN.test(proof.subject) || !APPROVAL_TOKEN.test(proof.nonce) || !timesOk)
 			return null;
 		if (proof.expiresAt < proof.issuedAt || proof.refreshedAt < proof.issuedAt) return null;
@@ -335,19 +349,41 @@ export function createAuth(options: AuthOptions): Auth {
 		return attributes.join("; ");
 	}
 
-	function readCookie(req: Request): string | null {
+	/** Every value of the session cookie, in header order. A stray copy may precede the real one. */
+	function readCookies(req: Request): string[] {
 		const header = req.headers.get("cookie");
-		if (!header) return null;
+		if (!header) return [];
 		if (header.length > MAX_COOKIE_HEADER_CHARS) {
 			refused("session", "cookie", "TOO_LONG");
-			return null;
+			return [];
 		}
+		const values: string[] = [];
 		for (const part of header.split(";")) {
 			const eq = part.indexOf("=");
 			if (eq < 0) continue;
-			if (part.slice(0, eq).trim() === cookieName) return part.slice(eq + 1).trim();
+			if (part.slice(0, eq).trim() === cookieName) values.push(part.slice(eq + 1).trim());
 		}
-		return null;
+		return values;
+	}
+
+	/** Whether a session cookie value is `<kid>.<expiresAt>.<mac>`, signed by a ring key and unexpired. */
+	function isValidSession(value: string): boolean {
+		if (!value) return false;
+		// Exactly `<kid>.<expiresAt>.<mac>`; the pre-ring two-part layout is refused.
+		const shape = SESSION_VALUE.validate(value);
+		if (!shape.valid) {
+			refused("session", "cookie", shape.errors[0]?.code ?? "INVALID");
+			return false;
+		}
+		const [kid = "", expiresRaw = "", mac = ""] = value.split(".");
+		const secret = ringSecret(kid);
+		if (secret === null) return false;
+		const expiresAt = Number(expiresRaw);
+		if (!Number.isSafeInteger(expiresAt) || expiresAt <= now()) return false;
+
+		const expected = Buffer.from(sessionMac(secret, expiresAt));
+		const actual = Buffer.from(mac);
+		return actual.length === expected.length && timingSafeEqual(actual, expected);
 	}
 
 	return {
@@ -360,7 +396,7 @@ export function createAuth(options: AuthOptions): Auth {
 			const addressVerdict = IDENTITY_INPUT.validate(clientIp);
 			if (!addressVerdict.valid) {
 				refused("login", "clientIp", addressVerdict.errors[0]?.code ?? "INVALID");
-				return { ok: false, reason: "invalid" };
+				throw new TypeError("login needs a client address");
 			}
 			const perIp = loginsByIp.hit(clientIp, LOGIN_WINDOW_MS);
 			if (!perIp || perIp.count > LOGIN_ATTEMPTS_PER_IP) {
@@ -395,24 +431,11 @@ export function createAuth(options: AuthOptions): Auth {
 		},
 
 		sessionFor(req) {
-			const value = readCookie(req);
-			if (!value) return null;
-			// Exactly `<kid>.<expiresAt>.<mac>`; the pre-ring two-part layout is refused.
-			const shape = SESSION_VALUE.validate(value);
-			if (!shape.valid) {
-				refused("session", "cookie", shape.errors[0]?.code ?? "INVALID");
-				return null;
+			// A header may carry several session cookies; the first that verifies wins, so a stray copy cannot shadow the real one.
+			for (const value of readCookies(req)) {
+				if (isValidSession(value)) return { ownerId: OWNER_ID };
 			}
-			const [kid = "", expiresRaw = "", mac = ""] = value.split(".");
-			const secret = ringSecret(kid);
-			if (secret === null) return null;
-			const expiresAt = Number(expiresRaw);
-			if (!Number.isSafeInteger(expiresAt) || expiresAt <= now()) return null;
-
-			const expected = Buffer.from(sessionMac(secret, expiresAt));
-			const actual = Buffer.from(mac);
-			if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
-			return { ownerId: OWNER_ID };
+			return null;
 		},
 
 		logoutCookie() {
@@ -432,12 +455,12 @@ export function createAuth(options: AuthOptions): Auth {
 				refused("limits", "principal", "INVALID");
 				throw new TypeError("request limit principal must be a string of at most 4096 characters");
 			}
-			if (ownerLimit !== undefined && (!Number.isFinite(ownerLimit) || ownerLimit < 0)) {
+			if (ownerLimit !== undefined && (!Number.isFinite(ownerLimit) || ownerLimit <= 0)) {
 				refused("limits", "ownerLimit", "INVALID");
-				throw new TypeError("request limit owner limit must be a finite, non-negative number");
+				throw new TypeError("request limit owner limit must be a finite, positive number");
 			}
 			const factor = effectiveScale(scale);
-			const ip = requests.hit(`ip:${clientIp}`, REQUEST_WINDOW_MS);
+			const ip = ipRequests.hit(`ip:${clientIp}`, REQUEST_WINDOW_MS);
 			if (!ip || ip.count > scaledLimit(IP_REQUESTS_PER_WINDOW, factor)) {
 				return { ok: false, retryAfterSec: retryAfterOf(ip, REQUEST_WINDOW_MS), scope: "ip" };
 			}
@@ -446,7 +469,7 @@ export function createAuth(options: AuthOptions): Auth {
 					principal.length <= MAX_PRINCIPAL_LENGTH
 						? principal
 						: `sha256:${createHash("sha256").update(principal).digest("hex")}`;
-				const hit = requests.hit(`principal:${key}`, REQUEST_WINDOW_MS);
+				const hit = principalRequests.hit(`principal:${key}`, REQUEST_WINDOW_MS);
 				if (!hit || hit.count > scaledLimit(PRINCIPAL_REQUESTS_PER_WINDOW, factor)) {
 					return {
 						ok: false,
@@ -455,7 +478,7 @@ export function createAuth(options: AuthOptions): Auth {
 					};
 				}
 			}
-			const owner = requests.hit(`owner:${ownerId}`, REQUEST_WINDOW_MS);
+			const owner = ownerRequests.hit(`owner:${ownerId}`, REQUEST_WINDOW_MS);
 			if (!owner || owner.count > scaledLimit(ownerLimit ?? OWNER_REQUESTS_PER_WINDOW, factor)) {
 				return { ok: false, retryAfterSec: retryAfterOf(owner, REQUEST_WINDOW_MS), scope: "owner" };
 			}

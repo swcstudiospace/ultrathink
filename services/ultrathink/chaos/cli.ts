@@ -291,11 +291,18 @@ async function execute(options: ExecuteOptions): Promise<RunResult> {
 
 	if (driver === "inprocess") {
 		const stateDir = mkdtempSync(join(tmpdir(), "chaos-run-"));
-		const { target, close } = await createInProcessTarget({ template, stateDir, now: deps.now });
 		try {
-			return await runTemplate({ ...common, target, driver: "inprocess" });
+			const { target, close } = await createInProcessTarget({
+				template,
+				stateDir,
+				now: deps.now,
+			});
+			try {
+				return await runTemplate({ ...common, target, driver: "inprocess" });
+			} finally {
+				await close();
+			}
 		} finally {
-			await close();
 			rmSync(stateDir, { recursive: true, force: true });
 		}
 	}

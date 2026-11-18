@@ -452,10 +452,17 @@ export function asCompleteSimple(scripted: Pick<ScriptedProvider, "complete">): 
 				api: "chaos",
 				provider: "chaos",
 				model: "pipeline",
-				usage: {},
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
 				stopReason: "stop",
 				timestamp: 0,
-			} as unknown as AssistantMessage;
+			} satisfies AssistantMessage;
 		} catch (error) {
 			const status = numberField(error, "status");
 			const retryAfterSec = numberField(error, "retryAfterSec");

@@ -888,17 +888,26 @@ describe("penalties, pool shares, pressure scaling and load history", () => {
 		const cookie = await ownerCookie(pressured);
 		// One lag sample above the 100 ms target steps the factor to its 0.5 floor.
 		pressured.observeRuntime(sample(1000));
-		for (let i = 0; i < 30; i++)
-			expect((await ownerRun(pressured, cookie, "https://evil.test")).status).toBe(403);
-		const limited = await ownerRun(pressured, cookie, "https://evil.test");
+		for (let i = 0; i < 30; i++) expect((await ownerRun(pressured, cookie)).status).toBe(202);
+		const limited = await ownerRun(pressured, cookie);
 		expect(limited.status).toBe(429);
 		expect(await limited.json()).toEqual({ error: "rate_limited" });
 
 		const calm = build().app;
 		const calmCookie = await ownerCookie(calm);
-		for (let i = 0; i < 60; i++)
-			expect((await ownerRun(calm, calmCookie, "https://evil.test")).status).toBe(403);
-		expect((await ownerRun(calm, calmCookie, "https://evil.test")).status).toBe(429);
+		for (let i = 0; i < 60; i++) expect((await ownerRun(calm, calmCookie)).status).toBe(202);
+		expect((await ownerRun(calm, calmCookie)).status).toBe(429);
+	}, 30_000);
+
+	test("a foreign Origin is refused before the owner window and the pool: it spends neither, and a same-origin run still gets through", async () => {
+		const { app } = build();
+		const cookie = await ownerCookie(app);
+		const before = runCount();
+		for (let i = 0; i < 61; i++)
+			expect((await ownerRun(app, cookie, "https://evil.test")).status).toBe(403);
+		expect(runCount()).toBe(before);
+		expect((await ownerRun(app, cookie)).status).toBe(202);
+		expect(runCount()).toBe(before + 1);
 	}, 30_000);
 
 	test("a connector holds at most capacity minus reserve; the owner is still admitted into the reserve", async () => {

@@ -1924,6 +1924,25 @@ describe("OAuth state file", () => {
 		expect(statSync(first.statePath).mode & 0o777).toBe(0o600);
 	});
 
+	test("a state file that is a symlink is refused and its target keeps its mode", async () => {
+		const linkDir = mkdtempSync(join(tmpdir(), "ultrathink-oauth-link-"));
+		harnessDirs.push(linkDir);
+		const victim = join(linkDir, "victim.json");
+		writeFileSync(victim, "{}");
+		chmodSync(victim, 0o644);
+		nodeFs.symlinkSync(victim, join(linkDir, "oauth.json"));
+		ownerHash ??= await Bun.password.hash(password);
+		const auth = createAuth({
+			ownerPasswordHash: ownerHash,
+			sessionSecret: HARNESS_SECRET,
+			cookieSecure: true,
+		});
+		expect(() =>
+			createOAuth({ origin: ORIGIN, stateDir: linkDir, auth, now: () => HARNESS_START }),
+		).toThrow();
+		expect(statSync(victim).mode & 0o777).toBe(0o644);
+	});
+
 	test("registered clients survive a restart", async () => {
 		const first = await makeHarness();
 		const clientId = await registered(first);
@@ -2211,6 +2230,60 @@ describe("OAuth token rollback when the state save fails", () => {
 		const rotated = await bodyOf(retry);
 		expect(typeof rotated.access_token).toBe("string");
 		expect(h.oauth.verifyAccessToken(rotated.access_token as string)).toBe(true);
+	});
+
+	test("replayed code still returns invalid_grant when the state save fails", async () => {
+		const h = await makeHarness();
+		const clientId = await registered(h);
+		const { code, verifier, redirect } = await authorizedCode(h, clientId);
+		const fields = {
+			grant_type: "authorization_code",
+			code,
+			code_verifier: verifier,
+			client_id: clientId,
+			redirect_uri: redirect,
+			resource: RESOURCE,
+		};
+		const first = await tokenCall(h, fields);
+		expect(first.status).toBe(200);
+		const issued = await bodyOf(first);
+		const unblock = blockStateSave(h);
+		try {
+			const replay = await tokenCall(h, fields);
+			expect(replay.status).toBe(400);
+			expect((await bodyOf(replay)).error).toBe("invalid_grant");
+		} finally {
+			unblock();
+		}
+		// The revocation holds in memory even though its save failed.
+		expect(h.oauth.verifyAccessToken(issued.access_token as string)).toBe(false);
+	});
+
+	test("spent refresh token still returns invalid_grant when the state save fails", async () => {
+		const h = await makeHarness();
+		const clientId = await registered(h);
+		const first = await grant(h, clientId);
+		const rotatedResponse = await tokenCall(h, {
+			grant_type: "refresh_token",
+			refresh_token: first.refresh,
+			client_id: clientId,
+		});
+		expect(rotatedResponse.status).toBe(200);
+		const rotated = (await bodyOf(rotatedResponse)).access_token as string;
+		const unblock = blockStateSave(h);
+		try {
+			const reuse = await tokenCall(h, {
+				grant_type: "refresh_token",
+				refresh_token: first.refresh,
+				client_id: clientId,
+			});
+			expect(reuse.status).toBe(400);
+			expect((await bodyOf(reuse)).error).toBe("invalid_grant");
+		} finally {
+			unblock();
+		}
+		// The revocation holds in memory even though its save failed.
+		expect(h.oauth.verifyAccessToken(rotated)).toBe(false);
 	});
 
 	test("a failed exchangeCode save logs one error naming the failure and the error class", async () => {
@@ -2519,5 +2592,70 @@ describe("OAuth client_id length", () => {
 			expect(revoke.status).toBe(400);
 			expect(await bodyOf(revoke)).toEqual(CLIENT_ID_REFUSED);
 		}
+	});
+});
+
+describe("OAuth consent under load and in request bodies", () => {
+	test("a full pending table evicts the oldest request of the largest client for a fresh client", async () => {
+		const h = await makeHarness();
+		const { challenge } = pkcePair();
+		// 40 clients with 5 pending requests each fill the 200-entry table.
+		for (let c = 0; c < 40; c += 1) {
+			const clientId = await registered(h);
+			for (let i = 0; i < 5; i += 1)
+				expect((await authorizeCall(h, clientId, challenge)).status).toBe(200);
+		}
+		expect(savedKeys(h, "pending")).toHaveLength(200);
+		const fresh = await registered(h);
+		const consent = await authorizeCall(h, fresh, challenge);
+		expect(consent.status).toBe(200);
+		expect(await consent.text()).toContain('data-approval-state="PENDING_APPROVAL"');
+		expect(savedKeys(h, "pending")).toHaveLength(200);
+	}, 60_000);
+
+	test("an approval attempt past the owner-login limit is refused without writing the store", async () => {
+		const h = await makeHarness();
+		const clientId = await registered(h);
+		const { challenge } = pkcePair();
+		const html = await (await authorizeCall(h, clientId, challenge)).text();
+		const peer = "198.51.100.77";
+		expect(await (await approveWith(h, html, "not-the-password", peer)).text()).toContain(
+			"Incorrect password.",
+		);
+		expect(await (await approveWith(h, html, "not-the-password", peer)).text()).toContain(
+			"Incorrect password.",
+		);
+		rmSync(h.statePath);
+		const third = await approveWith(h, html, password, peer);
+		expect(third.status).toBe(429);
+		expect(existsSync(h.statePath)).toBe(false);
+	});
+
+	test("an over-limit chunked form body is refused without being read whole", async () => {
+		const h = await makeHarness();
+		const chunk = new TextEncoder().encode("x".repeat(1024));
+		let pulled = 0;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (pulled >= 64) {
+					controller.close();
+					return;
+				}
+				pulled += 1;
+				controller.enqueue(chunk);
+			},
+		});
+		const response = await h.oauth.register(
+			new Request(`${ORIGIN}/oauth/register`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body,
+			}),
+			"198.51.100.90",
+		);
+		expect(response.status).toBe(413);
+		expect((await bodyOf(response)).error).toBe("invalid_client_metadata");
+		// 64 KiB would be read whole; the 8 KiB cap stops the read after a few chunks.
+		expect(pulled).toBeLessThan(64);
 	});
 });

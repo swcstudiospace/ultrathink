@@ -97,8 +97,11 @@ function matchesType(types: readonly string[], value: unknown): boolean {
 				return Array.isArray(value);
 			case "object":
 				return isRecord(value);
-			default:
+			case "null":
 				return value === null;
+			default:
+				// declaredTypes refuses unknown names before this runs, so an unknown name matches nothing here.
+				return false;
 		}
 	});
 }

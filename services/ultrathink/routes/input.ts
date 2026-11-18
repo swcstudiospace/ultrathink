@@ -9,7 +9,7 @@ export type SanitizeResult =
 	| { ok: false; code: "empty" | "too_long" | "not_string" };
 
 // C0 controls except TAB (U+0009) and LF (U+000A), DEL (U+007F), and C1 controls (U+0080-U+009F).
-const DISALLOWED_CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+const DISALLOWED_CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000D\u000E-\u001F\u007F-\u009F]/g;
 
 const PLANNING_TERMS = /\b(plan|planning|roadmap|scope|phases?|milestones?|break down)\b/i;
 const RESEARCH_TERMS =

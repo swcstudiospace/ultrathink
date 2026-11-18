@@ -789,4 +789,85 @@ describe("worker", () => {
 		expect(logged).toEqual(["worker tick failed: runPhase: SQLITE_BUSY"]);
 		expect(logged.join("\n")).not.toContain(FIXTURE_SECRET);
 	});
+
+	test("does not call the model again once the heartbeat lost the lease during backoff", async () => {
+		const env = makeEnv();
+		const run = newRun(env);
+		const model = fakeModel(() => {
+			throw new Error("upstream 503");
+		});
+		const worker = createWorker({
+			store: env.store,
+			ledger: env.ledger,
+			model,
+			artifactDir: env.artifactDir,
+			holderId: "worker-a",
+			maxModelAttempts: 3,
+			backoffMs: 1,
+			heartbeatMs: 1,
+			sleep: async () => {
+				// Another holder takes the lease during the backoff; the next heartbeat tick cannot renew it.
+				env.store.db
+					.query("UPDATE run_leases SET holder = ? WHERE run_id = ?")
+					.run("worker-b", run.id);
+				// reason: the heartbeat is a real setInterval inside callModel with no injected clock, so a 1 ms tick must fire during this wait.
+				await Bun.sleep(20);
+			},
+		});
+
+		expect(await worker.tickOnce()).toBe("idle");
+		expect(model.calls.length).toBe(1);
+		expect(ledgerRows(env, run.id).map((row) => [row.phase, row.attempt, row.state])).toEqual([
+			["discover", 1, "abandoned"],
+		]);
+	});
+
+	test("a hung model call is aborted at the timeout, counts as a failed attempt, and is not retried forever", async () => {
+		const env = makeEnv();
+		const run = newRun(env);
+		const signals: AbortSignal[] = [];
+		const model: PlanningModel = {
+			complete(input) {
+				// The model never settles and ignores its signal; the timeout alone must bound the attempt.
+				if (input.signal) signals.push(input.signal);
+				return Promise.withResolvers<never>().promise;
+			},
+		};
+		const { worker, sleeps } = makeWorker(env, model, {
+			maxModelAttempts: 2,
+			backoffMs: 1000,
+			// reason: the per-attempt timeout is a real setTimeout inside completeWithTimeout with no injected clock; 1 ms is the shortest wait.
+			modelTimeoutMs: 1,
+		});
+
+		expect(await worker.tickOnce()).toBe("paused");
+		const paused = reload(env, run);
+		expect(paused.status).toBe("paused-for-blocker");
+		expect(paused.reason).toBe("model_unavailable");
+		expect(signals.length).toBe(2);
+		expect(signals.every((signal) => signal.aborted)).toBe(true);
+		expect(sleeps).toEqual([1000]);
+		expect(ledgerRows(env, run.id).map((row) => [row.phase, row.attempt, row.state])).toEqual([
+			["discover", 1, "abandoned"],
+		]);
+	});
+
+	test("runUntilAborted returns promptly when aborted during the idle poll wait", async () => {
+		const env = makeEnv();
+		const controller = new AbortController();
+		const worker = createWorker({
+			store: env.store,
+			ledger: env.ledger,
+			model: fakeModel(() => ({ text: "unused", tokensUsed: 1 })),
+			artifactDir: env.artifactDir,
+			holderId: "worker-a",
+			pollMs: 60_000,
+		});
+		// The abort lands in the next macrotask, after tickOnce has reached the idle wait.
+		setImmediate(() => controller.abort());
+
+		const started = performance.now();
+		await worker.runUntilAborted(controller.signal);
+		expect(performance.now() - started).toBeLessThan(5000);
+	});
 });

@@ -9,11 +9,12 @@
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import * as nodeFs from "node:fs";
-import { chmodSync, existsSync, readFileSync, renameSync } from "node:fs";
+import { renameSync } from "node:fs";
 import { join } from "node:path";
 import { type ApprovalProof, type Auth, MAX_PASSWORD_CHARS } from "../auth/auth.ts";
 import type { AuditEvent } from "../obs/audit.ts";
 import { createLogger, failureLabel, type Logger } from "../obs/log.ts";
+import { readBodyPrefix } from "../security/body.ts";
 import { encodeHtml, encodeHtmlAttribute } from "../security/encoding.ts";
 import { getSecurityLogger } from "../security/events.ts";
 import {
@@ -307,6 +308,37 @@ function page(title: string, content: string): string {
 	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${encodeHtml(title)}</title><style>body{font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;color:#111}input,button{font:inherit;padding:.6rem;width:100%;box-sizing:border-box;margin-top:.4rem}button{margin-top:1rem;cursor:pointer}.err{color:#b00020}</style></head><body><h1>${encodeHtml(title)}</h1>${content}</body></html>`;
 }
 
+/** The consent page for a pending request. The form posts back here; form-action allows the registered redirect origin. */
+function consentPage(
+	requestId: string,
+	nonce: string,
+	clientName: string,
+	redirectUri: string,
+	message: string,
+	status: number,
+): Response {
+	const redirectOrigin = new URL(redirectUri).origin;
+	const alert = message === "" ? "" : `<p class="err">${encodeHtml(message)}</p>`;
+	const content =
+		`<p data-approval-state="PENDING_APPROVAL">Allow <strong>${encodeHtml(clientName)}</strong> to use the ultrathink planning tools on this server? Enter the owner password to approve.</p>` +
+		`<p data-client-unverified="true">The client name was supplied by the client and is not verified. If you approve, you are sent back to <strong data-redirect-origin="${encodeHtmlAttribute(redirectOrigin)}">${encodeHtml(redirectOrigin)}</strong>. Only approve if you recognize that address.</p>` +
+		`${alert}<form method="post" action="/oauth/authorize"><input type="hidden" name="req" value="${encodeHtmlAttribute(requestId)}"><input type="hidden" name="nonce" value="${encodeHtmlAttribute(nonce)}"><label>Owner password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Approve</button></form>`;
+	return htmlPage(status, page("Authorize ultrathink", content), `'self' ${redirectOrigin}`);
+}
+
+function redirectWith(
+	issuer: string,
+	redirectUri: string,
+	params: Record<string, string>,
+	state: string | null,
+): Response {
+	const url = new URL(redirectUri);
+	for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+	if (state !== null) url.searchParams.set("state", state);
+	url.searchParams.set("iss", issuer);
+	return new Response(null, { status: 302, headers: { ...NO_STORE, Location: url.toString() } });
+}
+
 /** Text in a form or query parameter: any characters but controls, at most `max` long. An absent one reads as "", which passes. */
 function formText(max: number): StringValidator {
 	return new StringValidator({ allowEmpty: true, maxLength: max, pattern: NO_CONTROL });
@@ -399,8 +431,9 @@ function isJsonRequest(req: Request): boolean {
 async function readBodyText(req: Request, maxBytes: number): Promise<string | null> {
 	const declared = req.headers.get("content-length");
 	if (declared !== null && Number(declared) > maxBytes) return null;
-	const text = await req.text();
-	return text.length > maxBytes ? null : text;
+	// Bounded as the body arrives, so a chunked body with no declared length is never buffered whole.
+	const { text, complete } = await readBodyPrefix(new Response(req.body), maxBytes);
+	return complete ? text : null;
 }
 
 export function normalizeOrigins(origins: readonly string[]): string[] {
@@ -520,15 +553,34 @@ function section<T>(value: unknown): Record<string, T> {
 	return value as Record<string, T>;
 }
 
-function loadStore(path: string, stamp: number, logger: Logger): StoreShape {
-	if (!existsSync(path)) return emptyStore();
+/**
+ * Reads the store file without following a symlink, and sets its mode through the same descriptor, so the file whose
+ * mode changes is the file read. Null when absent. A symlink (ELOOP) or any other read failure propagates and the file
+ * stays in place.
+ */
+function readStoreText(path: string): string | null {
+	let fd: number;
 	try {
-		chmodSync(path, 0o600);
-	} catch {
-		// reason: Not the owner or a read-only mount: reading still works.
+		fd = nodeFs.openSync(path, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW);
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+		throw error;
 	}
-	// A read failure (EACCES, EIO, EISDIR) is not corruption: it propagates and the file stays in place.
-	const text = readFileSync(path, "utf8");
+	try {
+		try {
+			nodeFs.fchmodSync(fd, 0o600);
+		} catch {
+			// reason: Not the owner or a read-only mount: reading still works.
+		}
+		return nodeFs.readFileSync(fd, "utf8");
+	} finally {
+		nodeFs.closeSync(fd);
+	}
+}
+
+function loadStore(path: string, stamp: number, logger: Logger): StoreShape {
+	const text = readStoreText(path);
+	if (text === null) return emptyStore();
 	try {
 		const parsed: unknown = JSON.parse(text);
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
@@ -614,48 +666,26 @@ function realSchedule(run: () => void, intervalMs: number): () => void {
 	return () => clearInterval(timer);
 }
 
-export function createOAuth(options: OAuthOptions): OAuth {
-	const origin = options.origin;
-	const resource = `${origin}/mcp`;
-	const resourceMetadataUrl = `${origin}/.well-known/oauth-protected-resource/mcp`;
-	const now = options.now ?? Date.now;
-	const logger = options.logger ?? createLogger();
-	const path = join(options.stateDir, STATE_FILE);
-	const redirectOrigins = normalizeOrigins(options.redirectOrigins ?? DEFAULT_REDIRECT_ORIGINS);
-	const allowedRedirectOrigins = new Set(redirectOrigins);
-	const redirectHelp = `Register 1 to ${MAX_REDIRECT_URIS} redirect URIs: https on an allowed origin (${redirectOrigins.join(", ")}) or loopback http.`;
-	const maxClients = options.maxClients ?? MAX_CLIENTS;
-	// A fake clock means a test. Wall-clock polling would race that clock, so only production arms it.
-	const schedule = options.schedule ?? (options.now === undefined ? realSchedule : undefined);
+/** The store file's data and pending table, with the pruning that keeps them bounded and the writes that save them. */
+interface OAuthStore {
+	readonly data: StoreShape;
+	readonly pending: Map<string, PendingRequest>;
+	/** Drops expired records. Returns true when anything was removed so callers can skip a pointless disk write. */
+	prune(): boolean;
+	/** Writes the store, pending table included, durably. */
+	flush(): void;
+	/** Prunes, then flushes. */
+	persist(): void;
+}
+
+function createOAuthStore(
+	stateDir: string,
+	path: string,
+	now: () => number,
+	logger: Logger,
+): OAuthStore {
 	const data = loadStore(path, now(), logger);
 	const pending = new Map<string, PendingRequest>();
-	const approving = new Set<string>();
-	const registerLimiter = createLimiter(REGISTER_LIMIT, now);
-	const authorizeLimiter = createLimiter(AUTHORIZE_LIMIT, now);
-	const tokenLimiter = createLimiter(TOKEN_LIMIT, now);
-	const tokenClientLimiter = createLimiter(TOKEN_CLIENT_LIMIT, now);
-	const revokeLimiter = createLimiter(REVOKE_LIMIT, now);
-	let cancelSweep: (() => void) | null = null;
-
-	// Clients saved before grantedAt existed keep their protection from eviction.
-	for (const grant of Object.values(data.grants)) {
-		const client = own(data.clients, grant.clientId);
-		if (client !== undefined && client.grantedAt === undefined) client.grantedAt = grant.createdAt;
-	}
-	// Clients saved before grantTypes existed could refresh unconditionally; keep that so existing connections are not forced to re-consent on deploy.
-	for (const client of Object.values(data.clients)) {
-		if (!Array.isArray(client.grantTypes)) client.grantTypes = [...SUPPORTED_GRANTS];
-	}
-
-	function proofOf(key: string, request: PendingRequest): ApprovalProof {
-		return {
-			subject: key,
-			nonce: request.nonce,
-			issuedAt: request.createdAt,
-			expiresAt: request.expiresAt,
-			refreshedAt: request.refreshedAt,
-		};
-	}
 
 	function clientRemovable(id: string, client: ClientRecord, t: number): boolean {
 		for (const request of pending.values()) if (request.clientId === id) return false;
@@ -665,7 +695,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		return t - (client.lastUsedAt ?? client.grantedAt) > GRANTED_CLIENT_IDLE_MS;
 	}
 
-	// Returns true when anything was removed so callers can skip a pointless disk write.
 	function prune(): boolean {
 		const t = now();
 		let changed = false;
@@ -709,7 +738,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 	function flush(): void {
 		data.pending = {};
 		for (const [key, request] of pending) data.pending[key] = { ...request };
-		writeFileDurably(options.stateDir, path, JSON.stringify(data));
+		writeFileDurably(stateDir, path, JSON.stringify(data));
 	}
 
 	function persist(): void {
@@ -717,12 +746,54 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		flush();
 	}
 
-	function snapshotStore(): string {
-		return JSON.stringify(data);
+	return { data, pending, prune, flush, persist };
+}
+
+export function createOAuth(options: OAuthOptions): OAuth {
+	const origin = options.origin;
+	const resource = `${origin}/mcp`;
+	const resourceMetadataUrl = `${origin}/.well-known/oauth-protected-resource/mcp`;
+	const now = options.now ?? Date.now;
+	const logger = options.logger ?? createLogger();
+	const path = join(options.stateDir, STATE_FILE);
+	const redirectOrigins = normalizeOrigins(options.redirectOrigins ?? DEFAULT_REDIRECT_ORIGINS);
+	const allowedRedirectOrigins = new Set(redirectOrigins);
+	const redirectHelp = `Register 1 to ${MAX_REDIRECT_URIS} redirect URIs: https on an allowed origin (${redirectOrigins.join(", ")}) or loopback http.`;
+	const maxClients = options.maxClients ?? MAX_CLIENTS;
+	// A fake clock means a test. Wall-clock polling would race that clock, so only production arms it.
+	const schedule = options.schedule ?? (options.now === undefined ? realSchedule : undefined);
+	const { data, pending, prune, flush, persist } = createOAuthStore(
+		options.stateDir,
+		path,
+		now,
+		logger,
+	);
+	const approving = new Set<string>();
+	const registerLimiter = createLimiter(REGISTER_LIMIT, now);
+	const authorizeLimiter = createLimiter(AUTHORIZE_LIMIT, now);
+	const tokenLimiter = createLimiter(TOKEN_LIMIT, now);
+	const tokenClientLimiter = createLimiter(TOKEN_CLIENT_LIMIT, now);
+	const revokeLimiter = createLimiter(REVOKE_LIMIT, now);
+	let cancelSweep: (() => void) | null = null;
+
+	// Clients saved before grantedAt existed keep their protection from eviction.
+	for (const grant of Object.values(data.grants)) {
+		const client = own(data.clients, grant.clientId);
+		if (client !== undefined && client.grantedAt === undefined) client.grantedAt = grant.createdAt;
+	}
+	// Clients saved before grantTypes existed could refresh unconditionally; keep that so existing connections are not forced to re-consent on deploy.
+	for (const client of Object.values(data.clients)) {
+		if (!Array.isArray(client.grantTypes)) client.grantTypes = [...SUPPORTED_GRANTS];
 	}
 
-	function restoreStore(snapshot: string): void {
-		Object.assign(data, JSON.parse(snapshot) as typeof data);
+	function proofOf(key: string, request: PendingRequest): ApprovalProof {
+		return {
+			subject: key,
+			nonce: request.nonce,
+			issuedAt: request.createdAt,
+			expiresAt: request.expiresAt,
+			refreshedAt: request.refreshedAt,
+		};
 	}
 
 	// One timer for every pending request. It stops itself when nothing is pending.
@@ -824,16 +895,22 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		return value === resource || value === `${resource}/`;
 	}
 
+	/**
+	 * Issues an access and a refresh token for a grant. `undo` takes both back out, and restores the grant's last-use
+	 * stamp, when the state save that follows fails.
+	 */
 	function issueTokens(
 		grantId: string,
 		clientId: string,
 		grantResource: string,
 		scope: string | null,
-	): Record<string, unknown> {
+	): { body: Record<string, unknown>; undo: () => void } {
 		const t = now();
 		const access = secret("ut_at_");
 		const refresh = secret("ut_rt_");
-		data.tokens[digest(access)] = {
+		const accessKey = digest(access);
+		const refreshKey = digest(refresh);
+		data.tokens[accessKey] = {
 			kind: "access",
 			grantId,
 			clientId,
@@ -842,7 +919,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			expiresAt: t + ACCESS_TTL_MS,
 			used: false,
 		};
-		data.tokens[digest(refresh)] = {
+		data.tokens[refreshKey] = {
 			kind: "refresh",
 			grantId,
 			clientId,
@@ -852,6 +929,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			used: false,
 		};
 		const grant = own(data.grants, grantId);
+		const previousLastUsedAt = grant?.lastUsedAt;
 		if (grant !== undefined) grant.lastUsedAt = t;
 		const body: Record<string, unknown> = {
 			access_token: access,
@@ -860,7 +938,16 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			refresh_token: refresh,
 		};
 		if (scope !== null) body.scope = scope;
-		return body;
+		return {
+			body,
+			undo() {
+				delete data.tokens[accessKey];
+				delete data.tokens[refreshKey];
+				if (grant === undefined) return;
+				if (previousLastUsedAt === undefined) delete grant.lastUsedAt;
+				else grant.lastUsedAt = previousLastUsedAt;
+			},
+		};
 	}
 
 	function rateLimited(retryAfterSec: number): Record<string, string> {
@@ -873,35 +960,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		} catch {
 			// reason: The decision is already made; the sink owns its own failures.
 		}
-	}
-
-	function consentPage(
-		requestId: string,
-		nonce: string,
-		clientName: string,
-		redirectUri: string,
-		message: string,
-		status: number,
-	): Response {
-		const redirectOrigin = new URL(redirectUri).origin;
-		const alert = message === "" ? "" : `<p class="err">${encodeHtml(message)}</p>`;
-		const content =
-			`<p data-approval-state="PENDING_APPROVAL">Allow <strong>${encodeHtml(clientName)}</strong> to use the ultrathink planning tools on this server? Enter the owner password to approve.</p>` +
-			`<p data-client-unverified="true">The client name was supplied by the client and is not verified. If you approve, you are sent back to <strong data-redirect-origin="${encodeHtmlAttribute(redirectOrigin)}">${encodeHtml(redirectOrigin)}</strong>. Only approve if you recognize that address.</p>` +
-			`${alert}<form method="post" action="/oauth/authorize"><input type="hidden" name="req" value="${encodeHtmlAttribute(requestId)}"><input type="hidden" name="nonce" value="${encodeHtmlAttribute(nonce)}"><label>Owner password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Approve</button></form>`;
-		return htmlPage(status, page("Authorize ultrathink", content), `'self' ${redirectOrigin}`);
-	}
-
-	function redirectWith(
-		redirectUri: string,
-		params: Record<string, string>,
-		state: string | null,
-	): Response {
-		const url = new URL(redirectUri);
-		for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-		if (state !== null) url.searchParams.set("state", state);
-		url.searchParams.set("iss", origin);
-		return new Response(null, { status: 302, headers: { ...NO_STORE, Location: url.toString() } });
 	}
 
 	async function authorizeGet(params: URLSearchParams): Promise<Response> {
@@ -926,6 +984,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		const state = params.get("state");
 		if (params.get("response_type") !== "code") {
 			return redirectWith(
+				origin,
 				redirectUri,
 				{ error: "unsupported_response_type", error_description: "response_type must be code." },
 				state,
@@ -934,6 +993,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		const challenge = params.get("code_challenge") ?? "";
 		if (params.get("code_challenge_method") !== "S256" || !CHALLENGE_PATTERN.test(challenge)) {
 			return redirectWith(
+				origin,
 				redirectUri,
 				{ error: "invalid_request", error_description: "PKCE with S256 is required." },
 				state,
@@ -941,6 +1001,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		}
 		if (!sameResource(params.get("resource"))) {
 			return redirectWith(
+				origin,
 				redirectUri,
 				{
 					error: "invalid_target",
@@ -958,7 +1019,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 				rateLimited(60),
 			);
 		}
-		if (pending.size >= MAX_PENDING) {
+		if (pending.size >= MAX_PENDING && !evictFromLargestClient()) {
 			return errorPage(
 				503,
 				"Authorization is temporarily unavailable. Start the connection again from your client.",
@@ -1028,7 +1089,6 @@ export function createOAuth(options: OAuthOptions): OAuth {
 				refreshed_at: found.request.refreshedAt,
 			});
 		}
-		persist();
 		const clientName = own(data.clients, found.request.clientId)?.name ?? "MCP client";
 		const redirectUri = found.request.redirectUri;
 		if (approving.has(found.key)) {
@@ -1041,6 +1101,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 				200,
 			);
 		}
+		// Checked before the store is touched: an attempt past the limit writes nothing.
 		const attempt = options.auth.allowApprovalAttempt(ip);
 		if (!attempt.ok) return errorPage(429, "Too many attempts. Wait and try again.");
 		approving.add(found.key);
@@ -1099,7 +1160,7 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			};
 			persist();
 			audit("consent_approved", { clientId: found.request.clientId });
-			return redirectWith(found.request.redirectUri, { code }, found.request.state);
+			return redirectWith(origin, found.request.redirectUri, { code }, found.request.state);
 		} finally {
 			approving.delete(found.key);
 		}
@@ -1121,7 +1182,11 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		if (record.used) {
 			// A replayed code means the grant leaked. Revoke every token it issued.
 			revokeGrant(record.grantId);
-			persist();
+			try {
+				persist();
+			} catch (error) {
+				logger.error("exchangeCode: revocation save failed", { error: failureLabel(error) });
+			}
 			return invalidGrant("The authorization code was already used.");
 		}
 		if (record.expiresAt <= now()) return invalidGrant("The authorization code expired.");
@@ -1135,9 +1200,8 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		if (!pkceMatches(form.get("code_verifier") ?? "", record.codeChallenge)) {
 			return invalidGrant("PKCE verification failed.");
 		}
-		const snapshot = snapshotStore();
 		record.used = true;
-		const body = issueTokens(
+		const issued = issueTokens(
 			record.grantId,
 			record.clientId,
 			record.resource,
@@ -1147,11 +1211,12 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			persist();
 		} catch (error) {
 			logger.error("exchangeCode: state save failed", { error: failureLabel(error) });
-			restoreStore(snapshot);
+			record.used = false;
+			issued.undo();
 			return oauthError(500, "server_error", "OAuth state could not be saved.");
 		}
 		audit("code_exchanged", { clientId });
-		return jsonResponse(200, body);
+		return jsonResponse(200, issued.body);
 	}
 
 	function refreshGrant(form: URLSearchParams, clientId: string): Response {
@@ -1166,7 +1231,11 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		if (record.used) {
 			// Refresh rotation: presenting a spent refresh token revokes the whole grant.
 			revokeGrant(record.grantId);
-			persist();
+			try {
+				persist();
+			} catch (error) {
+				logger.error("refreshGrant: revocation save failed", { error: failureLabel(error) });
+			}
 			audit("refresh_reuse_detected", { clientId });
 			return invalidGrant("The refresh token was already used.");
 		}
@@ -1175,11 +1244,11 @@ export function createOAuth(options: OAuthOptions): OAuth {
 		if (presented !== null && presented !== "" && !sameResource(presented)) {
 			return oauthError(400, "invalid_target", "resource must be the ultrathink MCP endpoint.");
 		}
-		const snapshot = snapshotStore();
+		const previousExpiresAt = record.expiresAt;
 		record.used = true;
 		// Keep the spent token only for the reuse-detection window so prune() reclaims it.
 		record.expiresAt = Math.min(record.expiresAt, now() + SPENT_REFRESH_TTL_MS);
-		const body = issueTokens(
+		const issued = issueTokens(
 			record.grantId,
 			record.clientId,
 			record.resource,
@@ -1189,11 +1258,36 @@ export function createOAuth(options: OAuthOptions): OAuth {
 			persist();
 		} catch (error) {
 			logger.error("refreshGrant: state save failed", { error: failureLabel(error) });
-			restoreStore(snapshot);
+			record.used = false;
+			record.expiresAt = previousExpiresAt;
+			issued.undo();
 			return oauthError(500, "server_error", "OAuth state could not be saved.");
 		}
 		audit("token_refreshed", { clientId });
-		return jsonResponse(200, body);
+		return jsonResponse(200, issued.body);
+	}
+
+	// Makes room in a full pending table for one more request. The oldest request of the client holding the most is
+	// dropped, so one flooding client cannot starve the others. A request whose approval is being checked is kept.
+	function evictFromLargestClient(): boolean {
+		const counts = new Map<string, number>();
+		for (const request of pending.values())
+			counts.set(request.clientId, (counts.get(request.clientId) ?? 0) + 1);
+		let largest: string | null = null;
+		let most = 0;
+		for (const [clientId, count] of counts) {
+			if (count > most) {
+				most = count;
+				largest = clientId;
+			}
+		}
+		for (const [key, request] of pending) {
+			if (request.clientId === largest && !approving.has(key)) {
+				pending.delete(key);
+				return true;
+			}
+		}
+		return false;
 	}
 
 	function makeRoomForClient(): boolean {

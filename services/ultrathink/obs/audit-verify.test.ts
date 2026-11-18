@@ -272,3 +272,22 @@ describe("a dispatch that fails", () => {
 		verifier.close();
 	});
 });
+
+describe("an audit file that cannot be stat'd", () => {
+	test("a stat failure other than a missing file fails the scan with a reason, not a race", () => {
+		const dir = tempDir();
+		// A regular file in the directory's place makes every stat of the path fail with ENOTDIR, even for root.
+		const blocker = join(dir, "blocker");
+		writeFileSync(blocker, "");
+		const path = join(blocker, "audit.jsonl");
+		expect(() => chainIdentity(path)).toThrow("cannot stat the audit file");
+		expect(verifyObserved({ path, activeBytes: 0, activeIno: 0, identity: "0\n" })).toMatchObject({
+			ok: false,
+			reason: expect.stringContaining("cannot stat the audit file"),
+		});
+	});
+
+	test("a missing active file keeps the absent-file identity", () => {
+		expect(chainIdentity(auditPath(tempDir()))).toBe("missing\n");
+	});
+});

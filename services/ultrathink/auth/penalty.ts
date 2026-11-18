@@ -11,12 +11,15 @@ import type { SecurityEventLogger } from "../security/events.ts";
  * period longer than it resets the level. Failures during an active block change
  * nothing.
  *
- * The table holds at most maxKeys keys. A new key that finds the table full
- * after pruning is reported untracked and stored nowhere: penalties fail open
- * there, while the rate windows already refuse new keys when full.
+ * The table holds at most maxKeys keys. A new key that finds the table full is
+ * reported untracked and stored nowhere: penalties fail open there, while the rate
+ * windows already refuse new keys when full. A full table is pruned at most once
+ * per PRUNE_INTERVAL_MS, so churn at capacity does not rescan it on every failure.
  *
  * Each escalation is also reported to the optional security logger as a suspicious-activity event.
  */
+
+const PRUNE_INTERVAL_MS = 60_000;
 
 export interface PenaltyOptions {
 	windowMs: number;
@@ -74,6 +77,7 @@ export function createPenaltyLadder(options: PenaltyOptions): PenaltyLadder {
 	validate(options);
 	const { windowMs, failuresPerWindow, baseSec, maxSec, decayMs, maxKeys, now, security } = options;
 	const entries = new Map<string, Entry>();
+	let nextPruneAt = 0;
 
 	const windowOf = (t: number): number => Math.floor(t / windowMs);
 	const secondsUntil = (blockedUntil: number, t: number): number =>
@@ -91,6 +95,13 @@ export function createPenaltyLadder(options: PenaltyOptions): PenaltyLadder {
 		}
 	}
 
+	// Runs prune at most once per PRUNE_INTERVAL_MS. Only the full-table path calls it, so churn at capacity does not rescan the table per failure.
+	function pruneIfDue(t: number): void {
+		if (t < nextPruneAt) return;
+		prune(t);
+		nextPruneAt = t + PRUNE_INTERVAL_MS;
+	}
+
 	return {
 		fail(key) {
 			const t = now();
@@ -105,7 +116,7 @@ export function createPenaltyLadder(options: PenaltyOptions): PenaltyLadder {
 			}
 			if (!entry) {
 				if (entries.size >= maxKeys) {
-					prune(t);
+					pruneIfDue(t);
 					if (entries.size >= maxKeys)
 						return { blockedSec: 0, escalated: false, level: 0, tracked: false };
 				}

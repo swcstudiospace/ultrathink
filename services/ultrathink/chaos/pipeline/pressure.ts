@@ -111,10 +111,17 @@ export function startPressure(spec: PressureSpec = {}, seams: PressureSeams = {}
 	}
 	const running: PressureWorker[] = [];
 	if (flags !== undefined && spawn !== undefined) {
-		for (let i = 0; i < workers; i += 1) {
-			const worker = spawn();
-			worker.postMessage({ sab: flags.buffer, duty, maxMs });
-			running.push(worker);
+		try {
+			for (let i = 0; i < workers; i += 1) {
+				const worker = spawn();
+				running.push(worker);
+				worker.postMessage({ sab: flags.buffer, duty, maxMs });
+			}
+		} catch (error) {
+			// A half-started pool must not outlive the throw: stop what did start and drop the Blob URL.
+			for (const worker of running) worker.terminate();
+			if (blobUrl !== undefined) URL.revokeObjectURL(blobUrl);
+			throw error;
 		}
 	}
 

@@ -180,6 +180,26 @@ describe("workers", () => {
 		await pressure.stop();
 	});
 
+	test("a spawn that throws partway stops the workers already started and rethrows", () => {
+		const spawned: FakeWorker[] = [];
+		const spawnWorker = (): FakeWorker => {
+			if (spawned.length === 1) throw new Error("spawn failed");
+			const worker = fakeWorker();
+			spawned.push(worker);
+			return worker;
+		};
+
+		expect(() =>
+			startPressure(
+				{ workers: 3 },
+				{ spawnWorker, timers: { setInterval: () => 1, clearInterval: () => undefined } },
+			),
+		).toThrow("spawn failed");
+
+		expect(spawned).toHaveLength(1);
+		expect(spawned[0]?.terminated).toBe(true);
+	});
+
 	test("the event-loop stall sampler keeps the worst timer drift", async () => {
 		const m = meters();
 		const ticks: Array<() => void> = [];

@@ -6,6 +6,8 @@ export interface ChaosResponse {
 	status: number;
 	headers: Headers;
 	text: string;
+	/** True when the body was longer than MAX_RESPONSE_BYTES: `text` then holds only its first MAX_RESPONSE_BYTES bytes. */
+	truncated?: boolean;
 }
 
 /** What the runner talks to: the in-process app or a remote staging base URL. */
@@ -202,8 +204,12 @@ export function httpTarget(baseUrl: string, options: HttpTargetOptions = {}): Ch
 				signal,
 				deadlineMessage,
 			);
-			const text = await untilAborted(response.text(), signal, deadlineMessage);
-			return { status: response.status, headers: response.headers, text };
+			const { text, truncated } = await untilAborted(
+				readBoundedText(response),
+				signal,
+				deadlineMessage,
+			);
+			return { status: response.status, headers: response.headers, text, truncated };
 		},
 		async close() {
 			// reason: each request is its own fetch with a deadline; no connection is held open
@@ -223,4 +229,44 @@ function untilAborted<T>(
 	else signal.addEventListener("abort", onAbort, { once: true });
 	work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
 	return promise;
+}
+
+/** Longest response body one request keeps, in bytes. A longer body is cut here and reported `truncated`. */
+export const MAX_RESPONSE_BYTES = 1024 * 1024;
+
+/**
+ * Reads a response body as UTF-8 text, keeping at most `limit` bytes. Past the limit the stream is cancelled, so an
+ * oversized body is never held whole.
+ */
+export async function readBoundedText(
+	response: Response,
+	limit = MAX_RESPONSE_BYTES,
+): Promise<{ text: string; truncated: boolean }> {
+	if (response.body === null) return { text: "", truncated: false };
+	const reader = response.body.getReader();
+	const kept: Uint8Array[] = [];
+	let size = 0;
+	for (;;) {
+		const next = await reader.read();
+		if (next.done) break;
+		const room = limit - size;
+		if (next.value.byteLength > room) {
+			kept.push(next.value.subarray(0, room));
+			await reader.cancel();
+			return { text: decodeChunks(kept), truncated: true };
+		}
+		kept.push(next.value);
+		size += next.value.byteLength;
+	}
+	return { text: decodeChunks(kept), truncated: false };
+}
+
+function decodeChunks(chunks: Uint8Array[]): string {
+	const bytes = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return new TextDecoder().decode(bytes);
 }

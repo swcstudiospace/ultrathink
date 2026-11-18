@@ -25,8 +25,10 @@ export interface SinkEvent {
 	readonly reason?: string;
 }
 
-export type SetTimer = (callback: () => void, ms: number) => unknown;
-export type ClearTimer = (handle: unknown) => void;
+/** A timer handle: a numeric id from an injected fake, or the Bun timer `setTimeout` returns. `clearTimeout` accepts both. */
+type TimerHandle = number | Timer;
+export type SetTimer = (callback: () => void, ms: number) => TimerHandle;
+export type ClearTimer = (handle: TimerHandle | undefined) => void;
 
 export interface SinkQueueOptions {
 	readonly transport: SinkTransport;
@@ -60,7 +62,7 @@ export interface SinkQueue {
 type Failure = Extract<SendResult, { ok: false }>;
 
 const defaultSetTimer: SetTimer = (callback, ms) => setTimeout(callback, ms);
-const defaultClearTimer: ClearTimer = (handle) => clearTimeout(handle as Timer);
+const defaultClearTimer: ClearTimer = (handle) => clearTimeout(handle);
 
 function assertPositiveInteger(name: string, value: number): void {
 	if (!Number.isInteger(value) || value < 1) {
@@ -132,7 +134,7 @@ export function createSinkQueue(options: SinkQueueOptions): SinkQueue {
 		const { promise, resolve } = Promise.withResolvers<SendResult>();
 		const controller = new AbortController();
 		let settled = false;
-		let timer: unknown;
+		let timer: TimerHandle | undefined;
 		const settle = (result: SendResult): void => {
 			if (settled) return;
 			settled = true;

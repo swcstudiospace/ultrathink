@@ -15,6 +15,8 @@ export class CeilingError extends Error {
 
 export class LedgerWriteError extends Error {}
 
+export class LedgerStateError extends Error {}
+
 /** A ceiling of 0 means unlimited; a positive ceiling refuses any reservation that would exceed it. */
 export interface LedgerLimits {
 	runTokenCeiling: number;
@@ -74,6 +76,11 @@ function sumSpent(db: Database, sql: string, param: string): number {
 	return row?.total ?? 0;
 }
 
+/** UTC calendar day of `at`, as "YYYY-MM-DD". */
+function utcDay(at: number): string {
+	return new Date(at).toISOString().slice(0, 10);
+}
+
 export function createLedger(
 	store: Store,
 	limits: LedgerLimits,
@@ -105,7 +112,7 @@ export function createLedger(
 			throw new LedgerWriteError("token ledger update failed", { cause: error });
 		}
 		if (changes !== 1) {
-			throw new Error(`reservation ${reservationId} is not in reserved state`);
+			throw new LedgerStateError(`reservation ${reservationId} is not in reserved state`);
 		}
 	}
 
@@ -119,7 +126,7 @@ export function createLedger(
 				return db
 					.transaction((): { reservationId: number } => {
 						const at = now();
-						const day = new Date(at).toISOString().slice(0, 10);
+						const day = utcDay(at);
 
 						const runSpent = sumSpent(db, SPENT_FOR_RUN, input.runId);
 						if (limits.runTokenCeiling > 0 && runSpent + estimate > limits.runTokenCeiling) {
@@ -178,7 +185,7 @@ export function createLedger(
 			let budget: { tokens: number; reason: typeof CEILING_RUN | typeof CEILING_DAY } | undefined;
 			try {
 				const at = now();
-				const day = new Date(at).toISOString().slice(0, 10);
+				const day = utcDay(at);
 				const candidates: { tokens: number; reason: typeof CEILING_RUN | typeof CEILING_DAY }[] =
 					[];
 				if (limits.runTokenCeiling > 0) {

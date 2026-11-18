@@ -298,7 +298,7 @@ const SCRIPT = String.raw`
 			S.failures = 0;
 			S.gaveUp = false;
 			S.note = "";
-			try { ingest(p); } catch (e) { fatal("Could not display this result."); }
+			try { ingest(p); } catch (e) { console.error("ultrathink: ingest failed", e && e.message ? e.message : e); fatal("Could not display this result."); }
 		} else if (method === "ui/notifications/tool-input") {
 			var a = p.arguments;
 			if (a && typeof a === "object" && typeof a.sessionId === "string" && !S.sessionId) S.sessionId = a.sessionId.slice(0, 200);
@@ -559,7 +559,7 @@ const SCRIPT = String.raw`
 			if (S.torn || S.sessionId !== sid || S.status !== "planned" || S.graph) return;
 			if (!res || typeof res !== "object" || res.isError === true) { failed(); return; }
 			S.note = "";
-			try { ingest(res); } catch (e) { fatal("Could not display this result."); }
+			try { ingest(res); } catch (e) { console.error("ultrathink: ingest failed", e && e.message ? e.message : e); fatal("Could not display this result."); }
 		}, failed);
 	}
 	function fatal(message) {
@@ -607,7 +607,7 @@ const SCRIPT = String.raw`
 			if (gen !== pollGen || S.torn) { ensurePolling(pollDelay()); return; }
 			S.failures = 0;
 			S.note = "";
-			try { ingest(res); } catch (e) { fatal("Could not display this result."); }
+			try { ingest(res); } catch (e) { console.error("ultrathink: ingest failed", e && e.message ? e.message : e); fatal("Could not display this result."); }
 		}, function () {
 			polling = false;
 			if (gen !== pollGen || S.torn) { ensurePolling(pollDelay()); return; }

@@ -222,7 +222,7 @@ describe("runPrompts through the real hook", () => {
 		const timers = {
 			setTimeout: (callback: () => void) => {
 				pending.push(callback);
-				return pending.length as unknown as NodeJS.Timeout;
+				return pending.length;
 			},
 			clearTimeout: () => undefined,
 		};
@@ -323,7 +323,8 @@ describe("the Omp planner path", () => {
 		expect(outcome?.terminal).toBe("planned");
 		expect((outcome?.degraded ?? []).some((token) => token.startsWith("fill:"))).toBe(true);
 		// Three native attempts per fill (the native completer attaches its report, so the fill layer does not retry), on virtual time.
-		expect(outcome?.calls.fill).toBeGreaterThanOrEqual(9);
+		const fillNodes = (outcome?.degraded ?? []).filter((token) => token.startsWith("fill:"));
+		expect(outcome?.calls.fill).toBe(fillNodes.length * 3);
 		expect(clock.now()).toBeGreaterThan(0);
 	});
 
@@ -354,11 +355,12 @@ describe("the Omp planner path", () => {
 
 		const report = await runPrompts(scenario, { ...deps, engineSelector: engineSelector as never });
 
-		expect(selections).toBeGreaterThan(0);
+		const skipped = report.outcomes.filter((outcome) => outcome.terminal === "skipped:max-calls");
+		// The selector runs once for each prompt the cap let start, and only those: every other outcome is a skip at the cap.
+		expect(selections).toBe(report.outcomes.length - skipped.length);
 		expect(report.outcomes.every((outcome) => outcome.path === "omp")).toBe(true);
 		expect(provider.capped()).toBe(true);
 		expect(provider.calls()).toHaveLength(12);
-		const skipped = report.outcomes.filter((outcome) => outcome.terminal === "skipped:max-calls");
 		expect(skipped.length).toBeGreaterThan(0);
 		expect(report.outcomes.length).toBe(6);
 	});
@@ -597,7 +599,7 @@ describe("the stall watchdog", () => {
 		const timers = {
 			setTimeout: (callback: () => void) => {
 				pending.push(callback);
-				return pending.length as unknown as NodeJS.Timeout;
+				return pending.length;
 			},
 			clearTimeout: () => undefined,
 		};
@@ -614,6 +616,32 @@ describe("the stall watchdog", () => {
 
 		expect(report.outcomes[0]?.abortKind).toBe("ceiling");
 		expect(report.outcomes[0]?.abortReason).toBe("ceiling: still running after 777000 ms");
+	});
+
+	test("the ceiling timer is cleared with the handle it was set with, once the prompt finishes", async () => {
+		const scenario = tiny({
+			prompts: { count: 1, concurrency: 1, corpus: ["add a thing"] },
+			faults: [],
+		});
+		const { deps } = rig(scenario);
+		const handle = { ceiling: true };
+		const set: unknown[] = [];
+		const cleared: unknown[] = [];
+		const timers = {
+			setTimeout: () => {
+				set.push(handle);
+				return handle;
+			},
+			clearTimeout: (armed: unknown) => {
+				cleared.push(armed);
+			},
+		};
+
+		await runPrompts(scenario, { ...deps, timers, watchdogMs: 60_000 });
+
+		expect(set).toHaveLength(1);
+		expect(cleared).toHaveLength(1);
+		expect(cleared[0]).toBe(set[0]);
 	});
 
 	test("without a stall the sampler is stopped when the batch ends", async () => {
@@ -802,7 +830,18 @@ describe("runProbes", () => {
 		provider.quiesce();
 		const before = provider.inflight().peak;
 
-		const probes = await runProbes(scenario, deps, 5);
+		let tick = 0;
+		const probes = await runProbes(
+			scenario,
+			{
+				...deps,
+				realNow: () => {
+					tick += 100;
+					return tick;
+				},
+			},
+			5,
+		);
 
 		expect(probes.map((probe) => probe.promptId)).toEqual([4, 5, 6, 7, 8]);
 		expect(probes.map((probe) => probe.nonce)).toEqual(
@@ -812,8 +851,8 @@ describe("runProbes", () => {
 			expect(probe.terminal).toBe("planned");
 			expect(probe.record?.result.source).toBe("llm");
 			expect(probe.degraded).toEqual([]);
-			expect(probe.ms).toBeGreaterThanOrEqual(0);
-			expect(probe.realMs).toBeGreaterThanOrEqual(0);
+			expect(probe.ms).toBe(0);
+			expect(probe.realMs).toBe(100);
 		}
 		// Sequential: the batch never raised the peak of calls in flight above the run's own.
 		expect(provider.inflight().peak).toBe(before);

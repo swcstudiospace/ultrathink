@@ -59,24 +59,32 @@ describe("createPenaltyLadder", () => {
 		expect(ladder.blockedSec("ip")).toBe(60);
 	});
 
-	test("escalation doubles the block and caps it at maxSec", () => {
-		const clock = { t: START };
-		// Decay longer than the longest block, so consecutive offences stay in one ladder.
-		const ladder = ladderAt(clock, { decayMs: 2 * 60 * 60_000 });
-		const expected = [60, 120, 240, 480, 960, 1920, 3600, 3600];
+	const escalationCases: Array<[string, Partial<PenaltyOptions>]> = [
+		["decay longer than the longest block", { decayMs: 2 * 60 * 60_000 }],
+		["default decay", {}],
+	];
 
-		expected.forEach((seconds, index) => {
-			const result = failTimes(ladder, "ip", 4);
-			expect(result).toEqual({
-				blockedSec: seconds,
-				escalated: true,
-				level: index + 1,
-				tracked: true,
+	test.each(escalationCases)(
+		"escalation doubles the block and caps it at maxSec with %s",
+		(_label, overrides) => {
+			const clock = { t: START };
+			const ladder = ladderAt(clock, overrides);
+			const expected = [60, 120, 240, 480, 960, 1920, 3600, 3600];
+
+			// Each offence lands as the previous block ends, so quiet time never exceeds the decay period.
+			expected.forEach((seconds, index) => {
+				const result = failTimes(ladder, "ip", 4);
+				expect(result).toEqual({
+					blockedSec: seconds,
+					escalated: true,
+					level: index + 1,
+					tracked: true,
+				});
+				expect(result.blockedSec).toBeLessThanOrEqual(3600);
+				clock.t += seconds * 1000;
 			});
-			expect(result.blockedSec).toBeLessThanOrEqual(3600);
-			clock.t += seconds * 1000;
-		});
-	});
+		},
+	);
 
 	test("quiet for longer than the decay period resets the level to one", () => {
 		const clock = { t: START };
@@ -96,23 +104,6 @@ describe("createPenaltyLadder", () => {
 			escalated: true,
 			level: 1,
 			tracked: true,
-		});
-	});
-
-	test("escalates level by level at defaults until the maxSec cap", () => {
-		const clock = { t: START };
-		const ladder = ladderAt(clock);
-		const expected = [60, 120, 240, 480, 960, 1920, 3600, 3600];
-
-		expected.forEach((seconds, index) => {
-			const result = failTimes(ladder, "ip", 4);
-			expect(result).toEqual({
-				blockedSec: seconds,
-				escalated: true,
-				level: index + 1,
-				tracked: true,
-			});
-			clock.t += seconds * 1000;
 		});
 	});
 
@@ -208,6 +199,24 @@ describe("createPenaltyLadder", () => {
 
 		clock.t = START + 60_000 + DECAY_MS + 1;
 		expect(ladder.fail("c")).toMatchObject({ tracked: true, escalated: false });
+	});
+
+	test("a full table prunes at most once per interval, so new keys stay untracked until it elapses", () => {
+		const clock = { t: START };
+		const ladder = ladderAt(clock, { maxKeys: 2 });
+		ladder.fail("a");
+		ladder.fail("b");
+
+		// The first full-table event runs a prune at START + 10s and schedules the next for START + 70s.
+		clock.t = START + 10_000;
+		expect(ladder.fail("c")).toMatchObject({ tracked: false });
+
+		// a and b have left their window, so a prune would reclaim them, but the interval has not elapsed.
+		clock.t = START + 65_000;
+		expect(ladder.fail("c")).toMatchObject({ tracked: false });
+
+		clock.t = START + 70_000;
+		expect(ladder.fail("c")).toMatchObject({ tracked: true });
 	});
 
 	test("invalid options throw RangeError", () => {

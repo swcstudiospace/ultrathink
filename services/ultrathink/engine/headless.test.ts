@@ -16,7 +16,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ClaudeCompleter } from "../../../src/claude/complete.ts";
 import { readSession, writeSession } from "../../../src/claude/state.ts";
-import { claudeConfigPaths, loadConfig } from "../../../src/config.ts";
+import {
+	claudeConfigPaths,
+	loadConfig,
+	type UltrathinkConfig as HostConfig,
+} from "../../../src/config.ts";
 import { stageOf } from "../../../src/host/grokbot.ts";
 import { planPrompt } from "../../../src/host/plan.ts";
 import { redactText } from "../../../src/teach/redact.ts";
@@ -808,7 +812,7 @@ describe("headless planner: limits and lifecycle", () => {
 		});
 	});
 
-	test("settled jobs whose file cannot be written are kept in memory only up to the cap, and each failure is logged once", async () => {
+	test("settled jobs whose file cannot be written are kept in memory up to the cap, then answered failed from a tombstone; each failure and eviction is logged once", async () => {
 		const total = UNPERSISTED_JOBS_MAX + 5;
 		const gate = Promise.withResolvers<void>();
 		const completer: ClaudeCompleter = async (_system, _user, signal) => {
@@ -833,29 +837,42 @@ describe("headless planner: limits and lifecycle", () => {
 				data: { sessionId, status: "running", pollAfterSec: expect.any(Number) },
 			});
 		}
-		// The running file is on disk; the settled write fails because its temp path is now a directory.
-		for (const sessionId of ids)
-			mkdirSync(join(h.stateDir, "jobs", `${sessionId}.json.${process.pid}.tmp`));
+		// The running file is on disk; the settled write fails because its final path is a directory, which the rename cannot replace.
+		for (const sessionId of ids) {
+			rmSync(join(h.stateDir, "jobs", `${sessionId}.json`));
+			mkdirSync(join(h.stateDir, "jobs", `${sessionId}.json`));
+		}
 		gate.resolve();
 		for (const sessionId of ids) await h.planner.result({ sessionId, waitSeconds: 30 });
 
-		// In memory the job is failed; once dropped, only the stale running file on disk is left.
-		const seen = { failed: 0, running: 0 };
+		// Every job answers failed: those still in memory, and those dropped from memory, which keep a tombstone.
+		const seen = { failed: 0, other: 0 };
 		for (const sessionId of ids) {
 			const status = h.planner.status({ sessionId });
 			if (!status?.ok) throw new Error("job vanished");
 			if (status.data.status === "failed") seen.failed += 1;
-			else if (status.data.status === "running") seen.running += 1;
+			else seen.other += 1;
 		}
-		expect(seen).toEqual({ failed: UNPERSISTED_JOBS_MAX, running: total - UNPERSISTED_JOBS_MAX });
-		expect(events).toHaveLength(total);
-		expect(new Set(events.map((e) => e.fields?.sessionId)).size).toBe(total);
-		for (const entry of events)
+		expect(seen).toEqual({ failed: total, other: 0 });
+		const persistFailures = events.filter((e) => e.event === "job_persist_failed");
+		expect(persistFailures).toHaveLength(total);
+		expect(new Set(persistFailures.map((e) => e.fields?.sessionId)).size).toBe(total);
+		for (const entry of persistFailures)
 			expect(entry).toMatchObject({
 				level: "error",
-				event: "job_persist_failed",
 				fields: { status: "failed", error: expect.any(Error) },
 			});
+		const evictions = events.filter((e) => e.event === "job_evicted");
+		expect(evictions).toHaveLength(total - UNPERSISTED_JOBS_MAX);
+		expect(new Set(evictions.map((e) => e.fields?.sessionId)).size).toBe(evictions.length);
+		for (const entry of evictions)
+			expect(entry).toMatchObject({ level: "error", fields: { status: "failed" } });
+		// An evicted job answers from its tombstone, not from the stale running file left on disk.
+		const evicted = String(evictions[0]?.fields?.sessionId);
+		expect(await h.planner.result({ sessionId: evicted, waitSeconds: 0 })).toMatchObject({
+			ok: true,
+			data: { sessionId: evicted, status: "failed", error: "persist_failed", mode: "server" },
+		});
 		expect(JSON.stringify(events)).not.toContain(FAKE_KEY);
 		expect(JSON.stringify(events)).not.toContain(PROMPT);
 	});
@@ -1380,7 +1397,8 @@ describe("headless planner: isolation", () => {
 			expect(env[key]?.startsWith(h.stateDir)).toBe(true);
 		expect(options.stateDir).toBe(h.stateDir);
 		expect(options.control).toEqual({ enabled: true });
-		expect(options.createTracker?.(options.config as never)).toBeUndefined();
+		expect(typeof options.createTracker).toBe("function");
+		expect(options.createTracker?.(options.config as HostConfig)).toBeUndefined();
 		expect(options.signal).toBeInstanceOf(AbortSignal);
 		expect(options.config).toMatchObject({
 			track: { enabled: false },

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import type { ThoughtGraph } from "../../../src/think/types.ts";
 import { buildGraphView } from "../engine/graph-view.ts";
 import type { ResultView } from "../engine/headless.ts";
 import type { JournalResult } from "../engine/journal.ts";
+import { runWithRequestContext } from "../obs/context.ts";
 import { COMMAND_OVERLAY, MAX_ARGUMENT_CHARS } from "./commands.ts";
 import type { ToolOutcome } from "./mcp.ts";
 import {
@@ -491,6 +492,28 @@ describe("ultrathink_sessions", () => {
 		});
 		expect(okOf(throwing.handlers.sessions({})).data.planning).toEqual({ serverPlanning: true });
 	});
+
+	test("a failing planning ledger logs its error class and never its message", () => {
+		const written: string[] = [];
+		const spy = spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+			written.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write);
+		try {
+			const { handlers } = setup({
+				planningInfo: () => {
+					throw new Error("ledger rejected token sk-test-secret-value");
+				},
+			});
+			expect(okOf(handlers.sessions({})).data.planning).toEqual({ serverPlanning: false });
+		} finally {
+			spy.mockRestore();
+		}
+		const lines = written.filter((line) => line.includes("planning:"));
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("planning: Error");
+		expect(lines[0]).not.toContain("sk-test-secret-value");
+	});
 });
 
 describe("ultrathink_command", () => {
@@ -811,6 +834,30 @@ describe("caller scoping", () => {
 		const world = scoped(() => alice);
 		const { data } = okOf(world.handlers.sessions({}));
 		expect(objects(data.sessions).map((entry) => entry.sessionId)).toEqual([world.mine]);
+	});
+
+	test("a request that reached a tool without an admission sees no session of any principal", async () => {
+		const world = scoped(undefined);
+		const request = { reqId: "req-1", traceId: "trace-1", spanId: "span-1" };
+		const listed = runWithRequestContext(request, () => world.handlers.sessions({}));
+		expect(objects(okOf(listed).data.sessions)).toEqual([]);
+		const graph = await runWithRequestContext(request, () => world.handlers.graph({}));
+		expect(okOf(graph).data.status).toBe("none");
+		expect(world.planner.calls).toEqual([]);
+	});
+
+	test("a request admitted as a principal lists only that principal's sessions", () => {
+		const world = scoped(undefined);
+		const request = {
+			reqId: "req-2",
+			traceId: "trace-2",
+			spanId: "span-2",
+			admission: { principal: alice.principal, class: "bearer" as const },
+		};
+		const listed = runWithRequestContext(request, () => world.handlers.sessions({}));
+		expect(objects(okOf(listed).data.sessions).map((entry) => entry.sessionId)).toEqual([
+			world.mine,
+		]);
 	});
 });
 

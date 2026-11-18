@@ -313,10 +313,13 @@ function parseTarget(target: string): Omit<PinnedHttpsTarget, "address" | "famil
 			url.password
 		)
 			return undefined;
+		const port = url.port ? Number(url.port) : 443;
+		// Host header value from the normalised name and port: IPv6 bracketed, default port omitted.
+		const host = hostname.includes(":") ? `[${hostname}]` : hostname;
 		return {
 			hostname,
-			authority: parts[1],
-			port: url.port ? Number(url.port) : 443,
+			authority: port === 443 ? host : `${host}:${port}`,
+			port,
 			path: url.pathname + url.search,
 		};
 	} catch {

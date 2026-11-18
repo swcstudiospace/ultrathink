@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { fileURLToPath } from "node:url";
 import { type Shutdown, createShutdown, installProcessHandlers } from "./lifecycle.ts";
 import { createLogger } from "./obs/log.ts";
 
@@ -249,4 +250,54 @@ describe("installProcessHandlers", () => {
 		expect(calls).toEqual([["unhandledRejection", 1]]);
 		expect(logs[0]).toMatchObject({ event: "unhandled_rejection", error: "plain string" });
 	});
+});
+
+describe("createShutdown with real timers", () => {
+	// Integration test of the default timer: the child process uses the real clock, which is the behaviour under test.
+	// A child process loads the modules by absolute path, which a static import cannot express at run time.
+	async function runChild(body: string): Promise<{ exitCode: number; stderr: string }> {
+		const lifecycle = JSON.stringify(fileURLToPath(new URL("./lifecycle.ts", import.meta.url)));
+		const logModule = JSON.stringify(fileURLToPath(new URL("./obs/log.ts", import.meta.url)));
+		const probe = `(async () => {
+  const { createShutdown } = await import(${lifecycle});
+  const { createLogger } = await import(${logModule});
+  const logger = createLogger({ write: (line) => process.stderr.write(line + "\\n") });
+  ${body}
+})();`;
+		const child = Bun.spawn([process.execPath, "-e", probe], { stdout: "pipe", stderr: "pipe" });
+		// Watchdog only: a regression that leaves the child running is killed rather than outliving the test.
+		const watchdog = setTimeout(() => child.kill(), 10_000);
+		const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+		clearTimeout(watchdog);
+		return { exitCode, stderr };
+	}
+
+	test("a hung shutdown is cut off by the deadline and exits 1, not silently 0", async () => {
+		const { exitCode, stderr } = await runChild(`
+  const shutdown = createShutdown({
+    server: { stop() {} },
+    app: { shutdown: () => new Promise(() => {}) },
+    store: { close() {} },
+    logger,
+    timeoutMs: 50,
+    exit: (code) => process.exit(code),
+  });
+  void shutdown("SIGTERM");`);
+		expect(stderr).toContain('"event":"shutdown_timeout"');
+		expect(exitCode).toBe(1);
+	}, 15_000);
+
+	test("a clean shutdown is not held open by its deadline timer", async () => {
+		const { exitCode } = await runChild(`
+  const shutdown = createShutdown({
+    server: { stop() {} },
+    app: { shutdown: async () => {} },
+    store: { close() {} },
+    logger,
+    timeoutMs: 60_000,
+    exit: (code) => { process.exitCode = code; },
+  });
+  void shutdown("SIGTERM");`);
+		expect(exitCode).toBe(0);
+	}, 15_000);
 });

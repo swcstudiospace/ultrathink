@@ -15,7 +15,7 @@ export interface ShutdownDeps {
 	beginDrain?: () => void;
 	/** Time after `beginDrain`, before the server stops. Defaults to 0: no wait. */
 	drainMs?: number;
-	/** Runs `run` after `ms` and returns a canceller. Defaults to an unref'd timer; a test supplies its own. */
+	/** Runs `run` after `ms` and returns a canceller. Defaults to a plain timer; a test supplies its own. */
 	schedule?: (run: () => void, ms: number) => () => void;
 	exit: (code: number) => void;
 }
@@ -28,8 +28,6 @@ export interface SignalSource {
 
 function defaultSchedule(run: () => void, ms: number): () => void {
 	const timer = setTimeout(run, ms);
-	// The exit is explicit; a pending guard must not keep an otherwise finished process alive.
-	timer.unref();
 	return () => clearTimeout(timer);
 }
 

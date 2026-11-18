@@ -176,6 +176,28 @@ describe("login", () => {
 		expect(result).toEqual({ ok: false, reason: "invalid" });
 	});
 
+	test("an empty client address throws TypeError in login, allowRequest and allowApprovalAttempt alike", async () => {
+		const auth = makeAuth(makeClock());
+		await expect(auth.login({ password: PASSWORD, clientIp: "" })).rejects.toThrow(TypeError);
+		expect(() => auth.allowRequest({ clientIp: "", ownerId: "owner" })).toThrow(TypeError);
+		expect(() => auth.allowApprovalAttempt("")).toThrow(TypeError);
+	});
+
+	test("creating auth does not run a synchronous password hash", () => {
+		const hashSync = Bun.password.hashSync;
+		let calls = 0;
+		Bun.password.hashSync = ((...args: Parameters<typeof hashSync>) => {
+			calls += 1;
+			return hashSync(...args);
+		}) as typeof hashSync;
+		try {
+			makeAuth(makeClock());
+		} finally {
+			Bun.password.hashSync = hashSync;
+		}
+		expect(calls).toBe(0);
+	});
+
 	test("results never contain the password, hash, or session secret", async () => {
 		const auth = makeAuth(makeClock());
 		const results = [
@@ -198,6 +220,38 @@ describe("sessionFor", () => {
 		if (!result.ok) return;
 		const value = cookieValueOf(result.setCookie);
 		expect(auth.sessionFor(requestWithCookieValue(value))).toEqual({ ownerId: "owner" });
+	});
+
+	test("a stray session cookie ahead of the real one does not shadow it", async () => {
+		const auth = makeAuth(makeClock());
+		const result = await auth.login({ password: PASSWORD, clientIp: "198.51.100.1" });
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		const value = cookieValueOf(result.setCookie);
+		const request = new Request(ORIGIN, {
+			headers: { cookie: `${COOKIE_PREFIX}garbage; ${COOKIE_PREFIX}${value}` },
+		});
+		expect(auth.sessionFor(request)).toEqual({ ownerId: "owner" });
+	});
+
+	test("a valid session cookie followed by a junk copy still yields the session", async () => {
+		const auth = makeAuth(makeClock());
+		const result = await auth.login({ password: PASSWORD, clientIp: "198.51.100.1" });
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		const value = cookieValueOf(result.setCookie);
+		const request = new Request(ORIGIN, {
+			headers: { cookie: `${COOKIE_PREFIX}${value}; ${COOKIE_PREFIX}garbage` },
+		});
+		expect(auth.sessionFor(request)).toEqual({ ownerId: "owner" });
+	});
+
+	test("a header whose session cookies all fail verification yields no session", () => {
+		const auth = makeAuth(makeClock());
+		const request = new Request(ORIGIN, {
+			headers: { cookie: `${COOKIE_PREFIX}garbage; ${COOKIE_PREFIX}0.0.0` },
+		});
+		expect(auth.sessionFor(request)).toBeNull();
 	});
 
 	test("rejects a tampered signature", async () => {
@@ -610,6 +664,85 @@ describe("allowRequest", () => {
 		expect(denied.ok).toBe(false);
 		if (denied.ok) return;
 		expect(denied.scope).toBe("owner");
+	});
+
+	test("an ownerLimit of zero throws TypeError rather than admitting one request per window", () => {
+		const auth = makeAuth(makeClock());
+		expect(() =>
+			auth.allowRequest({ clientIp: "198.51.100.1", ownerId: "owner", ownerLimit: 0 }),
+		).toThrow(TypeError);
+	});
+
+	test("filling the request table with principals does not refuse a new client IP", () => {
+		const auth = makeAuth(makeClock());
+		const ownerLimit = 1_000_000;
+		// 100 principals per IP keeps each IP under its window while the principal table fills to its cap.
+		for (let i = 0; i < 10_000; i++) {
+			const clientIp = `10.1.0.${Math.floor(i / 100)}`;
+			expect(
+				auth.allowRequest({ clientIp, ownerId: "owner", principal: `p${i}`, ownerLimit }),
+			).toEqual({
+				ok: true,
+			});
+		}
+		expect(auth.allowRequest({ clientIp: "198.51.100.200", ownerId: "owner", ownerLimit })).toEqual(
+			{ ok: true },
+		);
+	});
+
+	test("a full principal table reclaims expired windows only at the prune interval", () => {
+		const clock = makeClock();
+		const start = clock.t;
+		const auth = makeAuth(clock);
+		const ownerLimit = 1_000_000;
+		const churn = (from: number, to: number) => {
+			for (let i = from; i < to; i++) {
+				const clientIp = `10.1.0.${Math.floor(i / 100)}`;
+				expect(
+					auth.allowRequest({ clientIp, ownerId: "owner", principal: `p${i}`, ownerLimit }),
+				).toEqual({
+					ok: true,
+				});
+			}
+		};
+		// The first principal hit schedules a prune at start + 60s. The rest of the 10,000 keys expire at start + 90s.
+		clock.t = start;
+		churn(0, 1);
+		clock.t = start + 30_000;
+		churn(1, 10_000);
+		// The scheduled prune reclaims the first key and schedules the next one for start + 120s.
+		clock.t = start + 60_000;
+		expect(
+			auth.allowRequest({
+				clientIp: "198.51.100.1",
+				ownerId: "owner",
+				principal: "tick",
+				ownerLimit,
+			}),
+		).toEqual({
+			ok: true,
+		});
+		// Every churned window has expired, but the next prune is not due, so the full table still refuses.
+		clock.t = start + 90_000;
+		expect(
+			auth.allowRequest({
+				clientIp: "198.51.100.200",
+				ownerId: "owner",
+				principal: "probe",
+				ownerLimit,
+			}),
+		).toMatchObject({ ok: false, scope: "principal" });
+		clock.t = start + 120_000;
+		expect(
+			auth.allowRequest({
+				clientIp: "198.51.100.200",
+				ownerId: "owner",
+				principal: "probe",
+				ownerLimit,
+			}),
+		).toEqual({
+			ok: true,
+		});
 	});
 });
 

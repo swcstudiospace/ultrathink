@@ -61,6 +61,7 @@ export function createMetrics(opts: MetricsOptions = {}): Metrics {
 	const families = new Map<string, Family>();
 
 	function normalizeLabels(
+		metric: string,
 		labels: Record<string, string> | undefined,
 		reserved?: string,
 	): Array<[string, string]> {
@@ -68,6 +69,11 @@ export function createMetrics(opts: MetricsOptions = {}): Metrics {
 		for (const key of Object.keys(labels ?? {})) {
 			const name = labelName(key);
 			if (name === reserved || name.startsWith("__")) continue;
+			// Two raw keys that sanitize to one name collide: keep the first, count the rest.
+			if (merged.has(name)) {
+				countDropped(metricName(metric));
+				continue;
+			}
 			merged.set(name, String(labels?.[key]));
 		}
 		return [...merged.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
@@ -118,13 +124,13 @@ export function createMetrics(opts: MetricsOptions = {}): Metrics {
 	return {
 		inc(name, labels, by = 1) {
 			if (!Number.isFinite(by) || by < 0) return;
-			const norm = normalizeLabels(labels);
+			const norm = normalizeLabels(name, labels);
 			const series = seriesFor(name, "counter", norm, () => ({ labels: norm, value: 0 }));
 			if (series) series.value += by;
 		},
 		observe(name, value, labels) {
 			if (!Number.isFinite(value)) return;
-			const norm = normalizeLabels(labels, "le");
+			const norm = normalizeLabels(name, labels, "le");
 			const series = seriesFor(name, "histogram", norm, () => ({
 				labels: norm,
 				value: 0,
@@ -140,7 +146,7 @@ export function createMetrics(opts: MetricsOptions = {}): Metrics {
 		},
 		gauge(name, value, labels) {
 			if (!Number.isFinite(value)) return;
-			const norm = normalizeLabels(labels);
+			const norm = normalizeLabels(name, labels);
 			const series = seriesFor(name, "gauge", norm, () => ({ labels: norm, value: 0 }));
 			if (series) series.value = value;
 		},

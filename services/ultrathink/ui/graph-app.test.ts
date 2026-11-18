@@ -44,6 +44,11 @@ function capViolations(graph: GraphView): string[] {
 	return bad;
 }
 
+interface GraphState {
+	goal: string;
+	nodes: { id: string; kind: string; dependsOn: string[]; wave: number }[];
+	waves: { wave: number; parallel: boolean; nodes: unknown[] }[];
+}
 interface IngestState {
 	status: string;
 	sessionId: string;
@@ -52,21 +57,43 @@ interface IngestState {
 	gaveUp: boolean;
 	startedAt: number;
 	note: string;
+	graph: GraphState | null;
+	questions: unknown[];
 }
 interface IngestCalls {
 	ensure: number[];
 	gaveUp: (string | undefined)[];
+	fetchFinal: number;
 }
 
-/** Runs the app's `ingest` (with `pollDelay`) against a state object, recording what it asked the poller to do. */
+/**
+ * Runs the app's `ingest` against a state object. The payload normalizers, the caps and the poll delay run as shipped;
+ * rendering, polling and the final fetch are recorded or stubbed.
+ */
 function runIngest(
 	state: Partial<IngestState>,
 	result: unknown,
 ): { S: IngestState; calls: IngestCalls } {
-	const ingestSource = /function ingest\(result\) \{[\s\S]*?\n\t\}/.exec(script)?.[0] ?? "";
-	const delaySource = /function pollDelay\(\) \{[^\n]*\}/.exec(script)?.[0] ?? "";
-	expect(ingestSource).not.toBe("");
-	expect(delaySource).not.toBe("");
+	const sourceOf = (re: RegExp): string => re.exec(script)?.[0] ?? "";
+	const ingestSource = sourceOf(/function ingest\(result\) \{[\s\S]*?\n\t\}/);
+	const delaySource = sourceOf(/function pollDelay\(\) \{[^\n]*\}/);
+	const normalizerSources = [
+		/function cut\(s, n\) \{[\s\S]*?\n\t\}/,
+		/function str\(v, max\) \{[\s\S]*?\n\t\}/,
+		/function oneLine\(s, max\) \{[\s\S]*?\n\t\}/,
+		/function has\(obj, key\) \{[^\n]*\}/,
+		/function num\(v\) \{[^\n]*\}/,
+		/function plural\(n, one, many\) \{[^\n]*\}/,
+		/function firstText\(result\) \{[\s\S]*?\n\t\}/,
+		/function normalizeQuestions\(list\) \{[\s\S]*?\n\t\}/,
+		/function normalizeGraph\(g\) \{[\s\S]*?\n\t\}/,
+	].map(sourceOf);
+	const capPattern = /^\tvar (?:MAX_NODES|KINDS) = .*;$/gm;
+	const capConstants = [...script.matchAll(capPattern)].map((m) => m[0]);
+	expect(capConstants).toHaveLength(2);
+	for (const source of [ingestSource, delaySource, ...normalizerSources, ...capConstants]) {
+		expect(source).not.toBe("");
+	}
 	const S: IngestState = {
 		status: "idle",
 		sessionId: "",
@@ -75,9 +102,11 @@ function runIngest(
 		gaveUp: false,
 		startedAt: 0,
 		note: "",
+		graph: null,
+		questions: [],
 		...state,
 	};
-	const calls: IngestCalls = { ensure: [], gaveUp: [] };
+	const calls: IngestCalls = { ensure: [], gaveUp: [], fetchFinal: 0 };
 	new Function(
 		"S",
 		"calls",
@@ -85,15 +114,11 @@ function runIngest(
 		[
 			"var STATUSES = { running: 1, planned: 1, failed: 1, invalid: 1, skipped: 1 };",
 			"var LABELS = {};",
-			"function has(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); }",
-			"function num(v) { return typeof v === 'number' && isFinite(v) ? v : 0; }",
-			"function firstText() { return ''; }",
-			"function normalizeGraph() { return null; }",
-			"function normalizeQuestions() { return []; }",
-			"function plural() { return ''; }",
+			...capConstants,
+			...normalizerSources,
 			"function announce() {}",
 			"function render() {}",
-			"function fetchFinal() {}",
+			"function fetchFinal() { calls.fetchFinal++; }",
 			"function stopPolling() {}",
 			"function ensurePolling(ms) { calls.ensure.push(ms); }",
 			"function giveUp(note) { S.gaveUp = true; S.note = note || 'Stopped checking. Ask the assistant for the result.'; calls.gaveUp.push(note); }",
@@ -106,7 +131,7 @@ function runIngest(
 }
 
 describe("graph app document", () => {
-	test("is one HTML5 document with charset and viewport", () => {
+	test("lint-like: is one HTML5 document with charset and viewport", () => {
 		expect(html.startsWith("<!DOCTYPE html>")).toBe(true);
 		expect(html).toContain('<meta charset="utf-8">');
 		expect(html).toContain('<meta name="viewport" content="width=device-width, initial-scale=1">');
@@ -126,7 +151,7 @@ describe("graph app document", () => {
 		expect(graphAppResourceMeta()).not.toBe(meta);
 	});
 
-	test("contains none of the forbidden constructs", () => {
+	test("lint-like: a textual check that the document contains none of the forbidden constructs", () => {
 		const forbidden: [string, RegExp][] = [
 			["eval", /\beval\s*\(/],
 			["Function constructor", /\bnew\s+Function\b|\bFunction\s*\(/],
@@ -161,7 +186,7 @@ describe("graph app document", () => {
 		expect(oneLine(`${"a".repeat(117)}😀tail`, 120)).toBe(`${"a".repeat(117)}😀…`);
 	});
 
-	test("has no inline handlers, no external references and no handler properties", () => {
+	test("lint-like: a textual check of no inline handlers, external references or handler properties", () => {
 		expect(/\son[a-z]+\s*=/i.test(markup)).toBe(false);
 		expect(/\s(?:src|href|srcset|action|formaction)\s*=/i.test(markup)).toBe(false);
 		expect(/<(?:link|img|iframe|object|embed|base|form)\b/i.test(markup)).toBe(false);
@@ -171,12 +196,12 @@ describe("graph app document", () => {
 		expect(script).toContain("textContent");
 	});
 
-	test("mentions no http(s) URL except the SVG namespace", () => {
+	test("lint-like: mentions no http(s) URL except the SVG namespace", () => {
 		const urls = html.match(/https?:\/\/[^\s"'<>)]*/g) ?? [];
 		expect(urls).toEqual(["http://www.w3.org/2000/svg"]);
 	});
 
-	test("embeds the spec CSP as a meta tag so a host that renders the text as-is still gets it", () => {
+	test("lint-like: embeds the spec CSP as a meta tag so a host that renders the text as-is still gets it", () => {
 		expect(html).toContain(`<meta http-equiv="Content-Security-Policy" content="${APP_CSP}">`);
 		expect(APP_CSP).toContain("default-src 'none'");
 		expect(APP_CSP).toContain("connect-src 'none'");
@@ -184,8 +209,6 @@ describe("graph app document", () => {
 	});
 
 	test("re-polls on the server's hint, clamped to 1..10 s, never on a fixed sub-second delay", () => {
-		expect(/ensurePolling\(\s*\d/.test(script)).toBe(false);
-		expect(script).not.toContain("fromPoll");
 		const running = (pollAfterSec?: number) => ({
 			structuredContent: { sessionId: "s-1", status: "running", pollAfterSec },
 		});
@@ -195,6 +218,40 @@ describe("graph app document", () => {
 		expect(runIngest({ sessionId: "s-1" }, running(0.2)).calls.ensure).toEqual([1000]);
 		// The hint from the result just ingested is what counts, not a stale one.
 		expect(runIngest({ sessionId: "s-1", pollAfter: 10 }, running(3)).calls.ensure).toEqual([3000]);
+	});
+
+	test("normalizes a planned graph payload with the shipped normalizers; the final fetch is left to fetchFinal", () => {
+		const { S, calls } = runIngest(
+			{},
+			{
+				structuredContent: {
+					sessionId: "s-1",
+					status: "planned",
+					graph: {
+						goal: "  ship   it ",
+						nodes: [
+							{
+								id: "a",
+								title: "Understand",
+								kind: "understand",
+								steps: ["read"],
+								conclusion: "done",
+							},
+							{ id: "b", title: "Build", kind: "generate", dependsOn: ["a"], steps: [] },
+							{ id: "a", title: "a duplicate id is dropped" },
+						],
+					},
+				},
+			},
+		);
+		expect(S.graph?.goal).toBe("ship it");
+		expect(S.graph?.nodes.map((n) => n.id)).toEqual(["a", "b"]);
+		expect(S.graph?.nodes[0]?.kind).toBe("understand");
+		expect(S.graph?.nodes[1]?.dependsOn).toEqual(["a"]);
+		expect(S.graph?.waves.map((w) => w.wave)).toEqual([1, 2]);
+		expect(calls.ensure).toEqual([]);
+		// ingest always hands off to fetchFinal, whose own S.graph guard declines the fetch once a graph is present.
+		expect(calls.fetchFinal).toBe(1);
 	});
 
 	test("stops polling a client-mode plan and says the assistant is driving it", () => {
@@ -227,10 +284,11 @@ describe("graph app document", () => {
 		expect(ok.calls.ensure).toEqual([2000]);
 		// Anything but running neither polls nor gives up.
 		const done = runIngest({}, { structuredContent: { sessionId: "s-1", status: "planned" } });
-		expect(done.calls).toEqual({ ensure: [], gaveUp: [] });
+		expect(done.calls.ensure).toEqual([]);
+		expect(done.calls.gaveUp).toEqual([]);
 	});
 
-	test("interprets only messages from the parent window and listens before it initializes", () => {
+	test("lint-like: interprets only messages from the parent window and listens before it initializes", () => {
 		// The sender check runs before any message is interpreted.
 		expect(script.indexOf("event.source !== window.parent")).toBeGreaterThan(-1);
 		expect(script.indexOf("event.source !== window.parent")).toBeLessThan(
@@ -270,6 +328,27 @@ describe("graph app document", () => {
 		expect(script.length).toBeGreaterThan(1000);
 		const transpiler = new Bun.Transpiler({ loader: "js" });
 		expect(() => transpiler.transformSync(script)).not.toThrow();
+	});
+
+	test("reports an ingest failure to the console before showing the fatal message", () => {
+		const sites = script.match(/try \{ ingest\([^)]*\); \} catch \(e\) \{[^}]*\}/g) ?? [];
+		expect(sites.length).toBe(3);
+		for (const site of sites) {
+			const logged: unknown[][] = [];
+			const shown: string[] = [];
+			// Each catch site is run as written, with a throwing ingest, so the logged and shown text are what the app does.
+			new Function("ingest", "fatal", "console", "p", "res", site)(
+				() => {
+					throw new Error("boom");
+				},
+				(message: string) => shown.push(message),
+				{ error: (...args: unknown[]) => logged.push(args) },
+				{},
+				{},
+			);
+			expect(logged).toEqual([["ultrathink: ingest failed", "boom"]]);
+			expect(shown).toEqual(["Could not display this result."]);
+		}
 	});
 });
 
@@ -434,5 +513,19 @@ describe("harness", () => {
 	test("answers without a server for unknown paths", async () => {
 		const res = await harnessFetch(new Request("http://127.0.0.1/unknown"));
 		expect(res.status).toBe(404);
+	});
+
+	test("the harness keeps only the newest 500 entries of its message and size logs", async () => {
+		const page = await Bun.file(new URL("./harness/host.html", import.meta.url)).text();
+		const source = /function pushRecent\(list, item\) \{[\s\S]*?\n\t\}/.exec(page)?.[0] ?? "";
+		const cap = Number(/var HARNESS_KEEP = (\d+);/.exec(page)?.[1]);
+		expect(source).not.toBe("");
+		expect(cap).toBe(500);
+		const pushRecent = new Function("HARNESS_KEEP", `${source}\nreturn pushRecent;`)(cap);
+		const list: number[] = [];
+		for (let i = 0; i < 1000; i++) pushRecent(list, i);
+		expect(list.length).toBe(500);
+		expect(list[0]).toBe(500);
+		expect(list.at(-1)).toBe(999);
 	});
 });

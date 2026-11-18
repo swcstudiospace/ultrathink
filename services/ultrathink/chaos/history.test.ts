@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendHistory, readHistory } from "./history.ts";
@@ -113,5 +113,35 @@ describe("appendHistory", () => {
 		const read = readHistory(path);
 		expect(read.records.map((record) => record.seq)).toEqual([1, 2]);
 		expect(read.skipped).toBe(1);
+	});
+
+	test("concurrent appends from separate processes get distinct seqs and every line parses", async () => {
+		const path = join(root, "concurrent.jsonl");
+		const worker = join(root, "append-worker.ts");
+		writeFileSync(
+			worker,
+			`import { appendHistory } from ${JSON.stringify(join(import.meta.dir, "history.ts"))};\n` +
+				"const [path, runJson, count] = process.argv.slice(2);\n" +
+				"for (let i = 0; i < Number(count); i += 1) appendHistory(path, JSON.parse(runJson));\n",
+		);
+		const runJson = JSON.stringify(run("orders", 50));
+		const workers = [0, 1].map(() =>
+			Bun.spawn([process.execPath, worker, path, runJson, "25"], {
+				stdout: "ignore",
+				stderr: "pipe",
+			}),
+		);
+		const results = await Promise.all(
+			workers.map((proc) => Promise.all([proc.exited, new Response(proc.stderr).text()])),
+		);
+		expect(results).toEqual([
+			[0, ""],
+			[0, ""],
+		]);
+		const read = readHistory(path);
+		expect(read.skipped).toBe(0);
+		const seqs = read.records.map((record) => record.seq).sort((a, b) => a - b);
+		expect(seqs).toEqual(Array.from({ length: 50 }, (_, index) => index + 1));
+		expect(existsSync(`${path}.lock`)).toBe(false);
 	});
 });

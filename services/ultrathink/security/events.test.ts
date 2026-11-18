@@ -3,7 +3,12 @@
 import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { createLogger } from "../obs/log.ts";
-import { ConsoleSecurityEventLogger, SecurityEventType, createSecurityEvent } from "./events.ts";
+import {
+	ConsoleSecurityEventLogger,
+	SecurityEventType,
+	StreamingSecurityEventLogger,
+	createSecurityEvent,
+} from "./events.ts";
 
 describe("Security events", () => {
 	test("writes an auth failure through the structured logger", () => {
@@ -85,4 +90,42 @@ describe("Security events", () => {
 			details: { field: "field", code: "PROBE" },
 		});
 	}, 15_000);
+
+	test("a failing onEvent sink never reaches the caller: each failure is counted, one warning per window carries no event details", () => {
+		const lines: string[] = [];
+		let nowMs = 1_000_000;
+		const logger = new StreamingSecurityEventLogger(
+			createLogger({ write: (line) => lines.push(line) }),
+			() => {
+				throw new Error("sink down");
+			},
+			() => nowMs,
+		);
+		const event = createSecurityEvent(SecurityEventType.AUTH_FAILURE, {
+			name: "auth.login_failed",
+			source: "auth",
+			severity: "medium",
+			ip: "203.0.113.7",
+			resource: "/login",
+			details: {},
+		});
+
+		for (let i = 0; i < 3; i++) expect(() => logger.log(event)).not.toThrow();
+		expect(logger.sinkFailureCount).toBe(3);
+		const warnings = () =>
+			lines
+				.map((line) => JSON.parse(line))
+				.filter((parsed) => parsed.event === "security.event_sink_failed");
+		expect(warnings()).toHaveLength(1);
+		expect(warnings()[0]).toMatchObject({ level: "warn", failures: 1 });
+		expect(lines.find((line) => line.includes("security.event_sink_failed"))).not.toContain(
+			"203.0.113.7",
+		);
+
+		nowMs += 60_000;
+		logger.log(event);
+		expect(logger.sinkFailureCount).toBe(4);
+		expect(warnings()).toHaveLength(2);
+		expect(warnings()[1]).toMatchObject({ failures: 4 });
+	});
 });

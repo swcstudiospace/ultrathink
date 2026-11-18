@@ -28,7 +28,7 @@ import {
 	sessionVisibleTo,
 } from "../engine/sessions.ts";
 import { currentRequestContext } from "../obs/context.ts";
-import { createLogger } from "../obs/log.ts";
+import { createLogger, failureLabel } from "../obs/log.ts";
 import { GRAPH_APP_URI } from "../ui/graph-app.ts";
 import { isRecord } from "../../../src/shared.ts";
 import {
@@ -376,11 +376,23 @@ function thinkArguments(text: string | undefined): { sessionId?: string; node?: 
 	return node === "" ? { sessionId: first } : { sessionId: first, node };
 }
 
+/**
+ * Outside any request (the stdio host, in-process callers) nothing is scoped: this caller is the owner, so it sees every
+ * session exactly as an unscoped listing does.
+ */
+const LOCAL_OWNER: SessionCaller = { principal: "local", owner: true };
+/**
+ * A request that reached a tool without an admission: scoped to a principal no session names, so it sees none.
+ */
+const UNADMITTED: SessionCaller = { principal: "unadmitted", owner: false };
+
 /** The caller of the request being served, from the admission the router put on its context. */
-export function requestCaller(): SessionCaller | undefined {
-	const admission = currentRequestContext()?.admission;
+export function requestCaller(): SessionCaller {
+	const context = currentRequestContext();
+	if (context === undefined) return LOCAL_OWNER;
+	const admission = context.admission;
 	return admission === undefined
-		? undefined
+		? UNADMITTED
 		: { principal: admission.principal, owner: admission.class === "owner" };
 }
 
@@ -393,7 +405,8 @@ export function createConnectorHandlers(deps: ConnectorDeps): ConnectorHandlers 
 		if (deps.planningInfo === undefined) return fallback;
 		try {
 			return deps.planningInfo();
-		} catch {
+		} catch (error) {
+			connectorLogger.warn(`planning: ${failureLabel(error)}`);
 			// A ledger that cannot answer must not hide the sessions.
 			return fallback;
 		}

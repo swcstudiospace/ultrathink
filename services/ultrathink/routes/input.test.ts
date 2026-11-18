@@ -15,6 +15,14 @@ describe("sanitizeInput", () => {
 		expect(sanitizeInput(raw, 100)).toEqual({ ok: true, text: "line one\n\tline two" });
 	});
 
+	test("strips carriage return, so CRLF becomes LF", () => {
+		expect(sanitizeInput("a\rb", 100)).toEqual({ ok: true, text: "ab" });
+		expect(sanitizeInput("line one\r\nline two", 100)).toEqual({
+			ok: true,
+			text: "line one\nline two",
+		});
+	});
+
 	test("empty string gives empty", () => {
 		expect(sanitizeInput("", 100)).toEqual({ ok: false, code: "empty" });
 	});

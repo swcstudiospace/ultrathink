@@ -5,13 +5,14 @@
  * Provides comprehensive input validation at trust boundaries
  */
 
-export interface ValidationResult<T> {
-	valid: boolean;
-	value?: T;
-	errors: ValidationError[];
-}
+/**
+ * A failed check carries no value; a passing one always does. Narrow on `valid` before reading `value`.
+ */
+export type ValidationResult<T> =
+	| { valid: true; value: T; errors: [] }
+	| { valid: false; value?: undefined; errors: ValidationError[] };
 
-interface ValidationError {
+export interface ValidationError {
 	field: string;
 	code: string;
 	message: string;
@@ -42,14 +43,6 @@ abstract class BaseValidator<T> implements Validator<T> {
 			valid: false,
 			errors: [{ field, code, message, received }],
 		};
-	}
-
-	protected combine(...results: ValidationResult<unknown>[]): ValidationResult<T> {
-		const errors = results.flatMap((r) => r.errors);
-		if (errors.length > 0) {
-			return { valid: false, errors };
-		}
-		return { valid: true, errors: [] };
 	}
 }
 
@@ -200,12 +193,26 @@ export class EmailValidator extends BaseValidator<string> {
 		const stringResult = new StringValidator({ maxLength: 254 }).validate(value);
 		if (!stringResult.valid) return stringResult;
 
-		if (!EmailValidator.EMAIL_REGEX.test(stringResult.value!)) {
+		if (!EmailValidator.EMAIL_REGEX.test(stringResult.value)) {
 			return this.failure("email", "INVALID_EMAIL", "Invalid email format", value);
 		}
 
-		return this.success(stringResult.value!);
+		return this.success(stringResult.value);
 	}
+}
+
+/**
+ * Loopback and unspecified hosts. WHATWG keeps the brackets around IPv6 literals, so they are stripped first.
+ */
+function isLoopbackHost(hostname: string): boolean {
+	const host = hostname.replace(/^\[|\]$/g, "");
+	return (
+		host === "localhost" ||
+		host === "::1" ||
+		host === "::" ||
+		host === "0.0.0.0" ||
+		/^127\./.test(host)
+	);
 }
 
 /**
@@ -221,7 +228,7 @@ export class UrlValidator extends BaseValidator<string> {
 		if (!stringResult.valid) return stringResult;
 
 		try {
-			const url = new URL(stringResult.value!);
+			const url = new URL(stringResult.value);
 			const protocols = this.options.protocols ?? ["http:", "https:"];
 			if (!protocols.includes(url.protocol)) {
 				return this.failure(
@@ -231,10 +238,7 @@ export class UrlValidator extends BaseValidator<string> {
 					value,
 				);
 			}
-			if (
-				!this.options.allowLocalhost &&
-				(url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1")
-			) {
+			if (!this.options.allowLocalhost && isLoopbackHost(url.hostname)) {
 				return this.failure(
 					"url",
 					"LOCALHOST_NOT_ALLOWED",
@@ -242,7 +246,7 @@ export class UrlValidator extends BaseValidator<string> {
 					value,
 				);
 			}
-			return this.success(stringResult.value!);
+			return this.success(stringResult.value);
 		} catch {
 			return this.failure("url", "INVALID_URL", "Invalid URL format", value);
 		}
@@ -259,7 +263,7 @@ export class UuidValidator extends BaseValidator<string> {
 	validate(value: unknown): ValidationResult<string> {
 		const stringResult = new StringValidator({ pattern: UuidValidator.UUID_REGEX }).validate(value);
 		if (!stringResult.valid) return stringResult;
-		return this.success(stringResult.value!);
+		return this.success(stringResult.value);
 	}
 }
 
@@ -281,8 +285,8 @@ export class ObjectValidator<T extends Record<string, unknown>> extends BaseVali
 
 		const obj = value as Record<string, unknown>;
 		const errors: ValidationError[] = [];
-		// Copy so accepted unknown keys pass through; schema keys are replaced with their converted values.
-		const out: Record<string, unknown> = { ...obj };
+		// Unknown keys pass through only when allowExtraKeys is set; otherwise the value holds the schema fields alone.
+		const out: Record<string, unknown> = this.options.allowExtraKeys ? { ...obj } : {};
 
 		// Validate required fields
 		for (const [key, validator] of Object.entries(this.schema)) {
@@ -363,7 +367,7 @@ export class ArrayValidator<T> extends BaseValidator<T[]> {
 					...result.errors.map((e) => ({ ...e, field: `[${i}]${e.field ? `.${e.field}` : ""}` })),
 				);
 			} else {
-				results.push(result.value!);
+				results.push(result.value);
 			}
 		}
 
@@ -521,10 +525,13 @@ export function validateOrThrow<T>(value: unknown, validator: Validator<T>): T {
 		const messages = result.errors.map((e) => `${e.field}: ${e.message}`).join("; ");
 		throw new ValidationException(messages, result.errors);
 	}
-	return result.value!;
+	if (result.value === undefined) {
+		throw new ValidationException("validator accepted the value without returning it", []);
+	}
+	return result.value;
 }
 
-class ValidationException extends Error {
+export class ValidationException extends Error {
 	constructor(
 		message: string,
 		public readonly errors: ValidationError[],
