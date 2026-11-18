@@ -13,7 +13,7 @@
  * Success is established only from the actual lifecycle/retention/installer outcome plus a fresh
  * persisted reread. A zero exit code alone is never success.
  */
-import { createHash } from "node:crypto";
+import { fingerprintOf } from "../shared.ts";
 import { runTeachCommand } from "../teach/cli.ts";
 import type { CommandDeps } from "../teach/cli.ts";
 import { teachEnabled } from "../teach/context.ts";
@@ -205,10 +205,6 @@ function parseResultJson(text: string): Record<string, unknown> | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-function fingerprintOf(content: string): string {
-	return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 const CONFIRM_RETAINS: Record<string, true> = { retained: true, queued: true, "local-only": true };

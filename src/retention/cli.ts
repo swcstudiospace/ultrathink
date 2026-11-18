@@ -7,7 +7,7 @@
  */
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { resolveStateDir } from "../host/paths.ts";
-import { formatBytes } from "../shared.ts";
+import { formatBytes, plural } from "../shared.ts";
 import { type PruneResult, pruneSessions } from "./prune.ts";
 
 export interface PruneCommandResult {
@@ -57,10 +57,6 @@ function parseDays(value: string): number | undefined {
 	if (!match) return undefined;
 	const days = Number(match[1]);
 	return days >= 1 && days <= MAX_DAYS ? days : undefined;
-}
-
-function plural(count: number, noun: string): string {
-	return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 function render(result: PruneResult, days: number, stateDir: string): string {

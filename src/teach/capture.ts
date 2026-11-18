@@ -13,6 +13,7 @@ import type {
 	HindsightResult,
 	RetainOutcome,
 } from "../hindsight/types.ts";
+import { nowOf, unique } from "../shared.ts";
 import { hindsightFor, teachEnabled, tryStore } from "./context.ts";
 import {
 	contentFor,
@@ -61,10 +62,6 @@ const STATUS_RANK: Record<MomentStatus, number> = {
 type Failure = { ok: false; kind?: HindsightErrorKind; message: string };
 type Step = { ok: true } | Failure;
 
-function nowOf(ctx: TeachContext): number {
-	return (ctx.now ?? Date.now)();
-}
-
 function oneLine(text: string, max: number): string {
 	return text.replace(/\s+/g, " ").trim().slice(0, max).trimEnd();
 }
@@ -73,10 +70,6 @@ function oneLine(text: string, max: number): string {
 function isRetained(moment: TeachableMoment): boolean {
 	if (!moment.retained) return false;
 	return !(Date.parse(moment.retained.at) < Date.parse(moment.lastSeenAt));
-}
-
-function unique(items: readonly string[], max: number): string[] {
-	return [...new Set(items)].slice(0, max);
 }
 
 /**
@@ -134,7 +127,7 @@ function buildMoment(
 					typeof item === "string" ? [oneLine(redactText(item, redact), max)] : [],
 				)
 				.filter(Boolean),
-			MAX_LIST_ITEMS,
+			{ max: MAX_LIST_ITEMS },
 		);
 
 	const name = oneLine(redactText(rawName, redact), MAX_NAME_CHARS);
@@ -161,7 +154,7 @@ function buildMoment(
 		tags: list(input.tags, 80).slice(0, MAX_TAGS),
 		relatedIds: unique(
 			(Array.isArray(input.relatedIds) ? input.relatedIds : []).filter(isValidId),
-			MAX_LIST_ITEMS,
+			{ max: MAX_LIST_ITEMS },
 		),
 		schema: 2,
 		kind,
@@ -192,9 +185,11 @@ function mergeMoments(old: TeachableMoment, fresh: TeachableMoment): TeachableMo
 		body: better ? fresh.body : old.body,
 		description: better && fresh.description !== "" ? fresh.description : old.description,
 		sourcePhase: old.sourcePhase || fresh.sourcePhase,
-		sourceArtifacts: unique([...old.sourceArtifacts, ...fresh.sourceArtifacts], MAX_LIST_ITEMS),
-		tags: unique([...old.tags, ...fresh.tags], MAX_TAGS),
-		relatedIds: unique([...old.relatedIds, ...fresh.relatedIds], MAX_LIST_ITEMS),
+		sourceArtifacts: unique([...old.sourceArtifacts, ...fresh.sourceArtifacts], {
+			max: MAX_LIST_ITEMS,
+		}),
+		tags: unique([...old.tags, ...fresh.tags], { max: MAX_TAGS }),
+		relatedIds: unique([...old.relatedIds, ...fresh.relatedIds], { max: MAX_LIST_ITEMS }),
 		status,
 		confidence: Math.max(old.confidence, fresh.confidence),
 		occurrences: old.occurrences + 1,

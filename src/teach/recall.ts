@@ -8,8 +8,8 @@
  */
 import type { RecallHit } from "../hindsight/types.ts";
 import { PREVIEW_MAX_CHARS } from "../recall/panel-model.ts";
+import { nowOf, type TimerPort } from "../shared.ts";
 import { hindsightFor, teachEnabled, tryStore } from "./context.ts";
-import type { TimerPort } from "./launch-supervisor.ts";
 import { lessonFromHit, projectOf, sanitizeTag } from "./mapping.ts";
 import { redactLine } from "./redact.ts";
 import { newestFirst } from "./store.ts";
@@ -35,10 +35,6 @@ const STOPWORDS: Record<string, true> = Object.fromEntries(
 		.split(" ")
 		.map((word) => [word, true] as const),
 );
-
-function nowOf(ctx: TeachContext): number {
-	return (ctx.now ?? Date.now)();
-}
 
 /** Resolves with undefined when `signal` aborts first; the losing promise's rejection is swallowed. */
 function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
@@ -239,7 +235,7 @@ async function findLessons(
 	const store = tryStore(ctx);
 	let error: string | undefined;
 
-	const remaining = Math.max(1, budgetMs - (Date.now() - started));
+	const remaining = Math.max(1, budgetMs - (nowOf(ctx) - started));
 	const { client } = hindsightFor(ctx, { timeoutMs: remaining, signal });
 	if (client) {
 		try {
@@ -327,7 +323,7 @@ export const recallLessons = async (
 	ctx.signal?.addEventListener("abort", onAbort, { once: true });
 	if (ctx.signal?.aborted) controller.abort();
 	try {
-		const found = await findLessons(request, ctx, controller.signal, Date.now(), budgetMs);
+		const found = await findLessons(request, ctx, controller.signal, nowOf(ctx), budgetMs);
 		if (found.lessons.length === 0)
 			return found.error ? outcome("error", { reason: found.error }) : outcome("none");
 		const chars = request.chars ?? ctx.config.teach.recallChars;

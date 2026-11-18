@@ -10,6 +10,7 @@ import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { defaultStateDir } from "../claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
+import { plural } from "../shared.ts";
 import { isObserveFailure, type ObserveRun, readRuns } from "../teach/runlog.ts";
 import { OUTBOX_MAX_BYTES, storeDir } from "../teach/store.ts";
 import { type CaptureMode, TEACH_KILL_ENV } from "../teach/types.ts";
@@ -27,10 +28,6 @@ interface OutboxItem {
 	enqueuedAt: number;
 	attempts: number;
 	lastError?: string;
-}
-
-function plural(count: number, noun: string): string {
-	return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 function jsonFiles(dir: string): string[] {

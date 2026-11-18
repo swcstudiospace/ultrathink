@@ -4,6 +4,7 @@
  * Helpers shared by root and services code. Imports only `node:*` modules so
  * that every tree can import it without an import cycle.
  */
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 
 /** A non-null, non-array object: the shape every JSON-object check means. */
@@ -50,6 +51,11 @@ export function formatBytes(bytes: number): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** `count` and `noun`, the noun in its plural form unless the count is exactly one. */
+export function plural(count: number, noun: string): string {
+	return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
 /** A file's identity on disk (size, mtime, inode), or `undefined` when it cannot be stat'ed. */
 export function diskFingerprint(
 	path: string,
@@ -61,3 +67,28 @@ export function diskFingerprint(
 		return undefined;
 	}
 }
+
+/** The clock a teach context injects, else the wall clock. */
+export function nowOf(ctx: { readonly now?: () => number }): number {
+	return (ctx.now ?? Date.now)();
+}
+
+/** Distinct items in first-seen order. `keep` drops items before the dedupe; `max` caps how many are returned. */
+export function unique<T>(
+	items: Iterable<T>,
+	options: { readonly keep?: (item: T) => boolean; readonly max?: number } = {},
+): T[] {
+	const kept = options.keep ? [...items].filter(options.keep) : items;
+	return [...new Set(kept)].slice(0, options.max);
+}
+
+/** SHA-256 hex digest of text: the identity a reviewed draft is checked against. */
+export function fingerprintOf(content: string): string {
+	return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. The handle is opaque. */
+export type TimerPort = {
+	setTimeout(fn: () => void, ms: number): unknown;
+	clearTimeout(handle: unknown): void;
+};

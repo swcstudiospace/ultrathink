@@ -32,6 +32,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildSkillworthyState } from "../decisions/questions.ts";
 import { SKILLWORTHY_AT } from "../decisions/types.ts";
+import { nowOf, unique } from "../shared.ts";
 import { askLesson, lessonDecisions } from "./context.ts";
 import { documentIdFor, tagsFor } from "./mapping.ts";
 import { redactText } from "./redact.ts";
@@ -186,9 +187,8 @@ function clause(text: string): string {
 		.toLowerCase();
 }
 
-function unique(values: string[]): string[] {
-	return [...new Set(values.filter((v) => v !== ""))];
-}
+/** The option that drops the empty strings a promoted skill never shows. */
+const NON_EMPTY = { keep: (value: string) => value !== "" };
 
 function validateDraft(name: string, description: string, content: string, body: string): void {
 	if (!SKILL_NAME_RE.test(name)) throw new Error(`skill name "${name}" is not a valid skill name`);
@@ -257,12 +257,21 @@ export function renderSkillDraft(moments: TeachableMoment[], ctx: TeachContext):
 		sections.set(heading, parts);
 	}
 
-	const phases = unique(ordered.map((m) => red(m.sourcePhase).trim()));
-	const artifacts = unique(ordered.flatMap((m) => m.sourceArtifacts.map((a) => red(a).trim())));
+	const phases = unique(
+		ordered.map((m) => red(m.sourcePhase).trim()),
+		NON_EMPTY,
+	);
+	const artifacts = unique(
+		ordered.flatMap((m) => m.sourceArtifacts.map((a) => red(a).trim())),
+		NON_EMPTY,
+	);
 	const ids = ordered.map((m) => markerId(m.id));
 	const evidence = [
 		`- Occurrences: ${ordered.reduce((sum, m) => sum + m.occurrences, 0)}`,
-		`- Project: ${unique(ordered.map((m) => m.project)).join(", ")}`,
+		`- Project: ${unique(
+			ordered.map((m) => m.project),
+			NON_EMPTY,
+		).join(", ")}`,
 		`- First seen: ${ordered.map((m) => m.createdAt).sort()[0]}`,
 		`- Last seen: ${
 			ordered
@@ -469,7 +478,7 @@ export function markPromoted(
 	ctx: TeachContext,
 ): TeachableMoment[] {
 	const store = openStore(storeDir(ctx.stateDir));
-	const nowMs = (ctx.now ?? Date.now)();
+	const nowMs = nowOf(ctx);
 	const at = new Date(nowMs).toISOString();
 	const updated: TeachableMoment[] = [];
 	for (const id of ids) {

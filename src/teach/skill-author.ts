@@ -17,6 +17,7 @@
  */
 import { createHash } from "node:crypto";
 import { redactSecretShapes } from "../redact.ts";
+import { unique } from "../shared.ts";
 import { MAX_DESCRIPTION_CHARS } from "./types.ts";
 
 /**
@@ -659,10 +660,6 @@ function sameSet(a: readonly string[], b: readonly string[]): boolean {
 
 function union<T>(a: readonly T[], b: readonly T[]): T[] {
 	return unique([...a, ...b]);
-}
-
-function unique<T>(items: Iterable<T>): T[] {
-	return [...new Set(items)];
 }
 
 function cutText(text: string, max: number): string {

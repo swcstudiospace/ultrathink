@@ -60,6 +60,7 @@ import type {
 } from "./types.ts";
 import type { HindsightClient } from "../hindsight/types.ts";
 import { resolveStateDir } from "../host/paths.ts";
+import { fingerprintOf, nowOf } from "../shared.ts";
 
 /** `config`, `hindsight`, `complete` and `signal` are test seams on top of the shared CommandDeps shape. */
 export interface CommandDeps {
@@ -88,7 +89,7 @@ const USAGE = `usage:
   teach sync [--json]
   teach observe (--stdin | --file <path>) [--json]
   teach promote --due [--json]
-  teach promote <id>... [--target hermes|omp|claude|prime-agent|drafts] [--install] [--json]
+  teach promote <id>... [--target hermes|omp|claude|prime-agent|drafts] [--install] [--expect-fingerprint <sha256>] [--json]
   teach promote <id>... --mark-promoted --skill <name> --target <t> [--path P] [--json]
   teach export --a2a [<id>...]`;
 
@@ -97,6 +98,7 @@ const ID_PREFIX_MIN = 4;
 const SKILL_TARGETS: readonly SkillTarget[] = ["hermes", "omp", "claude", "prime-agent", "drafts"];
 const SYNC_TIMEOUT_MS = 30_000;
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 /** The store's id alphabet, without a leading dot, so an id can never name a path. */
 const ID_TOKEN = /^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,79}$/;
 
@@ -144,6 +146,7 @@ const SPECS: Record<string, Spec> = {
 			target: "value",
 			skill: "value",
 			path: "value",
+			"expect-fingerprint": "value",
 		},
 		maxArgs: Number.POSITIVE_INFINITY,
 	},
@@ -652,7 +655,7 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 		const notSaved = outcome.captured.length > 0 && stored === 0;
 		const record: ObserveRun = notSaved
 			? {
-					at: ctx.now?.() ?? Date.now(),
+					at: nowOf(ctx),
 					sessionId: digest.sessionId,
 					outcome: "skipped",
 					captured: 0,
@@ -660,7 +663,7 @@ async function observe(ctx: TeachContext, p: Parsed, deps: CommandDeps): Promise
 					detail: redactLine(outcome.captured[0]?.reason ?? "store unavailable", 160),
 				}
 			: {
-					at: ctx.now?.() ?? Date.now(),
+					at: nowOf(ctx),
 					sessionId: digest.sessionId,
 					outcome: outcome.skipped ? "skipped" : "captured",
 					captured: stored,
@@ -713,7 +716,8 @@ async function promote(ctx: TeachContext, p: Parsed): Promise<CliResult> {
 			p.has("mark-promoted") ||
 			p.has("target") ||
 			p.has("skill") ||
-			p.has("path")
+			p.has("path") ||
+			p.has("expect-fingerprint")
 		) {
 			throw new UsageError("--due takes no ids and no other promote flags");
 		}
@@ -731,6 +735,8 @@ async function promote(ctx: TeachContext, p: Parsed): Promise<CliResult> {
 		throw new UsageError("--skill and --path belong to --mark-promoted");
 	if (marking && p.has("install"))
 		throw new UsageError("--mark-promoted cannot be combined with --install");
+	if (marking && p.has("expect-fingerprint"))
+		throw new UsageError("--expect-fingerprint belongs to a draft, not to --mark-promoted");
 	const targetText = p.one("target");
 	const target =
 		targetText === undefined ? undefined : asEnum<SkillTarget>(targetText, SKILL_TARGETS, "target");
@@ -760,6 +766,9 @@ async function promote(ctx: TeachContext, p: Parsed): Promise<CliResult> {
 		});
 	}
 
+	const expected = p.one("expect-fingerprint");
+	if (expected !== undefined && !SHA256_HEX.test(expected))
+		throw new UsageError("--expect-fingerprint must be a sha256 hex digest");
 	const chosen = target ?? targetForHost(ctx.host);
 	let draft: SkillDraft;
 	try {
@@ -767,6 +776,12 @@ async function promote(ctx: TeachContext, p: Parsed): Promise<CliResult> {
 	} catch (error) {
 		return fail(p.json, 1, oneLine(error instanceof Error ? error.message : String(error)));
 	}
+	if (expected !== undefined && fingerprintOf(draft.content) !== expected)
+		return fail(
+			p.json,
+			1,
+			"draft changed since the reviewed preview; nothing installed. Preview again.",
+		);
 	const outcome = p.has("install") ? installSkill(draft, chosen, ctx) : null;
 	let promoted: string[] = [];
 	if (outcome && (outcome.action === "created" || outcome.action === "updated")) {
