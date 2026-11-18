@@ -60,3 +60,22 @@ export interface StackProbeContext {
 
 /** A probe never rejects; an internal failure is reported as `unavailable`. */
 export type StackProbe = (ctx: StackProbeContext) => Promise<StackConnection>;
+
+/**
+ * The one shape of an `unavailable` outcome. `affects` and `via` are required: an unavailable link always names what it
+ * breaks and the seam it was asked through.
+ */
+export function unavailableOutcome(input: {
+	reason: string;
+	fix?: string | undefined;
+	affects: readonly string[];
+	via: NonNullable<StackConnection["via"]>;
+}): Pick<StackConnection, "status" | "reason" | "fix" | "affects" | "via"> {
+	return {
+		status: "unavailable",
+		reason: input.reason,
+		...(input.fix === undefined ? {} : { fix: input.fix }),
+		affects: input.affects,
+		via: input.via,
+	};
+}

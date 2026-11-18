@@ -59,7 +59,18 @@ export interface HindsightError {
 	status?: number;
 }
 
-export type HindsightResult<T> = { ok: true; value: T } | { ok: false; error: HindsightError };
+/** A bank that failed inside an answer whose `value` still carries the other banks' results. */
+export interface HindsightBankError {
+	/** The gateway's error code for that bank, for example `not_configured`. */
+	kind: string;
+	/** One line, at most 200 characters. */
+	message: string;
+}
+
+/** `bankErrors` is set only on a partial answer: some banks failed, the rest answered, and `value` holds the rest. */
+export type HindsightResult<T> =
+	| { ok: true; value: T; bankErrors?: HindsightBankError[] }
+	| { ok: false; error: HindsightError };
 
 export interface RetainItem {
 	/** Hindsight document id; retaining the same id again replaces the document (idempotent upsert). */

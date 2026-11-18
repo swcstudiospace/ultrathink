@@ -12,7 +12,12 @@ import { decisionsLiveCheck } from "../decisions/cli.ts";
 import { decisionsKilled, resolveOpenRouterKey } from "../decisions/gate.ts";
 import { describeJevHealth, openJevHealth } from "../decisions/health.ts";
 import { storePath } from "../mcp/store.ts";
-import type { StackConnection, StackProbe, StackProbeContext } from "./types.ts";
+import {
+	type StackConnection,
+	type StackProbe,
+	type StackProbeContext,
+	unavailableOutcome,
+} from "./types.ts";
 
 const SET_KEY_FIX = "bin/ultrathink-mcp auth set-key openrouter --stdin";
 const AFFECTS = ["plan gate", "ship gate", "knowledge, blocking and teachable decisions"] as const;
@@ -93,12 +98,13 @@ export const probeDecisions: StackProbe = async (
 			const fix = failureFix(result.kind);
 			return {
 				member: "decisions",
-				status: "unavailable",
-				reason: `live check failed on the openrouter rail (${result.kind ?? "unknown"})`,
-				...(fix ? { fix } : {}),
-				affects: AFFECTS,
+				...unavailableOutcome({
+					reason: `live check failed on the openrouter rail (${result.kind ?? "unknown"})`,
+					fix,
+					affects: AFFECTS,
+					via: "http",
+				}),
 				latencyMs: Math.max(0, Math.round(result.latencyMs)),
-				via: "http",
 			};
 		}
 		if (describeJevHealth(ctx.stateDir, (ctx.now ?? Date.now)()) !== undefined) {
@@ -117,11 +123,14 @@ export const probeDecisions: StackProbe = async (
 			via: "config",
 		});
 	} catch {
-		return connection(ctx, startedAt, {
-			status: "unavailable",
-			reason: "Decisions probe failed unexpectedly",
-			affects: AFFECTS,
-			via: "none",
-		});
+		return connection(
+			ctx,
+			startedAt,
+			unavailableOutcome({
+				reason: "Decisions probe failed unexpectedly",
+				affects: AFFECTS,
+				via: "none",
+			}),
+		);
 	}
 };

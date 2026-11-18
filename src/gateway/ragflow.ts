@@ -13,17 +13,12 @@ import type {
 	RagflowResult,
 	RetrieveQuery,
 } from "../ragflow/types.ts";
-import { createGatewayClient, type GatewayClientOptions } from "./client.ts";
+import { createGatewayClient, gatewayErrorKind, type GatewayClientOptions } from "./client.ts";
 import type { GatewayFailure } from "./types.ts";
 import { isRecord } from "../shared.ts";
 
 function asError(failure: GatewayFailure): RagflowResult<never> {
-	const kind = failure.reason.includes("timeout")
-		? "timeout"
-		: failure.state === "unready"
-			? "not-found"
-			: "server";
-	const error: RagflowError = { kind, message: failure.reason };
+	const error: RagflowError = { kind: gatewayErrorKind(failure), message: failure.reason };
 	return { ok: false, error };
 }
 

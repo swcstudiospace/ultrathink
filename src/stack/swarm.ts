@@ -23,7 +23,12 @@ import {
 	resolveSwarmRoot,
 	type TeamsFs,
 } from "../swarm/teams.ts";
-import type { StackConnection, StackProbe, StackProbeContext } from "./types.ts";
+import {
+	type StackConnection,
+	type StackProbe,
+	type StackProbeContext,
+	unavailableOutcome,
+} from "./types.ts";
 
 /** Seams for tests; the defaults are the real classifier, `orch_status.py`, signal 0 and the real filesystem. */
 export interface SwarmProbeDeps {
@@ -48,13 +53,7 @@ const ATTENTION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const FIX_ROOT = "set ULTRATHINK_SWARM_ROOT (or SWARM_ROOT) to an absolute agent-swarm checkout";
 
 function unavailable(reason: string, fix?: string): Outcome {
-	return {
-		status: "unavailable",
-		reason,
-		...(fix === undefined ? {} : { fix }),
-		affects: ["preflight", "lanes"],
-		via: "cli",
-	};
+	return unavailableOutcome({ reason, fix, affects: ["preflight", "lanes"], via: "cli" });
 }
 
 /** `promise`'s value, or undefined when it has not settled within `ms`; never rejects. */

@@ -8,6 +8,7 @@
 import type {
 	BankState,
 	DocumentInfo,
+	HindsightBankError,
 	HindsightClient,
 	HindsightError,
 	HindsightHealth,
@@ -18,17 +19,12 @@ import type {
 	RetainOutcome,
 	TagsMatch,
 } from "../hindsight/types.ts";
-import { createGatewayClient, type GatewayClientOptions } from "./client.ts";
+import { createGatewayClient, gatewayErrorKind, type GatewayClientOptions } from "./client.ts";
 import { GRAPH_ID_PATTERN, type GatewayFailure } from "./types.ts";
 import { isRecord } from "../shared.ts";
 
 function asError(failure: GatewayFailure): HindsightResult<never> {
-	const kind = failure.reason.includes("timeout")
-		? "timeout"
-		: failure.state === "unready"
-			? "not-found"
-			: "server";
-	const error: HindsightError = { kind, message: failure.reason };
+	const error: HindsightError = { kind: gatewayErrorKind(failure), message: failure.reason };
 	return { ok: false, error };
 }
 
@@ -62,14 +58,23 @@ function tagsMatch(
 	return hits === wanted.length;
 }
 
-function hitsFrom(payload: Record<string, unknown>): RecallHit[] | GatewayFailure {
+/** The recall rows: the hits from the banks that answered, and every bank that failed. */
+type RecallRows =
+	| { ok: true; hits: RecallHit[]; bankErrors: HindsightBankError[] }
+	| { ok: false; failure: GatewayFailure };
+
+function hitsFrom(payload: Record<string, unknown>): RecallRows {
 	const rows = Array.isArray(payload.results) ? payload.results : [];
 	const hits: RecallHit[] = [];
-	let nested: string | undefined;
+	const bankErrors: HindsightBankError[] = [];
 	for (const row of rows) {
 		if (!isRecord(row)) continue;
-		if (typeof row.error === "string" && nested === undefined) {
-			nested = `degraded: ${row.error}: ${typeof row.reason === "string" ? row.reason : row.error}`;
+		if (typeof row.error === "string") {
+			const reason = typeof row.reason === "string" ? row.reason : row.error;
+			bankErrors.push({
+				kind: row.error,
+				message: `degraded: ${row.error}: ${reason}`.slice(0, 200),
+			});
 		}
 		const body = isRecord(row.body) ? row.body : row;
 		const list = Array.isArray(body.results)
@@ -100,8 +105,10 @@ function hitsFrom(payload: Record<string, unknown>): RecallHit[] | GatewayFailur
 			hits.push(hit);
 		}
 	}
-	if (hits.length === 0 && nested) return { state: "degraded", reason: nested.slice(0, 200) };
-	return hits;
+	const first = bankErrors[0];
+	if (hits.length === 0 && first)
+		return { ok: false, failure: { kind: "degraded", reason: first.message } };
+	return { ok: true, hits, bankErrors };
 }
 
 function sourceFor(item: RetainItem): string | undefined {
@@ -132,7 +139,7 @@ export function createGatewayHindsightClient(
 			});
 			if (!result.ok) return asError(result);
 			const probed = hitsFrom(result.value);
-			if (!Array.isArray(probed)) return asError(probed);
+			if (!probed.ok) return asError(probed.failure);
 			return {
 				ok: true,
 				value: { ok: true, apiVersion: "gateway", databaseConnected: true, features: {} },
@@ -206,12 +213,12 @@ export function createGatewayHindsightClient(
 				args.limit = Math.min(20, Math.max(1, Math.round(query.maxTokens / 400)));
 			const result = await gateway.call("desk_memory_recall", args);
 			if (!result.ok) return asError(result);
-			const hits = hitsFrom(result.value);
-			if (!Array.isArray(hits)) return asError(hits);
-			return {
-				ok: true,
-				value: hits.filter((hit) => tagsMatch(hit.tags, query.tags, query.tagsMatch)),
-			};
+			const recalled = hitsFrom(result.value);
+			if (!recalled.ok) return asError(recalled.failure);
+			const value = recalled.hits.filter((hit) => tagsMatch(hit.tags, query.tags, query.tagsMatch));
+			return recalled.bankErrors.length > 0
+				? { ok: true, value, bankErrors: recalled.bankErrors }
+				: { ok: true, value };
 		},
 		getDocument(_documentId: string): Promise<HindsightResult<DocumentInfo | null>> {
 			return Promise.resolve(unavailable("getDocument"));

@@ -28,7 +28,12 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { HostId } from "../host/types.ts";
-import type { StackConnection, StackProbe, StackProbeContext } from "./types.ts";
+import {
+	type StackConnection,
+	type StackProbe,
+	type StackProbeContext,
+	unavailableOutcome,
+} from "./types.ts";
 
 /** What the probe found. `unknown` always names why; nothing here carries a secret. */
 export type RealmProbe =
@@ -728,7 +733,7 @@ function oneLine(text: string): string {
 
 function fromPresent(
 	probe: PresentProbe,
-): Pick<StackConnection, "status" | "reason" | "affects" | "fix"> {
+): Pick<StackConnection, "status" | "reason" | "affects" | "fix" | "via"> {
 	if (probe.state === "active") {
 		return probe.mode === "fail-closed"
 			? { status: "connected", reason: "Realm enforcing" }
@@ -745,48 +750,49 @@ function fromPresent(
 				: "advisory mode, writes are not contained";
 		return { status: "degraded", reason: `Realm degraded (${oneLine(probe.reason)}): ${tail}` };
 	}
-	return {
-		status: "unavailable",
+	return unavailableOutcome({
 		reason: `Realm ${probe.state}: ${oneLine(probe.reason)}`,
 		affects: AFFECTS,
-	};
+		via: probe.via,
+	});
 }
 
 function fromUnknown(
 	why: Extract<RealmProbe, { kind: "unknown" }>["why"],
 	budgetMs: number,
-): Pick<StackConnection, "status" | "reason" | "affects" | "fix"> {
+): Pick<StackConnection, "status" | "reason" | "affects" | "fix" | "via"> {
 	switch (why) {
 		case "timeout":
 			// The budget this probe actually used (the caller's value clamped to MAX_BUDGET_MS), never the caller's own.
-			return {
-				status: "unavailable",
+			return unavailableOutcome({
 				reason: `Realm did not answer within ${budgetMs} ms`,
 				affects: AFFECTS,
-			};
+				via: "socket",
+			});
 		case "schema":
-			return {
-				status: "unavailable",
+			return unavailableOutcome({
 				reason: "Realm returned an unexpected reply",
 				affects: AFFECTS,
-			};
+				via: "socket",
+			});
 		case "io":
-			return {
-				status: "unavailable",
+			return unavailableOutcome({
 				reason: "Realm state could not be read",
 				affects: AFFECTS,
-			};
+				via: "socket",
+			});
 		case "untrusted-socket":
-			return {
-				status: "unavailable",
+			return unavailableOutcome({
 				reason: "Realm control socket failed the trust check (owner, mode or path)",
 				affects: AFFECTS,
-			};
+				via: "socket",
+			});
 		case "disabled":
 			return {
 				status: "disabled",
 				reason: `Realm probe switched off by ${OPT_OUT_VARIABLE}=off`,
 				fix: `unset ${OPT_OUT_VARIABLE}`,
+				via: "none",
 			};
 	}
 }
@@ -810,21 +816,20 @@ function mapDetection(detection: Detection, latencyMs: number): StackConnection 
 				reason: "Realm not installed or not configured",
 				via: "none",
 			};
-		case "unknown": {
-			const mapped = fromUnknown(probe.why, detection.budgetMs);
-			return { ...base, ...mapped, via: probe.why === "disabled" ? "none" : "socket" };
-		}
+		case "unknown":
+			return { ...base, ...fromUnknown(probe.why, detection.budgetMs) };
 		case "daemon-down":
 			return {
 				...base,
-				status: "unavailable",
-				reason:
-					probe.stateDir === ""
-						? "Realm daemon is not running"
-						: `Realm daemon is not running (state dir ${probe.stateDir})`,
-				fix: "realm up",
-				affects: AFFECTS,
-				via: probe.stateDir === "" ? "cli" : "socket",
+				...unavailableOutcome({
+					reason:
+						probe.stateDir === ""
+							? "Realm daemon is not running"
+							: `Realm daemon is not running (state dir ${probe.stateDir})`,
+					fix: "realm up",
+					affects: AFFECTS,
+					via: probe.stateDir === "" ? "cli" : "socket",
+				}),
 			};
 		case "present":
 			return { ...base, ...fromPresent(probe), via: probe.via };
@@ -846,10 +851,12 @@ export const probeRealm: StackProbe = async (ctx: StackProbeContext): Promise<St
 	} catch {
 		return {
 			member: "realm",
-			status: "unavailable",
-			reason: "Realm probe failed unexpectedly",
+			...unavailableOutcome({
+				reason: "Realm probe failed unexpectedly",
+				affects: AFFECTS,
+				via: "none",
+			}),
 			latencyMs: 0,
-			via: "none",
 		};
 	}
 };
