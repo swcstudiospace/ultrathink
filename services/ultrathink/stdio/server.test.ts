@@ -317,17 +317,19 @@ describe("the stdio host", () => {
 });
 
 describe("environment", () => {
-	test("ULTRATHINK_STATE_DIR wins unless it points into a planning tree", () => {
+	test("an absolute ULTRATHINK_STATE_DIR wins; a relative or planning-tree value is refused", () => {
 		const base = { CLAUDE_CONFIG_DIR: join("cfg", "claude") };
-		expect(resolveConnectorStateDir({ ...base, ULTRATHINK_STATE_DIR: join("work", "state") })).toBe(
-			join("work", "state"),
-		);
+		const absolute = join("/", "work", "state");
+		expect(resolveConnectorStateDir({ ...base, ULTRATHINK_STATE_DIR: absolute })).toBe(absolute);
 		const fallback = join("cfg", "claude", "ultrathink", "connector");
 		expect(resolveConnectorStateDir(base)).toBe(fallback);
 		expect(resolveConnectorStateDir({ ...base, ULTRATHINK_STATE_DIR: "  " })).toBe(fallback);
-		expect(
+		expect(() =>
+			resolveConnectorStateDir({ ...base, ULTRATHINK_STATE_DIR: join("work", "state") }),
+		).toThrow("ULTRATHINK_STATE_DIR must be an absolute path");
+		expect(() =>
 			resolveConnectorStateDir({ ...base, ULTRATHINK_STATE_DIR: "/repo/.planning/state" }),
-		).toBe(fallback);
+		).toThrow("ULTRATHINK_STATE_DIR must not point into a .planning tree");
 	});
 
 	test("the log level defaults to warn and accepts info, warn and error", () => {

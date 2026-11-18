@@ -10,7 +10,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { detectHost } from "../../../src/host/detect.ts";
-import { isPlanningPath, stateDirForHost } from "../../../src/host/paths.ts";
+import { stateDirForHost } from "../../../src/host/paths.ts";
+import { resolveStateDir } from "../config/config.ts";
 import { defaultGraphResources, loadCatalogWithFallback } from "../mcp/connector-host.ts";
 import { assertToolDefinitions } from "../mcp/definitions.ts";
 import { type McpToolHost, TOOL_DEFINITIONS, type ToolOutcome } from "../mcp/mcp.ts";
@@ -26,11 +27,9 @@ const SIGNAL_EXIT_MS = 1500;
 
 type Env = Record<string, string | undefined>;
 
-/** ULTRATHINK_STATE_DIR, else the connector directory under the host's state directory (never inside a planning tree). */
+/** ULTRATHINK_STATE_DIR (checked as the service checks it), else the connector directory under the host's state directory. */
 export function resolveConnectorStateDir(env: Env = process.env): string {
-	const override = env.ULTRATHINK_STATE_DIR?.trim();
-	if (override && !isPlanningPath(override)) return override;
-	return join(stateDirForHost(detectHost(env), env), "connector");
+	return resolveStateDir(env, join(stateDirForHost(detectHost(env), env), "connector"));
 }
 
 export function logLevelFrom(env: Env = process.env): LogLevel {
@@ -79,10 +78,11 @@ export async function main(env: Env = process.env): Promise<number> {
 		write: (line) => void process.stderr.write(`${line}\n`),
 		level: logLevelFrom(env),
 	});
-	const stateDir = resolveConnectorStateDir(env);
+	let stateDir: string;
 	let host: McpToolHost;
 	try {
-		// Before the first byte of protocol: a bad definition ends the process with the tool named, on stderr only.
+		// Before the first byte of protocol: a bad definition or state directory ends the process on stderr only.
+		stateDir = resolveConnectorStateDir(env);
 		assertToolDefinitions(TOOL_DEFINITIONS);
 		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 		host = createStdioHost(stateDir, logger);

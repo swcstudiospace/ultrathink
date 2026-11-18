@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { resolveStateDir } from "../config/config.ts";
 import { appendHistory, readHistory } from "./history.ts";
 import { createInProcessTarget } from "./inprocess.ts";
 import { type ChaosTarget, type HttpFetch, type HttpTlsOptions, httpTarget } from "./observe.ts";
@@ -462,8 +463,38 @@ function formatNumber(value: number): string {
 	return String(Math.round(value * 10_000) / 10_000);
 }
 
-// Real dependencies. The state directory matches the service default when ULTRATHINK_STATE_DIR is unset.
-const DEFAULT_STATE_DIR = "/var/lib/ultrathink";
+/** The chaos history file under the state directory, which follows the service's rules (config/config.ts). */
+export function historyPathOf(env: Record<string, string | undefined>): string {
+	return join(resolveStateDir(env), "chaos", "history.jsonl");
+}
+
+const ROLLBACK_TIMEOUT_EXIT = 124;
+/** Longest a rollback may run before it is killed and recorded as failed. */
+const ROLLBACK_DEADLINE_MS = 10 * 60_000;
+
+/**
+ * Runs the rollback argv and resolves its exit code. Past `timeoutMs` the child is killed with SIGKILL, so a trapped
+ * SIGTERM cannot keep it alive, and ROLLBACK_TIMEOUT_EXIT (coreutils `timeout`'s code) is returned, so the run ends
+ * and records a failed rollback.
+ */
+export async function runRollback(
+	argv: string[],
+	timeoutMs = ROLLBACK_DEADLINE_MS,
+): Promise<number> {
+	const child = Bun.spawn(argv, { stdin: "ignore", stdout: "inherit", stderr: "inherit" });
+	const { promise: deadline, resolve } = Promise.withResolvers<number>();
+	const timer = setTimeout(() => {
+		child.kill("SIGKILL");
+		resolve(ROLLBACK_TIMEOUT_EXIT);
+	}, timeoutMs);
+	try {
+		return await Promise.race([child.exited, deadline]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+// Real dependencies.
 
 function realDeps(): CliDeps {
 	const env = process.env;
@@ -476,10 +507,7 @@ function realDeps(): CliDeps {
 		},
 		env,
 		fetch: (url, init) => fetch(url, init),
-		exec: async (argv) => {
-			const child = Bun.spawn(argv, { stdin: "ignore", stdout: "inherit", stderr: "inherit" });
-			return child.exited;
-		},
+		exec: (argv) => runRollback(argv),
 		confirm: promptForConfirmation,
 		now: () => new Date(),
 		sleep: (ms) => {
@@ -488,7 +516,7 @@ function realDeps(): CliDeps {
 			return promise;
 		},
 		templatesDir: join(dirname(fileURLToPath(import.meta.url)), "experiments"),
-		historyPath: join(env.ULTRATHINK_STATE_DIR ?? DEFAULT_STATE_DIR, "chaos", "history.jsonl"),
+		historyPath: historyPathOf(env),
 	};
 }
 
@@ -511,6 +539,13 @@ function promptForConfirmation(): Promise<void> {
 }
 
 if (import.meta.main) {
-	const code = await runCli(process.argv.slice(2), realDeps());
-	process.exit(code);
+	let deps: CliDeps;
+	try {
+		deps = realDeps();
+	} catch (error) {
+		// The service's refusal: a bad ULTRATHINK_STATE_DIR ends the process before any command runs.
+		process.stderr.write(`chaos: ${error instanceof Error ? error.message : String(error)}\n`);
+		process.exit(2);
+	}
+	process.exit(await runCli(process.argv.slice(2), deps));
 }
