@@ -48,7 +48,7 @@ export type GatewayTokenSource = "store" | typeof GATEWAY_TOKEN_ENV;
  * Why a gateway call failed. `timeout` and `network` come from the transport; `unready` means the gateway has no such
  * tool; `degraded` is every other failure, including a tool error.
  */
-export type GatewayFailureKind = "timeout" | "network" | "unready" | "degraded";
+type GatewayFailureKind = "timeout" | "network" | "unready" | "degraded";
 
 export interface GatewayFailure {
 	kind: GatewayFailureKind;
