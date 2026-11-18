@@ -44,10 +44,14 @@ export const GRAPH_ID_PATTERN = /^ut-[a-z0-9]+-[0-9a-f]{8}$/;
 
 export type GatewayTokenSource = "store" | typeof GATEWAY_TOKEN_ENV;
 
-type GatewayFailureState = "unready" | "degraded";
+/**
+ * Why a gateway call failed. `timeout` and `network` come from the transport; `unready` means the gateway has no such
+ * tool; `degraded` is every other failure, including a tool error.
+ */
+export type GatewayFailureKind = "timeout" | "network" | "unready" | "degraded";
 
 export interface GatewayFailure {
-	state: GatewayFailureState;
+	kind: GatewayFailureKind;
 	/** One line, redacted, never the seat token. */
 	reason: string;
 }

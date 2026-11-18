@@ -615,7 +615,7 @@ describe("fetchBrief through the gateway", () => {
 		).toEqual({ text: "landed the cache", state: "complete" });
 	});
 
-	test("an empty gateway answer is none/unreachable", async () => {
+	test("an empty gateway answer is none with no reason, as the direct path is", async () => {
 		const binding = {
 			backend: "gateway" as const,
 			gateway: GATEWAY,
@@ -624,7 +624,7 @@ describe("fetchBrief through the gateway", () => {
 		};
 		expect(
 			await fetchBrief({ repo: "a/b" }, env({ DESK_GATEWAY_TOKEN: "seat-token" }), "", binding),
-		).toEqual({ text: "", state: "none", reason: "unreachable" });
+		).toEqual({ text: "", state: "none" });
 	});
 
 	test("SUBSTRATE_DISABLED reads as disabled before the gateway is contacted", async () => {

@@ -13,7 +13,12 @@ import { gatewayStatus, resolveGateway, serviceBackend } from "../gateway/settin
 import { SUBSTRATE_BACKEND_ENV } from "../gateway/types.ts";
 import { storePath } from "../mcp/store.ts";
 import { boundedLine, resolveSubstrate, fetchBrief, type BriefResult } from "../substrate/brief.ts";
-import type { StackConnection, StackProbe, StackProbeContext } from "./types.ts";
+import {
+	type StackConnection,
+	type StackProbe,
+	type StackProbeContext,
+	unavailableOutcome,
+} from "./types.ts";
 
 const FIX_UNAUTHORIZED =
 	"set SUBSTRATE_TOKEN (or SUBSTRATE_TOKEN_FILE / SUBSTRATE_TOKENS_DIR per-surface files)";
@@ -32,7 +37,7 @@ const RECOVERED_DETAIL = /^token (\S+) cannot act as host surface (\S+);/;
 type Outcome = Omit<StackConnection, "member" | "latencyMs">;
 
 function unavailable(reason: string): Outcome {
-	return { status: "unavailable", reason, affects: AFFECTS_BRIEF, via: "http" };
+	return unavailableOutcome({ reason, affects: AFFECTS_BRIEF, via: "http" });
 }
 
 /** What a brief that came back (or did not) says about the link. */

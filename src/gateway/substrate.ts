@@ -31,18 +31,30 @@ function briefText(payload: Record<string, unknown>): string {
 	return "";
 }
 
+/** The state a brief reply declares, at `substrate.state` or the top level; anything else reads as `complete`. */
+function briefState(payload: Record<string, unknown>): "complete" | "degraded" | "snapshot" {
+	const substrate = isRecord(payload.substrate) ? payload.substrate : undefined;
+	const raw = substrate?.state ?? payload.state;
+	return raw === "degraded" || raw === "snapshot" ? raw : "complete";
+}
+
+/** A gateway brief reply: `ok: false` when the call produced no reply; otherwise the brief text (empty when there is none) and the state the payload declares. */
+export type GatewayBriefResult =
+	| { ok: false }
+	| { ok: true; text: string; state: "complete" | "degraded" | "snapshot" };
+
 export async function gatewayBrief(
 	gateway: ResolvedGateway,
 	input: GatewayBriefInput,
 	fetchImpl?: typeof fetch,
-): Promise<string> {
-	if (input.signal?.aborted) return "";
+): Promise<GatewayBriefResult> {
+	if (input.signal?.aborted) return { ok: false };
 	const client = createGatewayClient({ ...gateway, fetch: fetchImpl, signal: input.signal });
 	const args: Record<string, unknown> = {};
 	if (input.graphId && GRAPH_ID_PATTERN.test(input.graphId)) args.graph_id = input.graphId;
 	const result = await client.call("desk_brief", args);
-	if (!result.ok) return "";
-	return briefText(result.value);
+	if (!result.ok) return { ok: false };
+	return { ok: true, text: briefText(result.value), state: briefState(result.value) };
 }
 
 export async function gatewayEmit(

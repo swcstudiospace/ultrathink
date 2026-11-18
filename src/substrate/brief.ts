@@ -259,6 +259,15 @@ function labelled(state: Exclude<BriefState, "none">, body: string, cut = false)
 		: `(Substrate brief is ${state}; some sources failed or the copy is a snapshot)\n\n${body}`;
 }
 
+/** A gateway reply read the way the direct path reads its body: the same label, and `none` for an empty brief. */
+function fromGatewayBrief(reply: {
+	text: string;
+	state: Exclude<BriefState, "none">;
+}): BriefResult {
+	if (!reply.text) return { text: "", state: "none" };
+	return { text: labelled(reply.state, reply.text), state: reply.state };
+}
+
 /**
  * The gateway a call goes through: undefined when the backend is direct, otherwise either the resolved gateway or the
  * reason it cannot be used. The brief and the event both gate through here, so they cannot disagree.
@@ -298,8 +307,8 @@ export async function fetchBrief(
 		const route = gatewayFor(binding, env);
 		if (route) {
 			if (!route.ok) return none(route.reason);
-			const text = await gatewayBrief(route.gateway, input, binding?.fetch);
-			return text ? { text, state: "complete" } : none("unreachable");
+			const reply = await gatewayBrief(route.gateway, input, binding?.fetch);
+			return reply.ok ? fromGatewayBrief(reply) : none("unreachable");
 		}
 		if (env.SUBSTRATE_DISABLED === "1") return none("disabled");
 		const target = resolveSubstrate(env, url);

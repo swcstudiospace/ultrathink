@@ -13,7 +13,12 @@ import { GATEWAY_TOKEN_ENV, GATEWAY_URL_ENV, HINDSIGHT_BACKEND_ENV } from "../ga
 import { resolveHindsight } from "../hindsight/settings.ts";
 import type { HindsightReadiness } from "../hindsight/types.ts";
 import { storePath } from "../mcp/store.ts";
-import type { StackConnection, StackProbe, StackProbeContext } from "./types.ts";
+import {
+	type StackConnection,
+	type StackProbe,
+	type StackProbeContext,
+	unavailableOutcome,
+} from "./types.ts";
 
 const AFFECTS = ["lesson retain", "lesson recall"] as const;
 const API_VERSION = /^[0-9A-Za-z._+-]{1,32}$/;
@@ -111,30 +116,34 @@ export const probeHindsight: StackProbe = async (
 		if (!client) {
 			return {
 				member: "hindsight",
-				status: "unavailable",
-				reason: "Hindsight is configured but no client could be built",
-				via: "none",
+				...unavailableOutcome({
+					reason: "Hindsight is configured but no client could be built",
+					affects: AFFECTS,
+					via: "none",
+				}),
 			};
 		}
 		const result = await client.health();
 		if (!result.ok) {
 			return {
 				member: "hindsight",
-				status: "unavailable",
-				reason: `Hindsight did not answer its health check (${result.error.kind})`,
-				affects: AFFECTS,
+				...unavailableOutcome({
+					reason: `Hindsight did not answer its health check (${result.error.kind})`,
+					affects: AFFECTS,
+					via: "http",
+				}),
 				latencyMs: latency(),
-				via: "http",
 			};
 		}
 		if (!result.value.ok) {
 			return {
 				member: "hindsight",
-				status: "unavailable",
-				reason: `Hindsight answers but reports itself unhealthy${result.value.databaseConnected ? "" : " (database not connected)"}`,
-				affects: AFFECTS,
+				...unavailableOutcome({
+					reason: `Hindsight answers but reports itself unhealthy${result.value.databaseConnected ? "" : " (database not connected)"}`,
+					affects: AFFECTS,
+					via: "http",
+				}),
 				latencyMs: latency(),
-				via: "http",
 			};
 		}
 		const { apiVersion } = result.value;
@@ -149,11 +158,12 @@ export const probeHindsight: StackProbe = async (
 	} catch {
 		return {
 			member: "hindsight",
-			status: "unavailable",
-			reason: "Hindsight did not answer within the probe budget",
-			affects: AFFECTS,
+			...unavailableOutcome({
+				reason: "Hindsight did not answer within the probe budget",
+				affects: AFFECTS,
+				via: "http",
+			}),
 			latencyMs: latency(),
-			via: "http",
 		};
 	}
 };

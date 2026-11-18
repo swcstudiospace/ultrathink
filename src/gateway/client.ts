@@ -65,7 +65,7 @@ function toolPayload(
 		const code =
 			typeof message.error.message === "string" ? message.error.message : "request failed";
 		const unknown = code.includes("unknown_tool");
-		return { state: unknown ? "unready" : "degraded", reason: oneLine(code, token) };
+		return { kind: unknown ? "unready" : "degraded", reason: oneLine(code, token) };
 	}
 	const result = isRecord(message.result) ? message.result : message;
 	const structured = isRecord(result.structuredContent) ? result.structuredContent : undefined;
@@ -93,16 +93,32 @@ function classify(
 	const error = typeof payload.error === "string" ? payload.error : "";
 	const reason = typeof payload.reason === "string" ? payload.reason : error;
 	if (error === "unknown_tool")
-		return { state: "unready", reason: oneLine(`unready: unknown_tool: ${reason}`, token) };
+		return { kind: "unready", reason: oneLine(`unready: unknown_tool: ${reason}`, token) };
 	if (error === "not_configured" || payload.state === "not_configured") {
-		return { state: "degraded", reason: oneLine(`degraded: not_configured: ${reason}`, token) };
+		return { kind: "degraded", reason: oneLine(`degraded: not_configured: ${reason}`, token) };
 	}
 	if (error || isError)
 		return {
-			state: "degraded",
+			kind: "degraded",
 			reason: oneLine(`degraded: ${error || "error"}: ${reason || "gateway tool error"}`, token),
 		};
 	return undefined;
+}
+
+/** The error kind an adapter reports for a gateway failure, decided by the typed kind alone and never by the reason text. */
+export function gatewayErrorKind(
+	failure: GatewayFailure,
+): "timeout" | "network" | "not-found" | "server" {
+	switch (failure.kind) {
+		case "timeout":
+			return "timeout";
+		case "network":
+			return "network";
+		case "unready":
+			return "not-found";
+		case "degraded":
+			return "server";
+	}
 }
 
 export function createGatewayClient(options: GatewayClientOptions): {
@@ -132,27 +148,27 @@ export function createGatewayClient(options: GatewayClientOptions): {
 			if (outcome.kind === "timeout")
 				return {
 					ok: false,
-					state: "degraded",
+					kind: "timeout",
 					reason: `degraded: timeout after ${options.timeoutMs}ms`,
 				};
 			if (outcome.kind === "network")
 				return {
 					ok: false,
-					state: "degraded",
+					kind: "network",
 					reason: oneLine(`degraded: ${outcome.message}`, options.token),
 				};
 			if (outcome.status < 200 || outcome.status >= 300) {
 				return {
 					ok: false,
-					state: "degraded",
+					kind: "degraded",
 					reason: oneLine(`degraded: gateway HTTP ${outcome.status}`, options.token),
 				};
 			}
 			const message = rpcMessage(outcome.json, outcome.text);
 			if (!message)
-				return { ok: false, state: "degraded", reason: "degraded: gateway response was not JSON" };
+				return { ok: false, kind: "degraded", reason: "degraded: gateway response was not JSON" };
 			const parsed = toolPayload(message, options.token);
-			if ("state" in parsed) return { ok: false, ...parsed };
+			if ("kind" in parsed) return { ok: false, ...parsed };
 			const failure = classify(parsed.payload, parsed.isError, options.token);
 			if (failure) return { ok: false, ...failure };
 			return { ok: true, value: parsed.payload };
