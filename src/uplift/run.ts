@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { isAbortError } from "../shared.ts";
-import type { CompletionReport, UpliftResult } from "../types.ts";
+import type { CompletionReport } from "../completion-report.ts";
+import type { UpliftResult } from "../types.ts";
 import { fallbackUplift } from "./fallback.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "./prompt.ts";
 import { checkUpliftXml, escapeXmlText } from "./xml.ts";

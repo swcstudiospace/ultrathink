@@ -28,7 +28,7 @@ import {
 } from "./complete.ts";
 import { classifyFailure } from "../failover/classify.ts";
 import { ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
-import { readReport } from "../types.ts";
+import { readReport } from "../completion-report.ts";
 import { hangingFetch } from "../test.helpers.ts";
 
 const dirs: string[] = [];

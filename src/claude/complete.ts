@@ -23,7 +23,7 @@ import {
 } from "../resilience/retry.ts";
 import { dropJevKeys } from "../route-defaults.ts";
 import { isAbortError } from "../shared.ts";
-import { attachReport, readReport } from "../types.ts";
+import { attachReport, readReport } from "../completion-report.ts";
 
 export const CHILD_ENV = "ULTRATHINK_CHILD";
 

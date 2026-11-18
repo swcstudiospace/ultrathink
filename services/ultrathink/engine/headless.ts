@@ -26,7 +26,7 @@ import {
 import { type PlanResponse, planPrompt } from "../../../src/host/plan.ts";
 import { redactSecrets } from "../../../src/redact.ts";
 import { isAbortError, type TimerPort } from "../../../src/shared.ts";
-import { type CompletionReport, readReport } from "../../../src/types.ts";
+import { type CompletionReport, readReport } from "../../../src/completion-report.ts";
 import { DEFAULT_PLAN_CONCURRENCY, type UltrathinkConfig } from "../config/config.ts";
 import { CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
 import { currentRequestContext } from "../obs/context.ts";

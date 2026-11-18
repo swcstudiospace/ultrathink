@@ -6,7 +6,7 @@ import type { ClaudeCompleter } from "../../../../src/claude/complete.ts";
 import type { CompleteSimple } from "../../../../src/host/omp.ts";
 import { abortableSleep } from "../../../../src/resilience/sleep.ts";
 import { isAbortError } from "../../../../src/shared.ts";
-import type { CompletionReport } from "../../../../src/types.ts";
+import type { CompletionReport } from "../../../../src/completion-report.ts";
 
 export type StageName = "uplift" | "graph" | "fill" | "clarify";
 

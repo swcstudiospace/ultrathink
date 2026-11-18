@@ -13,7 +13,7 @@ import { createTracking, type ToolCaller } from "../track/create.ts";
 import type { Tracker } from "../track/gateway.ts";
 import { failure, statefulLinear, statefulNotion } from "../track/test.helpers.ts";
 import type { TrackingRefs } from "../track/types.ts";
-import { attachReport } from "../types.ts";
+import { attachReport } from "../completion-report.ts";
 import { type HookDeps, type PromptSubmitInput, runPromptSubmit } from "./hook.ts";
 import { readSession, sessionPath } from "./state.ts";
 

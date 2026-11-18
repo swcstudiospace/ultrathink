@@ -27,7 +27,7 @@ import { type ClaudeCompleter, createClaudeCompleter } from "../claude/complete.
 import type { FlightThrottle } from "../resilience/throttle.ts";
 import { displayId, displayLabel } from "../claude/output.ts";
 import { createMuseCompleter } from "../muse/complete.ts";
-import { hasControlCharacter } from "../config.ts";
+import { hasControlCharacter } from "../config/fields.ts";
 import type { HostModelOverride, UltrathinkConfig } from "../config.ts";
 import type { ControlState } from "../claude/state.ts";
 import { type LegacyRoute, ROUTE_DEFAULT_MODELS } from "../route-defaults.ts";
@@ -38,7 +38,7 @@ import type { HostId } from "./types.ts";
 import { assertMemoryChain, MEMORY_CHAIN, memoryChainFor } from "./memory-chain.ts";
 import { MAX_ENGINE_ERROR_CHARS } from "./display-limits.ts";
 import { unwrapRetryError } from "../resilience/retry.ts";
-import { type CompletionReport, readReport } from "../types.ts";
+import { type CompletionReport, readReport } from "../completion-report.ts";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { resolveStateDir } from "./paths.ts";

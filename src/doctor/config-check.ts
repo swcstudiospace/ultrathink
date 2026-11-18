@@ -8,13 +8,8 @@
  * Findings carry key names, types and effective values, never the written value or the file content.
  */
 import { readFileSync } from "node:fs";
-import {
-	claudeConfigPaths,
-	defaultConfig,
-	hasControlCharacter,
-	mergeConfig,
-	type UltrathinkConfig,
-} from "../config.ts";
+import { claudeConfigPaths, defaultConfig, mergeConfig, type UltrathinkConfig } from "../config.ts";
+import { hasControlCharacter } from "../config/fields.ts";
 import { isPlainObject } from "../decisions/client.ts";
 import { HOSTS, isHostId } from "../host/types.ts";
 import { redactText } from "../teach/redact.ts";

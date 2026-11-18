@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyFailure } from "../failover/classify.ts";
-import { readReport } from "../types.ts";
+import { readReport } from "../completion-report.ts";
 import {
 	buildClaudeArgs,
 	CHILD_ENV,

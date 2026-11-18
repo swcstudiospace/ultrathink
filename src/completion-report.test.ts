@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { attachReport, readReport } from "./types.ts";
+import { attachReport, readReport } from "./completion-report.ts";
 
 describe("completion report seam", () => {
 	test("a report round-trips through the error that carries it", () => {

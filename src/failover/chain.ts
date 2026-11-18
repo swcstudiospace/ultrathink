@@ -11,7 +11,7 @@ import { abortError } from "../claude/complete.ts";
 import { redactSecrets } from "../redact.ts";
 import { readJson } from "../shared.ts";
 import { redactLine } from "../teach/redact.ts";
-import { attachReport, type CompletionReport, readReport } from "../types.ts";
+import { attachReport, type CompletionReport, readReport } from "../completion-report.ts";
 import {
 	classifyFailure,
 	type FailureClass,
