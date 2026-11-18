@@ -451,7 +451,8 @@ describe("applyCliPlan", () => {
 		const { run } = stateful("  MCP Servers:\n\n");
 		const [change] = applyCliPlan("hermes", run, linear, planHermes(run, linear));
 		expect(change?.action).toBe("FAILED");
-		expect(change?.reason).toBeTruthy();
+		expect(change?.id).toBe("linear");
+		expect(change?.reason).toBe("not registered after hermes mcp add");
 	});
 
 	test("hermes entry still disabled after add is saved disabled, not FAILED", () => {
@@ -621,6 +622,21 @@ describe("main", () => {
 			expect(main(["--hosts", "omp"], deps())).toBe(0);
 			expect(lines.filter((l) => l.includes(" unchanged"))).toHaveLength(2);
 			expect(existsSync(`${file}${STAMP}`)).toBe(false);
+		});
+	});
+
+	test("a second run in the same second keeps the first backup and writes a distinct one", () => {
+		sandbox(({ home, deps }) => {
+			const file = join(home, ".omp", "agent", "mcp.json");
+			const pristine = `${JSON.stringify({ mcpServers: { notion: foreignNotion } }, null, 2)}\n`;
+			const intermediate = `${JSON.stringify({ mcpServers: { other: foreignNotion } }, null, 2)}\n`;
+			mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+			writeFileSync(file, pristine);
+			expect(main(["--hosts", "omp"], deps())).toBe(0);
+			writeFileSync(file, intermediate);
+			expect(main(["--hosts", "omp"], deps())).toBe(0);
+			expect(readFileSync(`${file}${STAMP}`, "utf8")).toBe(pristine);
+			expect(readFileSync(`${file}${STAMP}-2`, "utf8")).toBe(intermediate);
 		});
 	});
 

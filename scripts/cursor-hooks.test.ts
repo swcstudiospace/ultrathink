@@ -4,6 +4,7 @@ import { describe, expect, setSystemTime, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -37,6 +38,7 @@ const WANTED = {
 	command: `/usr/bin/node /home/u/.cursor/hooks/${HOOK_FILE}`,
 	"ultrathink-managed": true,
 };
+const STAGED = `/home/u/.cursor/hooks/${HOOK_FILE}`;
 const GSD = {
 	type: "command",
 	command: "/usr/bin/node /root/.cursor/hooks/gsd-cursor-session-start.js",
@@ -64,70 +66,114 @@ function entries(value: unknown): unknown[] {
 }
 
 describe("isOwned", () => {
-	test("marker, hook-file command and foreign entries", () => {
+	test("marker, legacy command for the staged hook, and foreign entries", () => {
 		expect(isOwned({ ...WANTED })).toBe(true);
-		expect(isOwned({ type: "command", command: `node /x/hooks/${HOOK_FILE}` })).toBe(true);
-		expect(isOwned(GSD)).toBe(false);
-		expect(isOwned(SUBSTRATE)).toBe(false);
-		expect(isOwned(FOREIGN)).toBe(false);
-		expect(isOwned("nope")).toBe(false);
+		expect(isOwned({ type: "command", command: `node ${STAGED}` }, STAGED)).toBe(true);
+		expect(isOwned(GSD, STAGED)).toBe(false);
+		expect(isOwned(SUBSTRATE, STAGED)).toBe(false);
+		expect(isOwned(FOREIGN, STAGED)).toBe(false);
+		expect(isOwned("nope", STAGED)).toBe(false);
+	});
+
+	test("a command that only names the hook file is not ours", () => {
+		expect(isOwned({ type: "command", command: `echo ${HOOK_FILE}` }, STAGED)).toBe(false);
+		expect(isOwned({ type: "command", command: `node /x/hooks/${HOOK_FILE}` }, STAGED)).toBe(false);
+		expect(isOwned({ type: "command", command: `node ${STAGED} --debug` }, STAGED)).toBe(false);
+		expect(isOwned({ type: "command", command: `node ${STAGED}` })).toBe(false);
+	});
+
+	test("legacy commands are matched by shell words, quoting included", () => {
+		const spaced = `/home/u/my cursor/hooks/${HOOK_FILE}`;
+		const command = hookCommand("/opt/o'brien/node", spaced);
+		expect(isOwned({ type: "command", command }, spaced)).toBe(true);
+		expect(isOwned({ type: "command", command: `node '${spaced}` }, spaced)).toBe(false);
 	});
 });
 
 describe("upsertHook", () => {
+	const NAMED = { type: "command", command: `echo ${HOOK_FILE}` };
+	const LEGACY = { type: "command", command: hookCommand("/usr/bin/node", STAGED) };
+
 	test("adds into an empty config", () => {
-		expect(upsertHook(undefined, WANTED)).toEqual({
+		expect(upsertHook(undefined, WANTED, STAGED)).toEqual({
 			next: { hooks: { [EVENT]: [WANTED] } },
 			action: "added",
 		});
 	});
 
 	test("appends after foreign entries without touching them", () => {
-		const merged = upsertHook({ hooks: { [EVENT]: [GSD, SUBSTRATE] } }, WANTED);
+		const merged = upsertHook({ hooks: { [EVENT]: [GSD, SUBSTRATE] } }, WANTED, STAGED);
 		expect(merged.action).toBe("added");
 		expect(entries(merged.next)).toEqual([GSD, SUBSTRATE, WANTED]);
 	});
 
+	test("an entry that merely names the hook file is foreign and kept", () => {
+		const merged = upsertHook({ hooks: { [EVENT]: [NAMED] } }, WANTED, STAGED);
+		expect(merged.action).toBe("added");
+		expect(entries(merged.next)).toEqual([NAMED, WANTED]);
+	});
+
+	test("replaces an unmarked legacy entry for the staged hook in place", () => {
+		const merged = upsertHook({ hooks: { [EVENT]: [FOREIGN, LEGACY] } }, WANTED, STAGED);
+		expect(merged.action).toBe("replaced");
+		expect(entries(merged.next)).toEqual([FOREIGN, WANTED]);
+	});
+
 	test("replaces an owned entry in place", () => {
-		const merged = upsertHook({ hooks: { [EVENT]: [GSD, OURS_OLD, FOREIGN] } }, WANTED);
+		const merged = upsertHook({ hooks: { [EVENT]: [GSD, OURS_OLD, FOREIGN] } }, WANTED, STAGED);
 		expect(merged.action).toBe("replaced");
 		expect(entries(merged.next)).toEqual([GSD, WANTED, FOREIGN]);
 	});
 
 	test("collapses duplicate owned entries into one", () => {
-		const merged = upsertHook({ hooks: { [EVENT]: [OURS_OLD, FOREIGN, { ...OURS_OLD }] } }, WANTED);
+		const merged = upsertHook(
+			{ hooks: { [EVENT]: [OURS_OLD, FOREIGN, { ...OURS_OLD }] } },
+			WANTED,
+			STAGED,
+		);
 		expect(merged.action).toBe("replaced");
 		expect(entries(merged.next)).toEqual([WANTED, FOREIGN]);
 	});
 
 	test("reports unchanged for an identical single owned entry", () => {
-		expect(upsertHook({ hooks: { [EVENT]: [WANTED] } }, WANTED)).toEqual({ action: "unchanged" });
+		expect(upsertHook({ hooks: { [EVENT]: [WANTED] } }, WANTED, STAGED)).toEqual({
+			action: "unchanged",
+		});
 	});
 
 	test("refuses malformed shapes with a reason", () => {
-		expect(upsertHook([], WANTED).reason).toContain("top-level value is not an object");
-		expect(upsertHook({ hooks: [] }, WANTED).reason).toContain('"hooks" is not an object');
-		expect(upsertHook({ hooks: { [EVENT]: {} } }, WANTED).reason).toContain(
+		expect(upsertHook([], WANTED, STAGED).reason).toContain("top-level value is not an object");
+		expect(upsertHook({ hooks: [] }, WANTED, STAGED).reason).toContain('"hooks" is not an object');
+		expect(upsertHook({ hooks: { [EVENT]: {} } }, WANTED, STAGED).reason).toContain(
 			`"hooks.${EVENT}" is not an array`,
 		);
 	});
 });
 
 describe("removeHook", () => {
+	const NAMED = { type: "command", command: `echo ${HOOK_FILE}` };
+	const LEGACY = { type: "command", command: hookCommand("/usr/bin/node", STAGED) };
+
 	test("removes owned entries only, keeping foreign positions", () => {
-		const merged = removeHook({ hooks: { [EVENT]: [GSD, OURS_OLD, SUBSTRATE, FOREIGN] } });
+		const merged = removeHook({ hooks: { [EVENT]: [GSD, OURS_OLD, SUBSTRATE, FOREIGN] } }, STAGED);
 		expect(merged.action).toBe("removed");
 		expect(entries(merged.next)).toEqual([GSD, SUBSTRATE, FOREIGN]);
 	});
 
+	test("removes a legacy entry for the staged hook but keeps one that only names the file", () => {
+		const merged = removeHook({ hooks: { [EVENT]: [NAMED, LEGACY] } }, STAGED);
+		expect(merged.action).toBe("removed");
+		expect(entries(merged.next)).toEqual([NAMED]);
+	});
+
 	test("not present when the config has no owned entry or is missing", () => {
-		expect(removeHook({ hooks: { [EVENT]: [GSD] } })).toEqual({ action: "not present" });
-		expect(removeHook(undefined)).toEqual({ action: "not present" });
+		expect(removeHook({ hooks: { [EVENT]: [GSD] } }, STAGED)).toEqual({ action: "not present" });
+		expect(removeHook(undefined, STAGED)).toEqual({ action: "not present" });
 	});
 
 	test("refuses the same malformed shapes as upsertHook", () => {
-		expect(removeHook([]).reason).toContain("top-level value is not an object");
-		expect(removeHook({ hooks: { [EVENT]: "no" } }).reason).toContain(
+		expect(removeHook([], STAGED).reason).toContain("top-level value is not an object");
+		expect(removeHook({ hooks: { [EVENT]: "no" } }, STAGED).reason).toContain(
 			`"hooks.${EVENT}" is not an array`,
 		);
 	});
@@ -295,7 +341,7 @@ describe("main", () => {
 			const bytes = readFileSync(file, "utf8");
 			expect(box.run(["install"])).toBe(0);
 			expect(box.list()).toHaveLength(1);
-			expect(box.list().filter(isOwned)).toHaveLength(1);
+			expect(box.list().filter((entry) => isOwned(entry, box.staged))).toHaveLength(1);
 			expect(readFileSync(file, "utf8")).toBe(bytes);
 			expect(readFileSync(box.staged, "utf8")).toBe(readFileSync(box.source, "utf8"));
 		});
@@ -305,13 +351,13 @@ describe("main", () => {
 		sandbox((box) => {
 			const before = [GSD, OURS_OLD, SUBSTRATE, FOREIGN];
 			const otherEvent = { hooks: { postToolUse: [{ ...SUBSTRATE }], [EVENT]: before } };
-			const foreign = JSON.stringify(before.filter((entry) => !isOwned(entry)));
+			const foreign = JSON.stringify(before.filter((entry) => !isOwned(entry, box.staged)));
 			mkdirSync(box.cursor, { recursive: true });
 			writeFileSync(join(box.cursor, "hooks.json"), JSON.stringify(otherEvent, null, 2));
 			expect(box.run(["install"])).toBe(0);
 			const mid = box.list();
-			expect(JSON.stringify(mid.filter((entry) => !isOwned(entry)))).toBe(foreign);
-			const owned = mid.filter(isOwned);
+			expect(JSON.stringify(mid.filter((entry) => !isOwned(entry, box.staged)))).toBe(foreign);
+			const owned = mid.filter((entry) => isOwned(entry, box.staged));
 			expect(owned).toHaveLength(1);
 			expect(owned[0]).toEqual({ ...WANTED, command: hookCommand(box.node, box.staged) });
 			expect(mid.indexOf(owned[0])).toBe(1); // replaced in place, foreign slots untouched
@@ -329,6 +375,40 @@ describe("main", () => {
 			expect(box.run(["remove"])).toBe(0);
 			expect(existsSync(box.staged)).toBe(false);
 			expect(box.list()).toEqual([]);
+		});
+	});
+
+	test("a foreign entry that merely names the hook file is kept, and ours is added beside it", () => {
+		sandbox((box) => {
+			const named = { type: "command", command: `echo ${HOOK_FILE}` };
+			mkdirSync(box.cursor, { recursive: true });
+			writeFileSync(
+				join(box.cursor, "hooks.json"),
+				JSON.stringify({ hooks: { [EVENT]: [named] } }),
+			);
+			expect(box.run(["install"])).toBe(0);
+			expect(box.list()).toEqual([
+				named,
+				{ ...WANTED, command: hookCommand(box.node, box.staged) },
+			]);
+			expect(box.run(["remove"])).toBe(0);
+			expect(box.list()).toEqual([named]);
+		});
+	});
+
+	test("an unmarked legacy entry for this hook is replaced by the marked one", () => {
+		sandbox((box) => {
+			const legacy = { type: "command", command: hookCommand(box.node, box.staged) };
+			mkdirSync(box.cursor, { recursive: true });
+			writeFileSync(
+				join(box.cursor, "hooks.json"),
+				JSON.stringify({ hooks: { [EVENT]: [FOREIGN, legacy] } }),
+			);
+			expect(box.run(["install"])).toBe(0);
+			expect(box.list()).toEqual([
+				FOREIGN,
+				{ ...WANTED, command: hookCommand(box.node, box.staged) },
+			]);
 		});
 	});
 
@@ -512,7 +592,7 @@ describe("main", () => {
 			expect(box.run(["install"], { lockWaitMs: 0 })).toBe(0);
 			expect(existsSync(join(box.cursor, HOOK_LOCK_FILE))).toBe(false);
 			expect(readFileSync(box.staged, "utf8")).toBe(readFileSync(box.source, "utf8"));
-			expect(box.list().filter(isOwned)).toHaveLength(1);
+			expect(box.list().filter((entry) => isOwned(entry, box.staged))).toHaveLength(1);
 		});
 	});
 
@@ -565,7 +645,30 @@ describe("main", () => {
 				}),
 			).toBe(1);
 			expect(readFileSync(box.staged, "utf8")).toBe("previous hook\n");
-			expect(box.list().some(isOwned)).toBe(false);
+			expect(box.list().some((entry) => isOwned(entry, box.staged))).toBe(false);
+		});
+	});
+
+	test("restoring the previous staged hook replaces a symlink planted at its path, never writing through it", () => {
+		sandbox((box) => {
+			const victim = join(box.home, "victim");
+			writeFileSync(victim, "victim bytes\n");
+			mkdirSync(dirname(box.staged), { recursive: true });
+			writeFileSync(box.staged, "previous hook\n");
+			expect(() =>
+				box.run(["install"], {
+					beforeCommit: () => {
+						// The copy has already run. Plant a link where the staged hook now lives, then fail the commit.
+						rmSync(box.staged);
+						symlinkSync(victim, box.staged);
+						throw new Error("commit exploded");
+					},
+				}),
+			).toThrow("commit exploded");
+			expect(lstatSync(box.staged).isSymbolicLink()).toBe(false);
+			expect(readFileSync(box.staged, "utf8")).toBe("previous hook\n");
+			expect(readFileSync(victim, "utf8")).toBe("victim bytes\n");
+			expect(readdirSync(dirname(box.staged))).toEqual([HOOK_FILE]);
 		});
 	});
 
@@ -603,7 +706,7 @@ describe("main", () => {
 				}),
 			).toBe(1);
 			expect(box.lines.join("\n")).toContain("changed while it was being updated");
-			expect(box.list().some(isOwned)).toBe(false);
+			expect(box.list().some((entry) => isOwned(entry, box.staged))).toBe(false);
 			expect(box.list()).toContainEqual(FOREIGN);
 		});
 	});

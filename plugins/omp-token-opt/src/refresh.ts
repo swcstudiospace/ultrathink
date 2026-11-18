@@ -27,7 +27,13 @@ export function createTrailingRefresh(read: () => Promise<void>, minMs: number, 
 
 	function start(): Promise<void> {
 		skipped = false;
-		inFlight = read()
+		let pending: Promise<void>;
+		try {
+			pending = read();
+		} catch (err) {
+			pending = Promise.reject(err);
+		}
+		inFlight = pending
 			.catch(() => {})
 			.finally(() => {
 				inFlight = null;

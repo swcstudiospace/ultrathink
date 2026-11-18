@@ -213,19 +213,21 @@ describe("circuit breaker", () => {
 
 	test("after the cooldown the next call probes the backend and reopens on failure", async () => {
 		const timeoutMs = 150;
+		const breakerCooldownMs = 500;
+		// The breaker reads Date.now(). Moving this fake clock past the cooldown needs no wall-clock wait.
+		let now = 1_700_000_000_000;
+		const clock = spyOn(Date, "now").mockImplementation(() => now);
 		const cache = createSharedCache({
 			url: REFUSED_URL,
 			timeoutMs,
 			breakerThreshold: 1,
-			breakerCooldownMs: 500,
+			breakerCooldownMs,
 		});
 		try {
 			expect(await cache.get("k")).toBeNull();
 			expect(cache.state()).toBe("open");
 
-			// Real-time integration check: the breaker cooldown is a wall-clock window
-			// and has no injectable clock, so the test waits out the 500 ms cooldown.
-			await Bun.sleep(600);
+			now += breakerCooldownMs;
 			expect(cache.state()).toBe("closed");
 
 			const started = performance.now();
@@ -235,6 +237,7 @@ describe("circuit breaker", () => {
 			expect(cache.state()).toBe("open");
 		} finally {
 			await cache.close();
+			clock.mockRestore();
 		}
 	});
 

@@ -23,6 +23,7 @@ import {
 } from "../src/claude/hook.ts";
 import { defaultStateDir, readSession, sessionRecordPath } from "../src/claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../src/config.ts";
+import { GRAPH_ID_PATTERN } from "../src/gateway/types.ts";
 import { detectHost } from "../src/host/detect.ts";
 import { isSubagentEnvelope, parseEnvelope, responseText } from "../src/host/envelope.ts";
 import { installChildReaper } from "../src/resilience/child.ts";
@@ -36,6 +37,9 @@ interface HookInput {
 	tool_response?: unknown;
 }
 
+/** A PR URL safe to hand the model: GitHub owner and repo names and a numeric pull, nothing that reads as instructions. */
+const SAFE_PR_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/\d+$/;
+
 /** The PR-creation notice for a planned session's tool result, or undefined when the result is not one. */
 function prNotice(
 	input: HookInput,
@@ -47,12 +51,17 @@ function prNotice(
 	const record = readSession(stateDir, sessionId);
 	if (!record?.plan) return undefined;
 
-	const pr = extractPrFromOutput(responseText(input.tool_response));
+	const found = extractPrFromOutput(responseText(input.tool_response));
+	const pr = found && SAFE_PR_URL_RE.test(found.url) ? found : undefined;
 	const prNote = pr ? ` (${pr.url})` : "";
+	// The graphId is model-read text: name it only when it has the tracker's shape, otherwise omit the reference.
+	const graphRef = GRAPH_ID_PATTERN.test(record.plan.graphId)
+		? ` (graphId=${record.plan.graphId})`
+		: "";
 	const stateFile = resolve(sessionRecordPath(stateDir, sessionId));
 	const prArg = pr ? ` and prUrl=${pr.url}` : " and the PR URL";
 	return {
-		systemMessage: `Ultrathink · a pull request was opened for a tracked task${prNote}. Invoke the ultrathink-sync skill now (graphId=${record.plan.graphId}) to write the PR URL/number/branch back onto the Notion Task row and Linear issue.`,
+		systemMessage: `Ultrathink · a pull request was opened for a tracked task${prNote}. Invoke the ultrathink-sync skill now${graphRef} to write the PR URL/number/branch back onto the Notion Task row and Linear issue.`,
 		additionalContext: `Ultrathink: a pull request was opened for the tracked task${prNote}. Invoke the ultrathink-sync skill now with stateFile=${stateFile}${prArg}, so the tracked Notion Task row and Linear issues get the PR URL/number/branch and status. ultrathink-sync only updates existing rows; do not create new Notion rows or Linear issues.`,
 	};
 }

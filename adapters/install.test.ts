@@ -193,4 +193,63 @@ describe("installPlugin", () => {
 		expect(await readFile(join(targetDir, "old.txt"), "utf8")).toBe("old");
 		expect(await readdir(base)).toEqual(["plugin"]);
 	});
+
+	test("a backup left by an install interrupted between the renames is removed by the next install", async () => {
+		const targetDir = join(base, "plugin");
+		// Crash between the two renames: the old install is parked and the target is absent.
+		const backupDir = join(base, ".plugin.backup-000000000000");
+		await mkdir(backupDir);
+		await writeFile(join(backupDir, "old.txt"), "old");
+
+		const result = await installPlugin({
+			targetDir,
+			files: filesOf({ "new.txt": "new" }),
+			requiredFiles: ["new.txt"],
+		});
+		expect(result).toEqual({ ok: true, status: "installed" });
+		expect(await readFile(join(targetDir, "new.txt"), "utf8")).toBe("new");
+		expect(await readdir(base)).toEqual(["plugin"]);
+	});
+
+	test("an install interrupted after the swap is redone, not reported unchanged", async () => {
+		const targetDir = join(base, "plugin");
+		// Crash between the swap and the registrations: new files present, no install record.
+		await mkdir(targetDir);
+		await writeFile(join(targetDir, "a.txt"), "A");
+
+		const log: string[] = [];
+		const result = await installPlugin({
+			targetDir,
+			files: filesOf({ "a.txt": "A" }),
+			requiredFiles: ["a.txt"],
+			registrations: [fakeRegistration("r", log)],
+		});
+		expect(result).toEqual({ ok: true, status: "installed" });
+		expect(log).toEqual(["apply:r"]);
+	});
+
+	test("the install record is written only after registrations complete", async () => {
+		const targetDir = join(base, "plugin");
+		let recordPresentDuringApply: boolean | undefined;
+		const result = await installPlugin({
+			targetDir,
+			files: filesOf({ "a.txt": "A" }),
+			requiredFiles: ["a.txt"],
+			registrations: [
+				{
+					name: "probe",
+					async apply() {
+						const names = await readdir(targetDir);
+						recordPresentDuringApply = names.includes(".ultrathink-install.json");
+					},
+					async revert() {
+						return;
+					},
+				},
+			],
+		});
+		expect(result).toEqual({ ok: true, status: "installed" });
+		expect(recordPresentDuringApply).toBe(false);
+		expect(await readdir(targetDir)).toContain(".ultrathink-install.json");
+	});
 });

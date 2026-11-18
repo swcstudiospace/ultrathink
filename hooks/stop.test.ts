@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeSession } from "../src/claude/state.ts";
+import { type SessionRecord, writeSession } from "../src/claude/state.ts";
 import { DEFAULT_HINDSIGHT_CONFIG } from "../src/hindsight/types.ts";
 import {
 	DEFAULT_TEACH_CONFIG,
@@ -12,7 +12,7 @@ import {
 	type TeachContext,
 	type TeachDigest,
 } from "../src/teach/types.ts";
-import type { TrackPlan } from "../src/track/types.ts";
+import type { TaskRow, TrackPlan } from "../src/track/types.ts";
 import { runStop, type StopDeps } from "./stop.ts";
 
 const DIGEST: TeachDigest = {
@@ -24,6 +24,34 @@ const DIGEST: TeachDigest = {
 	toolCalls: 5,
 	outcome: "completed",
 };
+
+/** A complete planned session record for `graphId`: a tracked plan with empty rows, no casts needed. */
+function planSession(sessionId: string, graphId: string): SessionRecord {
+	const task: TaskRow = {
+		graphId,
+		item: "task",
+		description: "",
+		upliftedPrompt: "",
+		agent: "claude-code",
+		status: "planned",
+		linearState: "",
+	};
+	const plan: TrackPlan = {
+		graphId,
+		task,
+		issues: [],
+		subIssues: [],
+		linearIssues: [],
+		linearSubIssues: [],
+		hitl: { blocking: [], nonBlocking: [] },
+	};
+	return {
+		sessionId,
+		at: 1,
+		result: { xml: "", original: "", root: "BUILD_PROMPT", source: "llm" },
+		plan,
+	};
+}
 
 describe("stop hook teach capture", () => {
 	let dir = "";
@@ -92,12 +120,7 @@ describe("stop hook teach capture", () => {
 	test("an untracked session still captures and prints nothing; a tracked one keeps its sync message", () => {
 		const deps = setup(true, "observe");
 		expect(runStop(envelope(), deps)).toBeUndefined();
-		writeSession(dir, {
-			sessionId: "s1",
-			at: 1,
-			result: { xml: "", original: "", root: "BUILD_PROMPT", source: "llm" },
-			plan: { graphId: "g-1" } as TrackPlan,
-		} as unknown as Parameters<typeof writeSession>[1]);
+		writeSession(dir, planSession("s1", "g-1"));
 		// reason "shutdown" is Grok's session-end Stop: no ship check, so no operator config is read.
 		const out = runStop(envelope({ reason: "shutdown" }), deps);
 		expect(JSON.parse(out ?? "{}")).toEqual({
@@ -143,12 +166,7 @@ describe("stop hook teach capture", () => {
 	});
 
 	test("a throwing digest, spawn or context leaves the output unchanged", () => {
-		writeSession(dir, {
-			sessionId: "s1",
-			at: 1,
-			result: { xml: "", original: "", root: "BUILD_PROMPT", source: "llm" },
-			plan: { graphId: "g-2" } as TrackPlan,
-		} as unknown as Parameters<typeof writeSession>[1]);
+		writeSession(dir, planSession("s1", "g-2"));
 		const base = setup(true, "observe");
 		const boom = () => {
 			throw new Error("boom");
@@ -172,12 +190,7 @@ describe("the stop hook entry", () => {
 			const home = join(root, "home");
 			// The state resolver accepts only paths inside the (fake) home directory the child process sees.
 			const stateDir = join(home, "state");
-			writeSession(stateDir, {
-				sessionId: "s9",
-				at: 1,
-				result: { xml: "", original: "", root: "BUILD_PROMPT", source: "llm" },
-				plan: { graphId: "g-entry" } as TrackPlan,
-			} as unknown as Parameters<typeof writeSession>[1]);
+			writeSession(stateDir, planSession("s9", "g-entry"));
 			const proc = Bun.spawn(["bun", "--no-env-file", join(import.meta.dir, "stop.ts")], {
 				stdin: new Blob([JSON.stringify({ session_id: "s9", cwd: root, reason: "shutdown" })]),
 				stdout: "pipe",

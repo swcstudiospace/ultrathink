@@ -46,7 +46,7 @@ describe("createRemoteSink without url", () => {
 		const lines = jsonlLines(fallbackPath);
 		expect(lines).toHaveLength(3);
 		expect(JSON.parse(lines[2] ?? "{}")).toEqual(row(2));
-		expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 3 });
+		expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 3, maybeStored: 0 });
 	});
 
 	test("flush takes at most batchSize rows", async () => {
@@ -56,13 +56,13 @@ describe("createRemoteSink without url", () => {
 		await sink.flush();
 
 		expect(jsonlLines(fallbackPath)).toHaveLength(2);
-		expect(sink.stats()).toEqual({ queued: 3, sent: 0, dropped: 0, fellBack: 2 });
+		expect(sink.stats()).toEqual({ queued: 3, sent: 0, dropped: 0, fellBack: 2, maybeStored: 0 });
 	});
 
 	test("queue overflow increments dropped and does not throw", () => {
 		const sink = track({ fallbackPath: join(dir, "spill.jsonl"), maxQueue: 2, flushMs: 60_000 });
 		for (let i = 0; i < 5; i++) sink.push(row(i));
-		expect(sink.stats()).toEqual({ queued: 2, sent: 0, dropped: 3, fellBack: 0 });
+		expect(sink.stats()).toEqual({ queued: 2, sent: 0, dropped: 3, fellBack: 0, maybeStored: 0 });
 	});
 
 	test("a scheduled flush fires after flushMs without an explicit flush", async () => {
@@ -74,7 +74,7 @@ describe("createRemoteSink without url", () => {
 		const deadline = Date.now() + 3000;
 		while (sink.stats().fellBack === 0 && Date.now() < deadline) await Bun.sleep(10);
 
-		expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 1 });
+		expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 1, maybeStored: 0 });
 		expect(jsonlLines(fallbackPath)).toHaveLength(1);
 	});
 
@@ -100,7 +100,7 @@ describe("createRemoteSink without url", () => {
 			const deadline = Date.now() + 3000;
 			while (sink.stats().fellBack === 0 && Date.now() < deadline) await Bun.sleep(10);
 
-			expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 1 });
+			expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 1, maybeStored: 0 });
 			expect(jsonlLines(fallbackPath)).toHaveLength(1);
 		} finally {
 			spy.mockRestore();
@@ -114,7 +114,7 @@ describe("createRemoteSink without url", () => {
 		await sink.close();
 
 		expect(jsonlLines(fallbackPath)).toHaveLength(3);
-		expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 3 });
+		expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 3, maybeStored: 0 });
 
 		sink.push(row(9));
 		expect(sink.stats().dropped).toBe(1);
@@ -146,7 +146,7 @@ describe("createRemoteSink with an unreachable url", () => {
 
 			expect(elapsed).toBeLessThan(timeoutMs + 1500);
 			expect(jsonlLines(fallbackPath)).toHaveLength(2);
-			expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 2 });
+			expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 2, maybeStored: 0 });
 
 			const messages = warnings.mock.calls.map((call) => String(call[0]));
 			expect(messages).toHaveLength(1);
@@ -179,8 +179,8 @@ interface StubConnection {
 	started: boolean;
 }
 
-/** Minimal Postgres wire stub: accepts the startup, answers each Sync or Query with an error, and records SQL text. */
-function startFakePostgres(received: string[]) {
+/** Minimal Postgres wire stub: accepts the startup, records SQL text, and answers each Sync or Query with an error unless stall is set. */
+function startFakePostgres(received: string[], stall = false) {
 	return Bun.listen<StubConnection>({
 		hostname: "127.0.0.1",
 		port: 0,
@@ -213,7 +213,7 @@ function startFakePostgres(received: string[]) {
 					const body = state.pending.subarray(5, 1 + length);
 					state.pending = state.pending.subarray(1 + length);
 					if (type === "P" || type === "Q") received.push(body.toString("utf8"));
-					if (type === "S" || type === "Q") {
+					if ((type === "S" || type === "Q") && !stall) {
 						const error = pgMessage("E", Buffer.from("SERROR\0C42P01\0Mrelation does not exist\0\0", "utf8"));
 						socket.write(Buffer.concat([error, pgMessage("Z", Buffer.from("I"))]));
 					}
@@ -241,7 +241,7 @@ async function flushOnceToFakePostgres(extra: { ensureSchema?: boolean }): Promi
 		await sink.flush();
 
 		expect(jsonlLines(fallbackPath)).toHaveLength(1);
-		expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 1 });
+		expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 1, maybeStored: 0 });
 		const messages = warnings.mock.calls.map((call) => String(call[0]));
 		expect(messages).toHaveLength(1);
 		for (const message of messages) expect(message).not.toContain(FAKE_PASSWORD);
@@ -292,7 +292,7 @@ describe("createRemoteSink close with a stalled remote", () => {
 			// The old drain-everything close spent one timeout per row (about 2 s here).
 			expect(elapsed).toBeLessThan(timeoutMs * 3);
 			expect(jsonlLines(fallbackPath)).toHaveLength(5);
-			expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 5 });
+			expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 4, maybeStored: 1 });
 		} finally {
 			warnings.mockRestore();
 			stalled.stop(true);
@@ -301,6 +301,33 @@ describe("createRemoteSink close with a stalled remote", () => {
 });
 
 const LIVE_URL = process.env.TOKEN_OPT_TEST_TIMESCALE_URL ?? "";
+
+describe("createRemoteSink with a timed-out write", () => {
+	test("a write that times out is counted as maybe stored, and its batch is spilled", async () => {
+		const received: string[] = [];
+		const server = startFakePostgres(received, true);
+		const warnings = spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			const fallbackPath = join(dir, "timed-out.jsonl");
+			const sink = track({
+				url: `postgres://u:${FAKE_PASSWORD}@127.0.0.1:${server.port}/db`,
+				fallbackPath,
+				timeoutMs: 300,
+				flushMs: 60_000,
+			});
+			sink.push(row(0));
+			sink.push(row(1));
+			await sink.flush();
+
+			expect(received.some((sql) => sql.includes("INSERT INTO"))).toBe(true);
+			expect(jsonlLines(fallbackPath)).toHaveLength(2);
+			expect(sink.stats()).toEqual({ queued: 0, sent: 0, dropped: 0, fellBack: 0, maybeStored: 2 });
+		} finally {
+			warnings.mockRestore();
+			server.stop(true);
+		}
+	});
+});
 
 describe("createRemoteSink against TimescaleDB", () => {
 	test.skipIf(!process.env.TOKEN_OPT_TEST_TIMESCALE_URL)("writes a row to a hypertable", async () => {
@@ -314,6 +341,6 @@ describe("createRemoteSink against TimescaleDB", () => {
 		sink.push(row(0));
 		await sink.close();
 
-		expect(sink.stats()).toEqual({ queued: 0, sent: 1, dropped: 0, fellBack: 0 });
+		expect(sink.stats()).toEqual({ queued: 0, sent: 1, dropped: 0, fellBack: 0, maybeStored: 0 });
 	});
 });

@@ -19,6 +19,7 @@ import {
 	type InstalledPackage,
 	type Policy,
 	type Severity,
+	CI_CHECK_APP,
 	collectLicenses,
 	evaluateAudit,
 	evaluateChecks,
@@ -48,6 +49,9 @@ const PLAN_CHECKS = [
 	"Analyze (python)",
 	"Check and test (Bun latest)",
 ];
+/** The release commit that the check and report tests bind their evidence to. */
+const RELEASE_SHA = "a".repeat(40);
+
 /** One real advisory object, copied verbatim from `bun audit --json` run against a probe project with lodash@4.17.15. */
 const CAPTURED_NONEMPTY =
 	'{"lodash":[{"id":1106913,"url":"https://github.com/advisories/GHSA-35jh-r3h4-6jhm","title":"Command Injection in lodash","severity":"high","vulnerable_versions":"<4.17.21","cwe":["CWE-77","CWE-94"],"cvss":{"score":7.2,"vectorString":"CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H"}}]}';
@@ -130,8 +134,15 @@ function installPackage(root: string, dir: string, manifest: unknown): void {
 	write(join(root, "node_modules", dir, "package.json"), JSON.stringify(manifest));
 }
 
-function checkLine(id: number, name: string, status: string, conclusion: string | null): string {
-	return JSON.stringify({ id, name, status, conclusion });
+function checkLine(
+	id: number,
+	name: string,
+	status: string,
+	conclusion: string | null,
+	headSha = RELEASE_SHA,
+	app = CI_CHECK_APP,
+): string {
+	return JSON.stringify({ id, name, status, conclusion, head_sha: headSha, app });
 }
 
 describe("shipped policy", () => {
@@ -738,7 +749,11 @@ describe("check evaluation", () => {
 		].join("\n");
 		for (const ndjson of [failedThenPassed, passedThenFailed]) {
 			expect(
-				evaluateChecks(latestChecks(ndjson), policyOf({ requiredChecks: ["Semgrep"] })).status,
+				evaluateChecks(
+					latestChecks(ndjson, CI_CHECK_APP),
+					policyOf({ requiredChecks: ["Semgrep"] }),
+					RELEASE_SHA,
+				).status,
 			).toBe("pass");
 		}
 	});
@@ -753,15 +768,18 @@ describe("check evaluation", () => {
 	];
 	for (const [label, status, conclusion] of notSuccessful) {
 		test(`a required check that is ${label} with conclusion ${conclusion ?? "null"} fails`, () => {
-			const latest = latestChecks(checkLine(1, "Semgrep", status, conclusion));
-			expect(evaluateChecks(latest, policyOf({ requiredChecks: ["Semgrep"] })).status).toBe("fail");
+			const latest = latestChecks(checkLine(1, "Semgrep", status, conclusion), CI_CHECK_APP);
+			expect(
+				evaluateChecks(latest, policyOf({ requiredChecks: ["Semgrep"] }), RELEASE_SHA).status,
+			).toBe("fail");
 		});
 	}
 
 	test("a required check with no run at all fails", () => {
 		const result = evaluateChecks(
-			latestChecks(checkLine(1, "Other", "completed", "success")),
+			latestChecks(checkLine(1, "Other", "completed", "success"), CI_CHECK_APP),
 			policyOf({ requiredChecks: ["Semgrep"] }),
+			RELEASE_SHA,
 		);
 		expect(result.status).toBe("fail");
 		expect(result.checks[0]?.reason).toBe("no check run with this name");
@@ -773,7 +791,11 @@ describe("check evaluation", () => {
 			checkLine(2, "Experimental", "completed", "failure"),
 		].join("\n");
 		expect(
-			evaluateChecks(latestChecks(ndjson), policyOf({ requiredChecks: ["Semgrep"] })).status,
+			evaluateChecks(
+				latestChecks(ndjson, CI_CHECK_APP),
+				policyOf({ requiredChecks: ["Semgrep"] }),
+				RELEASE_SHA,
+			).status,
 		).toBe("pass");
 	});
 
@@ -781,8 +803,53 @@ describe("check evaluation", () => {
 		expect(() =>
 			latestChecks(
 				'{"id":1,"name":"Semgrep","status":"completed","conclusion":"success"}\nnot json',
+				CI_CHECK_APP,
 			),
 		).toThrow();
+	});
+
+	test("a same-named run from another app neither satisfies nor shadows a required check", () => {
+		const ndjson = [
+			checkLine(1, "Semgrep", "completed", "success"),
+			checkLine(9, "Semgrep", "completed", "failure", RELEASE_SHA, "other-app"),
+		].join("\n");
+		expect(
+			evaluateChecks(
+				latestChecks(ndjson, CI_CHECK_APP),
+				policyOf({ requiredChecks: ["Semgrep"] }),
+				RELEASE_SHA,
+			).status,
+		).toBe("pass");
+		const foreignOnly = checkLine(1, "Semgrep", "completed", "success", RELEASE_SHA, "other-app");
+		expect(
+			evaluateChecks(
+				latestChecks(foreignOnly, CI_CHECK_APP),
+				policyOf({ requiredChecks: ["Semgrep"] }),
+				RELEASE_SHA,
+			).status,
+		).toBe("fail");
+	});
+
+	test("evaluateChecks fails a run whose head_sha differs from the release sha", () => {
+		const otherSha = "b".repeat(40);
+		const latest = latestChecks(
+			checkLine(1, "Semgrep", "completed", "success", otherSha),
+			CI_CHECK_APP,
+		);
+		const result = evaluateChecks(latest, policyOf({ requiredChecks: ["Semgrep"] }), RELEASE_SHA);
+		expect(result.status).toBe("fail");
+		expect(result.checks[0]?.reason).toBe(`run is for commit ${otherSha}, not ${RELEASE_SHA}`);
+	});
+
+	test("a check line without head_sha throws", () => {
+		const line = JSON.stringify({
+			id: 1,
+			name: "Semgrep",
+			status: "completed",
+			conclusion: "success",
+			app: CI_CHECK_APP,
+		});
+		expect(() => latestChecks(line, CI_CHECK_APP)).toThrow("has no head_sha");
 	});
 
 	test("the checks CLI passes every shipped required check and writes evidence", () => {
@@ -795,9 +862,18 @@ describe("check evaluation", () => {
 			),
 		);
 		const out = join(dir, "ev");
-		expect(run(["checks", "--input", input, "--policy", SHIPPED_POLICY, "--out", out]).code).toBe(
-			0,
-		);
+		const args = [
+			"checks",
+			"--input",
+			input,
+			"--sha",
+			RELEASE_SHA,
+			"--policy",
+			SHIPPED_POLICY,
+			"--out",
+			out,
+		];
+		expect(run(args).code).toBe(0);
 		expect(evidence(join(out, "checks.json")).status).toBe("pass");
 	});
 
@@ -810,6 +886,8 @@ describe("check evaluation", () => {
 				"checks",
 				"--input",
 				join(dir, "absent.ndjson"),
+				"--sha",
+				RELEASE_SHA,
 				"--policy",
 				SHIPPED_POLICY,
 				"--out",
@@ -821,8 +899,14 @@ describe("check evaluation", () => {
 });
 
 describe("report", () => {
-	const gateFile = (dir: string, gate: string, status: string, gateName = gate) => {
-		write(join(dir, `${gate}.json`), JSON.stringify({ schema: 1, gate: gateName, status }));
+	const gateFile = (
+		dir: string,
+		gate: string,
+		status: string,
+		gateName = gate,
+		sha = RELEASE_SHA,
+	) => {
+		write(join(dir, `${gate}.json`), JSON.stringify({ schema: 1, gate: gateName, status, sha }));
 	};
 
 	test("all three passing gates produce a passing manifest with sha, tag and policy digest", () => {
@@ -835,14 +919,14 @@ describe("report", () => {
 			"--policy",
 			SHIPPED_POLICY,
 			"--sha",
-			"abc123",
+			RELEASE_SHA,
 			"--tag",
 			"v1.2.3",
 		]).code;
 		expect(code).toBe(0);
 		const manifest = evidence(join(dir, "manifest.json"));
 		expect(manifest.status).toBe("pass");
-		expect(manifest.sha).toBe("abc123");
+		expect(manifest.sha).toBe(RELEASE_SHA);
 		expect(manifest.tag).toBe("v1.2.3");
 		expect(manifest.policy).toEqual({
 			file: SHIPPED_POLICY,
@@ -854,7 +938,9 @@ describe("report", () => {
 		const dir = tempDir();
 		gateFile(dir, "licenses", "pass");
 		gateFile(dir, "checks", "pass");
-		expect(run(["report", "--out", dir, "--policy", SHIPPED_POLICY]).code).toBe(1);
+		expect(
+			run(["report", "--out", dir, "--policy", SHIPPED_POLICY, "--sha", RELEASE_SHA]).code,
+		).toBe(1);
 		const manifest = evidence(join(dir, "manifest.json"));
 		expect(manifest.status).toBe("fail");
 		expect(manifest.failures).toEqual(["audit: audit.json missing"]);
@@ -865,7 +951,9 @@ describe("report", () => {
 		gateFile(dir, "audit", "pass");
 		gateFile(dir, "licenses", "pass");
 		gateFile(dir, "checks", "fail");
-		expect(run(["report", "--out", dir, "--policy", SHIPPED_POLICY]).code).toBe(1);
+		expect(
+			run(["report", "--out", dir, "--policy", SHIPPED_POLICY, "--sha", RELEASE_SHA]).code,
+		).toBe(1);
 		expect(evidence(join(dir, "manifest.json")).failures).toEqual(["checks: status fail"]);
 	});
 
@@ -875,7 +963,26 @@ describe("report", () => {
 		gateFile(dir, "licenses", "pass");
 		gateFile(dir, "checks", "pass", "audit");
 		write(join(dir, "manifest.json"), JSON.stringify({ status: "pass" }));
+		expect(
+			run(["report", "--out", dir, "--policy", SHIPPED_POLICY, "--sha", RELEASE_SHA]).code,
+		).toBe(2);
+		expect(existsSync(join(dir, "manifest.json"))).toBe(false);
+	});
+
+	test("report requires --sha", () => {
+		const dir = tempDir();
+		for (const gate of ["audit", "licenses", "checks"]) gateFile(dir, gate, "pass");
 		expect(run(["report", "--out", dir, "--policy", SHIPPED_POLICY]).code).toBe(2);
+	});
+
+	test("report rejects evidence whose sha differs from --sha", () => {
+		const dir = tempDir();
+		gateFile(dir, "audit", "pass", "audit", "b".repeat(40));
+		gateFile(dir, "licenses", "pass");
+		gateFile(dir, "checks", "pass");
+		const result = run(["report", "--out", dir, "--policy", SHIPPED_POLICY, "--sha", RELEASE_SHA]);
+		expect(result.code).toBe(2);
+		expect(result.err.join("\n")).toContain("is not the release sha");
 		expect(existsSync(join(dir, "manifest.json"))).toBe(false);
 	});
 });
@@ -978,7 +1085,10 @@ describe("ancestry", () => {
 		const { dir, onMain } = repoWithMain();
 		const out = tempDir();
 		for (const gate of ["audit", "licenses", "checks"]) {
-			write(join(out, `${gate}.json`), JSON.stringify({ schema: 1, gate, status: "pass" }));
+			write(
+				join(out, `${gate}.json`),
+				JSON.stringify({ schema: 1, gate, status: "pass", sha: onMain }),
+			);
 		}
 		expect(run(["ancestry", "--sha", onMain], undefined, dir).code).toBe(0);
 		expect(

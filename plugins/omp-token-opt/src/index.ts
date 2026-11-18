@@ -43,9 +43,6 @@ interface BudgetState {
 	limit: number;
 }
 
-/** Stable prefix: never inject system-prompt text, timestamps, hashes, or file counts. */
-export const PREFIX_POLICY = { injectSystemPrompt: false as const };
-
 interface TextBlock {
 	type: string;
 	text?: string;
@@ -335,15 +332,11 @@ async function readStream(
 	return { text: new TextDecoder().decode(Buffer.concat(chunks)), truncated };
 }
 
-async function rewriteWithRtk(command: string, cwd: string): Promise<string | null> {
-	if (command.trimStart().startsWith("rtk ")) return null;
-	if (rtkExtensionPresent(cwd)) return null;
-	const bin = Bun.which("rtk");
-	if (!bin) return null;
+async function runRtk(argv: string[], cwd?: string): Promise<string | null> {
 	const killer = new AbortController();
 	const timer = setTimeout(() => killer.abort(), RTK_TIMEOUT_MS);
 	try {
-		const proc = Bun.spawn([bin, "rewrite", command], {
+		const proc = Bun.spawn(argv, {
 			cwd,
 			stdout: "pipe",
 			stderr: "ignore",
@@ -352,17 +345,28 @@ async function rewriteWithRtk(command: string, cwd: string): Promise<string | nu
 		});
 		const { text: stdout, truncated } = await readStream(proc.stdout, 65_536);
 		const exitCode = await proc.exited;
-		// A clipped rewrite is a different command from the one rtk produced; never run it.
+		// A clipped output is incomplete: a clipped rewrite is a different command, and clipped JSON cannot parse.
 		if (truncated || exitCode !== 0) return null;
-		const line = stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout;
-		if (line.length === 0 || line.includes("\n") || !line.startsWith("rtk ")) return null;
-		return line;
+		return stdout;
 	} catch {
 		return null;
 	} finally {
 		clearTimeout(timer);
 	}
 }
+
+async function rewriteWithRtk(command: string, cwd: string): Promise<string | null> {
+	if (command.trimStart().startsWith("rtk ")) return null;
+	if (rtkExtensionPresent(cwd)) return null;
+	const bin = Bun.which("rtk");
+	if (!bin) return null;
+	const stdout = await runRtk([bin, "rewrite", command], cwd);
+	if (stdout === null) return null;
+	const line = stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout;
+	if (line.length === 0 || line.includes("\n") || !line.startsWith("rtk ")) return null;
+	return line;
+}
+
 function parseRtkTotalSaved(text: string): number | null {
 	try {
 		const parsed = JSON.parse(text) as { summary?: { total_saved?: unknown } };
@@ -377,24 +381,8 @@ function parseRtkTotalSaved(text: string): number | null {
 async function readRtkTotalSaved(): Promise<number | null> {
 	const bin = Bun.which("rtk");
 	if (!bin) return null;
-	const killer = new AbortController();
-	const timer = setTimeout(() => killer.abort(), RTK_TIMEOUT_MS);
-	try {
-		const proc = Bun.spawn([bin, "gain", "--all", "--format", "json"], {
-			stdout: "pipe",
-			stderr: "ignore",
-			stdin: "ignore",
-			signal: killer.signal,
-		});
-		const { text: stdout } = await readStream(proc.stdout, 65_536);
-		const exitCode = await proc.exited;
-		if (exitCode !== 0) return null;
-		return parseRtkTotalSaved(stdout);
-	} catch {
-		return null;
-	} finally {
-		clearTimeout(timer);
-	}
+	const stdout = await runRtk([bin, "gain", "--all", "--format", "json"]);
+	return stdout === null ? null : parseRtkTotalSaved(stdout);
 }
 
 function isEmptyToolResult(text: string): boolean {
@@ -521,6 +509,11 @@ export default function tokenOpt(pi: PiLike): void {
 
 	function spendBudget(text: string): void {
 		if (budget) budget.handle.spend(estimateTokens(text));
+	}
+
+	function compressRecord(baseline: number, current: number, text: string): void {
+		record({ at: Date.now(), source: "compress", baseline, current, saved: baseline - current });
+		spendBudget(text);
 	}
 
 	function activeSession(): string {
@@ -759,16 +752,8 @@ export default function tokenOpt(pi: PiLike): void {
 				const pointer = `token-opt: ${toolName} empty`;
 				const baseline = estimateTokens(joined);
 				const current = estimateTokens(pointer);
-				if (baseline > current) {
-					record({
-						at: Date.now(),
-						source: "compress",
-						baseline,
-						current,
-						saved: baseline - current,
-					});
-				}
-				spendBudget(pointer);
+				if (baseline > current) compressRecord(baseline, current, pointer);
+				else spendBudget(pointer);
 				return rewrite(pointer);
 			}
 			if (joined.length > DEDUPE_MIN_CHARS) {
@@ -785,14 +770,7 @@ export default function tokenOpt(pi: PiLike): void {
 					const pointer = `token-opt: repeated ${toolName} result omitted (${joined.length} chars)${subject.length > 0 ? ` for ${subject.slice(0, 80)}` : ""}`;
 					const baseline = estimateTokens(joined);
 					const current = estimateTokens(pointer);
-					record({
-						at: Date.now(),
-						source: "compress",
-						baseline,
-						current,
-						saved: baseline - current,
-					});
-					spendBudget(pointer);
+					compressRecord(baseline, current, pointer);
 					return rewrite(pointer);
 				}
 				seen.add(hash);
@@ -810,14 +788,7 @@ export default function tokenOpt(pi: PiLike): void {
 				const baseline = estimateTokens(joined);
 				const current = estimateTokens(skimmed);
 				if (baseline > current) {
-					record({
-						at: Date.now(),
-						source: "compress",
-						baseline,
-						current,
-						saved: baseline - current,
-					});
-					spendBudget(skimmed);
+					compressRecord(baseline, current, skimmed);
 					return rewrite(skimmed);
 				}
 			}
@@ -828,14 +799,7 @@ export default function tokenOpt(pi: PiLike): void {
 				spendBudget(joined);
 				return;
 			}
-			record({
-				at: Date.now(),
-				source: "compress",
-				baseline: shrunk.baseline,
-				current: shrunk.current,
-				saved: shrunk.saved,
-			});
-			spendBudget(shrunk.text);
+			compressRecord(shrunk.baseline, shrunk.current, shrunk.text);
 			return rewrite(shrunk.text);
 		} catch {
 			return;

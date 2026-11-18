@@ -4,7 +4,7 @@
 /**
  * Credential scan. Scans the given files and directories for credential-shaped strings.
  * Directories are walked recursively; `.git/` and `node_modules/` inside them are skipped.
- * Matched values are never printed; only the pattern name and the first 4 characters appear.
+ * Matched values are never printed; only the pattern name, file and line appear.
  *
  * Run: bun tooling/secret-scan/scan.ts <path> [path...]
  */
@@ -16,7 +16,6 @@ export interface SecretFinding {
 	readonly file: string;
 	readonly line: number;
 	readonly pattern: string;
-	readonly preview: string;
 }
 
 export interface ScanFailure {
@@ -30,7 +29,8 @@ export interface ScanReport {
 	readonly failures: readonly ScanFailure[];
 }
 
-const PREVIEW_CHARS = 4;
+const MAX_SCAN_BYTES = 1024 * 1024;
+const BINARY_PROBE_BYTES = 8 * 1024;
 const SKIPPED_DIRS: readonly string[] = [".git", "node_modules"];
 
 function errorMessage(error: unknown): string {
@@ -58,7 +58,6 @@ export function scanText(
 				file,
 				line: index + 1,
 				pattern: name,
-				preview: value.length > PREVIEW_CHARS ? `${value.slice(0, PREVIEW_CHARS)}****` : "****",
 			});
 		}
 	});
@@ -94,6 +93,13 @@ export async function scanPaths(targets: readonly string[]): Promise<ScanReport>
 		for (const file of files) {
 			let text: string;
 			try {
+				const { size } = await stat(file);
+				if (size > MAX_SCAN_BYTES) {
+					failures.push({ file, message: `skipped: larger than ${MAX_SCAN_BYTES} bytes` });
+					continue;
+				}
+				const probe = Bun.file(file).slice(0, BINARY_PROBE_BYTES);
+				if (new Uint8Array(await probe.arrayBuffer()).includes(0)) continue;
 				text = await Bun.file(file).text();
 			} catch (error) {
 				failures.push({ file, message: `unreadable: ${errorMessage(error)}` });
@@ -118,9 +124,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 		console.error(`${failure.file}: ${failure.message}`);
 	}
 	for (const finding of report.findings) {
-		console.error(
-			`${finding.file}:${finding.line}: ${finding.pattern} matched (preview ${finding.preview})`,
-		);
+		console.error(`${finding.file}:${finding.line}: ${finding.pattern} matched`);
 	}
 	if (report.findings.length > 0 || report.failures.length > 0) {
 		console.error(

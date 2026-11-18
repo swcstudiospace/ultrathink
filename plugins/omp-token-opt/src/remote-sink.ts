@@ -34,6 +34,8 @@ interface SinkStats {
 	sent: number;
 	dropped: number;
 	fellBack: number;
+	/** Rows spilled after a timed-out write. The remote may already hold them, so a JSONL replay can duplicate them. */
+	maybeStored: number;
 }
 
 export interface RemoteSink {
@@ -65,7 +67,7 @@ export function createRemoteSink(options: RemoteSinkOptions): RemoteSink {
 
 	const queue: SinkRow[] = [];
 	const inflight = new Set<Promise<void>>();
-	const counters = { sent: 0, dropped: 0, fellBack: 0 };
+	const counters = { sent: 0, dropped: 0, fellBack: 0, maybeStored: 0 };
 	let timer: Timer | null = null;
 	let closed = false;
 	let warned = false;
@@ -113,15 +115,15 @@ export function createRemoteSink(options: RemoteSinkOptions): RemoteSink {
 			counters.sent += batch.length;
 		} catch (err) {
 			warnOnce(err);
-			await spill(batch);
+			await spill(batch, err instanceof RemoteTimeoutError ? "maybeStored" : "fellBack");
 		}
 	}
 
-	async function spill(batch: SinkRow[]): Promise<void> {
+	async function spill(batch: SinkRow[], outcome: "fellBack" | "maybeStored" = "fellBack"): Promise<void> {
 		try {
 			await mkdir(dirname(fallbackPath), { recursive: true });
 			await appendFile(fallbackPath, batch.map((row) => `${JSON.stringify(row)}\n`).join(""));
-			counters.fellBack += batch.length;
+			counters[outcome] += batch.length;
 		} catch (err) {
 			counters.dropped += batch.length;
 			warnOnce(err);
@@ -251,10 +253,12 @@ function urlSecrets(url: string | undefined): string[] {
 	return secrets;
 }
 
+class RemoteTimeoutError extends Error {}
+
 function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
 	let timer: Timer | undefined;
 	const expired = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new Error("remote sink timed out")), ms);
+		timer = setTimeout(() => reject(new RemoteTimeoutError("remote sink timed out")), ms);
 	});
 	return Promise.race([work, expired]).finally(() => clearTimeout(timer));
 }

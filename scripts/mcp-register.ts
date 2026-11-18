@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 // Register the central ultrathink MCP gateway (notion, linear, greptile) in every host's user config.
 // Usage: see USAGE below (`bun scripts/mcp-register.ts --help`).
-import { copyFileSync, existsSync, readFileSync, renameSync, statSync } from "node:fs";
+import { constants, copyFileSync, existsSync, readFileSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -492,10 +492,27 @@ function backupSuffix(date: Date): string {
 	return `.bak-ultrathink-mcp-${date.getFullYear()}${p(date.getMonth() + 1)}${p(date.getDate())}-${p(date.getHours())}${p(date.getMinutes())}${p(date.getSeconds())}`;
 }
 
+/**
+ * Copies `file` to `<file><stamp>`, or `<file><stamp>-2`, `-3`, ... when that name is taken, so an earlier
+ * backup (the pristine one) is never overwritten by a second run in the same second.
+ */
 function backup(file: string, stamp: string, dryRun: boolean, log: (line: string) => void): void {
 	if (!existsSync(file)) return;
-	log(`  backup ${file} -> ${file}${stamp}`);
-	if (!dryRun) copyFileSync(file, `${file}${stamp}`);
+	for (let n = 1; ; n++) {
+		const dest = n === 1 ? `${file}${stamp}` : `${file}${stamp}-${n}`;
+		if (dryRun) {
+			if (existsSync(dest)) continue;
+		} else {
+			try {
+				copyFileSync(file, dest, constants.COPYFILE_EXCL);
+			} catch (error) {
+				if (errorCode(error) === "EEXIST") continue;
+				throw error;
+			}
+		}
+		log(`  backup ${file} -> ${dest}`);
+		return;
+	}
 }
 
 /** The file's text, or undefined when it does not exist; any other read error is rethrown. */
