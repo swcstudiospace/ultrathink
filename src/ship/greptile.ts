@@ -11,6 +11,7 @@ import {
 } from "./types.ts";
 import { tenantReason } from "../greptile/tenant.ts";
 import { redactSecrets } from "../redact.ts";
+import { sleep as defaultSleep } from "../resilience/sleep.ts";
 import { asObj } from "../shared.ts";
 
 export interface ToolCaller {
@@ -168,7 +169,7 @@ export async function reviewPr(input: {
 	sleep?: (ms: number) => Promise<void>;
 }): Promise<ReviewResult> {
 	const now = input.now ?? Date.now;
-	const sleep = input.sleep ?? Bun.sleep;
+	const sleep = input.sleep ?? defaultSleep;
 	const base = { source: "pr" as const, headSha: input.headSha };
 	const done = (fields: Partial<ReviewResult> & Pick<ReviewResult, "status">): ReviewResult => ({
 		...base,
@@ -317,7 +318,7 @@ export async function reviewCli(input: {
 	sleep?: (ms: number) => Promise<void>;
 }): Promise<ReviewResult> {
 	const now = input.now ?? Date.now;
-	const sleep = input.sleep ?? Bun.sleep;
+	const sleep = input.sleep ?? defaultSleep;
 	const { run, cwd } = input;
 	const done = (fields: Partial<ReviewResult> & Pick<ReviewResult, "status">): ReviewResult => ({
 		source: "cli",

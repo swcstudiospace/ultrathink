@@ -28,3 +28,10 @@ export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> 
 	signal?.addEventListener("abort", onAbort, { once: true });
 	return promise;
 }
+
+/**
+ * A wait that resolves after ms and never rejects; it ignores aborts. Use abortableSleep where an abort must end the wait.
+ */
+export function sleep(ms: number): Promise<void> {
+	return Bun.sleep(ms);
+}

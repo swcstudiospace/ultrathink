@@ -8,6 +8,7 @@
 import { USER_AGENT } from "../mcp/providers.ts";
 import { readBodyPrefix } from "../net/body.ts";
 import { redactSecrets } from "../redact.ts";
+import { sleep as defaultSleep } from "../resilience/sleep.ts";
 import {
 	type DecisionAnswer,
 	type DecisionQuestion,
@@ -49,7 +50,7 @@ export interface DecideOptions {
 	signal?: AbortSignal;
 	/** Default Date.now. Used for the budget, the ≥500 ms retry rule, latency and Retry-After dates. */
 	now?: () => number;
-	/** Default ms => Bun.sleep(ms). decide() races it with the caller signal. */
+	/** Default: the shared sleep from resilience/sleep.ts. decide() races it with the caller signal. */
 	sleep?: (ms: number) => Promise<void>;
 	/** Default Math.random (jitter). */
 	random?: () => number;
@@ -428,7 +429,7 @@ interface PostDecisionOptions {
 	signal?: AbortSignal;
 	/** Default Date.now. Used for the budget, the ≥500 ms retry rule, latency and Retry-After dates. */
 	now?: () => number;
-	/** Default ms => Bun.sleep(ms). Raced with the caller signal. */
+	/** Default: the shared sleep from resilience/sleep.ts. Raced with the caller signal. */
 	sleep?: (ms: number) => Promise<void>;
 	/** Default Math.random (jitter). */
 	random?: () => number;
@@ -449,7 +450,7 @@ async function postDecision(
 	opts: PostDecisionOptions,
 ): Promise<DecideOutcome> {
 	const now = opts.now ?? Date.now;
-	const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
+	const sleep = opts.sleep ?? defaultSleep;
 	const random = opts.random ?? Math.random;
 	const caller = opts.signal;
 	const start = now();
