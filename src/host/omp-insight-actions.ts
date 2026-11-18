@@ -72,13 +72,27 @@ function offReason(ctx: TeachContext): string {
 		: "Teaching is off. Saved lessons remain readable; confirmation, preview, and installation are unavailable.";
 }
 
-/** Exact-id read through the existing noncreating store path; undefined when missing or unreadable. */
-function readExact(ctx: TeachContext, id: string): TeachableMoment | undefined {
+/** Exact-id read through the existing noncreating store path. `missing` only when no record file exists. */
+type ExactRead =
+	| { kind: "found"; moment: TeachableMoment }
+	| { kind: "missing" }
+	| { kind: "unreadable" };
+
+function readExactState(ctx: TeachContext, id: string): ExactRead {
 	try {
-		return openStore(storeDir(ctx.stateDir)).get(id);
+		const store = openStore(storeDir(ctx.stateDir));
+		const moment = store.get(id);
+		if (moment) return { kind: "found", moment };
+		return store.has(id) ? { kind: "unreadable" } : { kind: "missing" };
 	} catch {
-		return undefined;
+		return { kind: "unreadable" };
 	}
+}
+
+/** Exact-id read; undefined when missing or unreadable. */
+function readExact(ctx: TeachContext, id: string): TeachableMoment | undefined {
+	const read = readExactState(ctx, id);
+	return read.kind === "found" ? read.moment : undefined;
 }
 
 /** Why an eligible-draft action cannot proceed, or undefined when the lesson is preview/install-ready. */
@@ -127,10 +141,16 @@ function admitSelection(
 			"Session changed. Dashboard closed; no further action was started for the old selection.",
 		);
 	}
-	const moment = readExact(ctx, selection.id);
-	if (!moment) {
+	const read = readExactState(ctx, selection.id);
+	if (read.kind === "missing") {
 		return refused("Selected record is no longer in this snapshot. Choose another record.");
 	}
+	if (read.kind === "unreadable") {
+		return refused(
+			"Could not read lesson record. No new action was started; refresh and try again.",
+		);
+	}
+	const moment = read.moment;
 	if (moment.project !== projectOf(runtime.scope.cwd)) {
 		return refused(
 			"Lesson or preview changed. No new action was started; refresh and preview again.",

@@ -261,7 +261,7 @@ describe("omp extension", () => {
 	} as const;
 	const PLAN_MSG = {
 		customType: "ultrathink-plan",
-		content: "PLAN",
+		content: `PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="Do thing"/>\n</GRAPH_OF_THOUGHT>`,
 		display: true,
 		attribution: "agent",
 	} as const;
@@ -271,7 +271,9 @@ describe("omp extension", () => {
 		const { run, sent } = setup(gate.plan, 1);
 		expect(await run()).toEqual({ message: expect.objectContaining(PENDING_MSG) });
 		const second = run();
-		gate.resolve("PLAN");
+		gate.resolve(
+			`PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="Do thing"/>\n</GRAPH_OF_THOUGHT>`,
+		);
 		expect(await second).toEqual({ message: expect.objectContaining(PENDING_MSG) });
 		await flush();
 		expect(gate.calls()).toBe(1);
@@ -282,7 +284,7 @@ describe("omp extension", () => {
 		let calls = 0;
 		const { run, sent } = setup(async () => {
 			calls++;
-			return "PLAN";
+			return `PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="Do thing"/>\n</GRAPH_OF_THOUGHT>`;
 		});
 		expect(await run()).toEqual({ message: PLAN_MSG });
 		await flush();
@@ -307,7 +309,7 @@ describe("omp extension", () => {
 		let calls = 0;
 		const { run, emit } = setup(async () => {
 			calls++;
-			return "PLAN";
+			return `PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="Do thing"/>\n</GRAPH_OF_THOUGHT>`;
 		});
 		expect(await run()).toEqual({ message: PLAN_MSG });
 		emit("turn_start");
@@ -405,7 +407,10 @@ describe("omp extension", () => {
 		const result = run();
 		await stage.promise;
 		expect(t.line()).toContain("uplift");
-		gate.resolve({ context: "PLAN", view: VIEW });
+		gate.resolve({
+			context: `PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="Do thing"/>\n</GRAPH_OF_THOUGHT>`,
+			view: VIEW,
+		});
 		expect(await result).toEqual({ message: { ...PLAN_MSG, details: VIEW } });
 		expect(t.renders()).toBeGreaterThan(0);
 	});
@@ -421,7 +426,10 @@ describe("omp extension", () => {
 		await manual.fire(1);
 		await running;
 		const pendingLine = t.line();
-		gate.resolve({ context: "PLAN", view: VIEW });
+		gate.resolve({
+			context: `PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="Do thing"/>\n</GRAPH_OF_THOUGHT>`,
+			view: VIEW,
+		});
 		await flush();
 		expect(sent).toEqual([
 			{ message: { ...PLAN_MSG, details: VIEW }, options: { deliverAs: "aside" } },
@@ -459,7 +467,13 @@ describe("omp extension", () => {
 			throw new Error("boom");
 		});
 		const manual = manualTimers();
-		const { run, emit } = setup(async () => "PLAN", 1_000, { timers: manual.timers }, t.ctx);
+		const { run, emit } = setup(
+			async () =>
+				`PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="Do thing"/>\n</GRAPH_OF_THOUGHT>`,
+			1_000,
+			{ timers: manual.timers },
+			t.ctx,
+		);
 		emit("session_start");
 		emit("agent_start");
 		expect(await run()).toEqual({ message: PLAN_MSG });
@@ -541,7 +555,9 @@ describe("omp extension", () => {
 		await run();
 		emit("turn_start");
 		emit("turn_start");
-		gate.resolve("PLAN");
+		gate.resolve(
+			`PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="Do thing"/>\n</GRAPH_OF_THOUGHT>`,
+		);
 		await flush();
 		expect(sent).toEqual([{ message: PLAN_MSG, options: { deliverAs: "aside" } }]);
 	});
@@ -2532,6 +2548,17 @@ describe("swarm auto-run", () => {
 		return ready();
 	};
 
+	/** The lane's exit signal, or "timeout" when it has not exited within `ms`. The timer is cleared either way. */
+	const exitWithin = async (exited: Promise<string | null>, ms: number): Promise<string> => {
+		const timeout = Promise.withResolvers<string>();
+		const timer = setTimeout(() => timeout.resolve("timeout"), ms);
+		try {
+			return await Promise.race([exited.then((signal) => String(signal)), timeout.promise]);
+		} finally {
+			clearTimeout(timer);
+		}
+	};
+
 	/** The lane directories `spawnLanes` created under the state dir; refused plans create none. */
 	const laneDirNames = (stateDir: string): string[] =>
 		existsSync(join(stateDir, "swarm")) ? readdirSync(join(stateDir, "swarm")) : [];
@@ -2784,7 +2811,7 @@ describe("swarm auto-run", () => {
 				const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
 				await command("ultrathink-swarm", "stop aaaaaaaa-1-live0");
 				expect(repliesOf(sent)).toContain("aaaaaaaa-1-live0: stopped");
-				const signal = await Promise.race([lane.exited, Bun.sleep(3_000).then(() => "timeout")]);
+				const signal = await exitWithin(lane.exited, 10_000);
 				expect(["SIGTERM", "SIGKILL"]).toContain(String(signal));
 			} finally {
 				lane.cleanup();
@@ -3069,7 +3096,7 @@ describe("swarm auto-run", () => {
 				const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
 				await command("ultrathink-swarm", "stop aaaaaaaa-1-live0");
 				expect(repliesOf(sent)).toContain("aaaaaaaa-1-live0: stopped");
-				const signal = await Promise.race([lane.exited, Bun.sleep(3_000).then(() => "timeout")]);
+				const signal = await exitWithin(lane.exited, 10_000);
 				expect(["SIGTERM", "SIGKILL"]).toContain(String(signal));
 			} finally {
 				lane.cleanup();
@@ -3090,7 +3117,7 @@ describe("swarm auto-run", () => {
 				const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
 				await command("ultrathink-swarm", "stop all");
 				expect(repliesOf(sent)).toContain("aaaaaaaa-1-live0: stopped");
-				const signal = await Promise.race([lane.exited, Bun.sleep(3_000).then(() => "timeout")]);
+				const signal = await exitWithin(lane.exited, 10_000);
 				expect(["SIGTERM", "SIGKILL"]).toContain(String(signal));
 			} finally {
 				lane.cleanup();

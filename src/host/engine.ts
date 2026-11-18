@@ -291,6 +291,23 @@ function trackAnswering(candidates: readonly FailoverCandidate[]): {
 	};
 }
 
+/**
+ * Chains `candidates` behind one engine when there are at least `minCandidates`; below that the route answers through
+ * `alone`. The chain records which candidate answered and persists cooldowns between hook processes.
+ */
+function failoverRoute(
+	label: string,
+	candidates: readonly FailoverCandidate[],
+	resolution: ModelResolution,
+	minCandidates: number,
+	alone: () => SelectedEngine,
+): SelectedEngine {
+	if (candidates.length < minCandidates) return alone();
+	const tracked = trackAnswering(candidates);
+	const chain = createFailoverCompleter(tracked.candidates, { persist: cooldownPersist() });
+	return captureFirstError(label, chain.complete, resolution, chain.failover, tracked.answering);
+}
+
 const TRANSPORT_ROUTE: Record<PlanningTransport, string> = {
 	"omp-native": "omp-native",
 	"claude-cli": "claude",
@@ -455,30 +472,31 @@ async function claudeRoute(
 	const claude = claudeCli(config, cwd, choice.model);
 	// Claude standing in for an unavailable Grok route has nothing to fail over to.
 	const failoverToGrok = !fallback && config.claude.fallbackToGrok && config.grok.enabled;
-	if (failoverToGrok) {
-		const models = unique([config.grok.model, ...config.grok.fallbackModels]);
-		const grok = (await grokUsable(config)) ? grokCandidates(config, cwd, models) : [];
-		if (grok.length > 0) {
-			const tracked = trackAnswering([
-				{ id: label, label, complete: claude, route: claudeRouteIdentity(config) },
-				...grok,
-			]);
-			const chain = createFailoverCompleter(tracked.candidates, { persist: cooldownPersist() });
-			return captureFirstError(
-				label,
-				chain.complete,
-				resolution,
-				chain.failover,
-				tracked.answering,
-			);
-		}
-	}
-	return captureFirstError(label, claude, resolution);
+	const alone = () => captureFirstError(label, claude, resolution);
+	if (!failoverToGrok) return alone();
+	const models = unique([config.grok.model, ...config.grok.fallbackModels]);
+	const grok = (await grokUsable(config)) ? grokCandidates(config, cwd, models) : [];
+	// Claude answers alone when no Grok candidate is usable.
+	return failoverRoute(
+		label,
+		[{ id: label, label, complete: claude, route: claudeRouteIdentity(config) }, ...grok],
+		resolution,
+		2,
+		alone,
+	);
 }
 
-/** Order-preserving distinct nonblank ids. */
+/**
+ * Order-preserving distinct nonblank ids, deduplicated by their trimmed value. The first spelling is kept, so a
+ * control character still reaches the candidate check unchanged.
+ */
 function unique(values: readonly string[]): string[] {
-	return [...new Set(values.filter((value) => value.trim() !== ""))];
+	const byWire = new Map<string, string>();
+	for (const value of values) {
+		const wire = value.trim();
+		if (wire !== "" && !byWire.has(wire)) byWire.set(wire, value);
+	}
+	return [...byWire.values()];
 }
 
 /** Whether a Grok call could start now: the `grok login` session is present and fresh. */
@@ -510,7 +528,7 @@ function grokCandidates(
 				route: grokRouteIdentity(config),
 				complete: createGrokCompleter({
 					baseUrl: config.grok.baseUrl,
-					model,
+					model: wire,
 					reasoningEffort: config.grok.reasoningEffort,
 					timeoutMs: config.grok.callTimeoutMs,
 					home: config.grok.home || undefined,
@@ -576,10 +594,9 @@ async function memoryRoute(
 	if (memoryChainFor(config).length > 1 && (await grokUsable(config)))
 		candidates.push(...grokCandidates(config, cwd, [MEMORY_CHAIN.fallback.model]));
 	assertMemoryCandidates(candidates);
-	if (candidates.length === 1) return captureFirstError(label, claude, resolution);
-	const tracked = trackAnswering(candidates);
-	const chain = createFailoverCompleter(tracked.candidates, { persist: cooldownPersist() });
-	return captureFirstError(label, chain.complete, resolution, chain.failover, tracked.answering);
+	return failoverRoute(label, candidates, resolution, 2, () =>
+		captureFirstError(label, claude, resolution),
+	);
 }
 
 /**
@@ -601,6 +618,109 @@ export function engineForSessionModel(model: unknown): LegacyRoute | undefined {
 	const segments = id.split("/").filter((segment) => segment !== "");
 	// The model segment wins over the provider: "anthropic/grok-…" is Grok, not Claude.
 	return matchFamily(segments[segments.length - 1] ?? "") ?? matchFamily(id);
+}
+
+/** The Muse CLI route for one wire choice. */
+function routeMuse(
+	config: UltrathinkConfig,
+	cwd: string,
+	base: SelectionBase,
+	transport: PlanningTransport,
+	choice: WireChoice,
+): EngineSelection {
+	const resolution = resolutionRecord({ ...base, transport, ...legacyFields(choice) });
+	return captureFirstError(
+		`muse:${resolution.modelId ?? "session default"}`,
+		createMuseCompleter({
+			bin: config.muse.bin,
+			model: choice.model || undefined,
+			reasoningEffort: config.muse.reasoningEffort,
+			cwd,
+			timeoutMs: config.muse.callTimeoutMs,
+		}),
+		resolution,
+	);
+}
+
+/**
+ * The Grok route for one wire choice. `hostModel` is the host wire override: it names one exact model, so it never
+ * chains. A missing or expired login falls back to Claude when configured, else it is a visible skip.
+ */
+async function routeGrok(
+	config: UltrathinkConfig,
+	cwd: string,
+	base: SelectionBase,
+	transport: PlanningTransport,
+	choice: WireChoice,
+	hostModel: string,
+): Promise<EngineSelection> {
+	// Grok has no omitted-model contract on any transport: a concrete wire model is required.
+	if (!choice.model)
+		return unresolvedSkip(
+			resolutionRecord({
+				...base,
+				transport,
+				state: "unresolved",
+				source: "none",
+				reason: "concrete-model-required",
+			}),
+		);
+	const auth = await grokAuthStatusFresh({
+		home: config.grok.home || undefined,
+		bin: config.grok.bin,
+	});
+	if (!auth.loggedIn || auth.expired) {
+		if (config.grok.fallbackToClaude)
+			return claudeRoute(
+				config,
+				cwd,
+				base,
+				engineModel(config, "claude"),
+				" (grok fallback)",
+				true,
+			);
+		// Auto and named Grok alike: the visible skip, with zero Claude and native calls (AD-2, AD-2a).
+		return {
+			skipped: GROK_LOGIN_REQUIRED,
+			notice: GROK_LOGIN_REQUIRED,
+			resolution: resolutionRecord({
+				...base,
+				transport,
+				state: "unresolved",
+				source: choice.source,
+				reason: "grok-unavailable",
+			}),
+		};
+	}
+	const resolution = resolutionRecord({ ...base, transport, ...legacyFields(choice) });
+	const label = grokEngineLabel({
+		model: resolution.modelId ?? "<opaque-model>",
+		reasoningEffort: config.grok.reasoningEffort,
+	});
+	const model = hostModel || config.grok.model;
+	const alone = () =>
+		captureFirstError(
+			label,
+			createGrokCompleter({
+				baseUrl: config.grok.baseUrl,
+				model,
+				reasoningEffort: config.grok.reasoningEffort,
+				timeoutMs: config.grok.callTimeoutMs,
+				home: config.grok.home || undefined,
+				transport: config.grok.transport,
+				bin: config.grok.bin,
+				cwd,
+			}),
+			resolution,
+		);
+	if (hostModel) return alone();
+	return failoverRoute(
+		label,
+		grokCandidates(config, cwd, unique([choice.model, ...config.grok.fallbackModels])),
+		resolution,
+		2,
+		alone,
+	);
 }
 
 /** Where the engine request came from, and whether an Omp host opted out of native planning. */
@@ -695,97 +815,8 @@ export async function selectEngine(
 			}),
 		);
 	if (route === "claude") return claudeRoute(config, cwd, base, choice, "", false);
-	if (route === "muse") {
-		const resolution = resolutionRecord({ ...base, transport, ...legacyFields(choice) });
-		return captureFirstError(
-			`muse:${resolution.modelId ?? "session default"}`,
-			createMuseCompleter({
-				bin: config.muse.bin,
-				model: choice.model || undefined,
-				reasoningEffort: config.muse.reasoningEffort,
-				cwd,
-				timeoutMs: config.muse.callTimeoutMs,
-			}),
-			resolution,
-		);
-	}
-	// Grok has no omitted-model contract on any transport: a concrete wire model is required.
-	if (!choice.model)
-		return unresolvedSkip(
-			resolutionRecord({
-				...base,
-				transport,
-				state: "unresolved",
-				source: "none",
-				reason: "concrete-model-required",
-			}),
-		);
-	const auth = await grokAuthStatusFresh({
-		home: config.grok.home || undefined,
-		bin: config.grok.bin,
-	});
-	if (!auth.loggedIn || auth.expired) {
-		if (config.grok.fallbackToClaude)
-			return claudeRoute(
-				config,
-				cwd,
-				base,
-				engineModel(config, "claude"),
-				" (grok fallback)",
-				true,
-			);
-		// Auto and named Grok alike: the visible skip, with zero Claude and native calls (AD-2, AD-2a).
-		return {
-			skipped: GROK_LOGIN_REQUIRED,
-			notice: GROK_LOGIN_REQUIRED,
-			resolution: resolutionRecord({
-				...base,
-				transport,
-				state: "unresolved",
-				source: choice.source,
-				reason: "grok-unavailable",
-			}),
-		};
-	}
-	const resolution = resolutionRecord({ ...base, transport, ...legacyFields(choice) });
-	const label = grokEngineLabel({
-		model: resolution.modelId ?? "<opaque-model>",
-		reasoningEffort: config.grok.reasoningEffort,
-	});
-	// A host wire override names one exact model: no chain.
-	if (!override.model) {
-		const candidates = grokCandidates(
-			config,
-			cwd,
-			unique([choice.model, ...config.grok.fallbackModels]),
-		);
-		if (candidates.length > 1) {
-			const tracked = trackAnswering(candidates);
-			const chain = createFailoverCompleter(tracked.candidates, { persist: cooldownPersist() });
-			return captureFirstError(
-				label,
-				chain.complete,
-				resolution,
-				chain.failover,
-				tracked.answering,
-			);
-		}
-	}
-	const model = override.model || config.grok.model;
-	return captureFirstError(
-		label,
-		createGrokCompleter({
-			baseUrl: config.grok.baseUrl,
-			model,
-			reasoningEffort: config.grok.reasoningEffort,
-			timeoutMs: config.grok.callTimeoutMs,
-			home: config.grok.home || undefined,
-			transport: config.grok.transport,
-			bin: config.grok.bin,
-			cwd,
-		}),
-		resolution,
-	);
+	if (route === "muse") return routeMuse(config, cwd, base, transport, choice);
+	return routeGrok(config, cwd, base, transport, choice, override.model);
 }
 
 /**
@@ -822,14 +853,8 @@ export async function selectJudgeEngine(
 	};
 	// As in claudeRoute, a Claude model with a control character is never sent: the Grok candidates answer alone.
 	const candidates = hasControlCharacter(claude.model) ? grok : [...grok, claudeCandidate];
-	const tracked = trackAnswering(candidates);
-	const chain = createFailoverCompleter(tracked.candidates, { persist: cooldownPersist() });
-	return captureFirstError(
-		first.label,
-		chain.complete,
-		resolution,
-		chain.failover,
-		tracked.answering,
+	return failoverRoute(first.label, candidates, resolution, 1, () =>
+		captureFirstError(first.label, first.complete, resolution),
 	);
 }
 

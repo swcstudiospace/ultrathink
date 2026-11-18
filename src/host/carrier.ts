@@ -8,6 +8,7 @@
  * by that session's id, and a file that names another session is never used. The text is plugin-authored
  * data, not a grant of tools or a command to ignore the user.
  */
+import { createHash } from "node:crypto";
 import { opendirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { basename, join } from "node:path";
 import { hostSessionId, isTurnSessionId } from "../claude/state.ts";
@@ -31,29 +32,25 @@ const CARRIER_TTL_MS = 24 * 60 * 60 * 1000;
 const SWEEP_SCAN_LIMIT = 200;
 const CARRIER_FILE_RE = /^last-plan(?:\..+)?\.json$/;
 
-/** The single-file carrier of earlier builds. Only the stale sweep touches it; no plan is ever read from it. */
-export function carrierPath(stateDir: string): string {
-	return join(stateDir, "last-plan.json");
-}
-
 /** A session id as a file-name stem: every character outside `[A-Za-z0-9_-]` becomes `_`, at most 64 characters. */
 function safeCarrierId(sessionId: string): string {
 	return sessionId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64) || "_";
 }
 
-/** This session's carrier file. Distinct ids can share a name, so a file also names its own session. */
+/** This session's carrier file. The name carries a digest of the whole id, so ids that sanitize to one stem never share a file. */
 export function carrierPathFor(stateDir: string, sessionId: string): string {
-	return join(stateDir, `last-plan.${safeCarrierId(sessionId)}.json`);
+	const digest = createHash("sha256").update(sessionId).digest("hex").slice(0, 12);
+	return join(stateDir, `last-plan.${safeCarrierId(sessionId)}.${digest}.json`);
 }
 
-/** The carrier file's body, or undefined when it is missing, unreadable or not a JSON object. */
-function readCarrierFile(path: string): Record<string, unknown> | undefined {
+/** A JSON file's top-level object, or undefined when it is missing, unreadable, torn or not an object. */
+export function readJsonObject(path: string): Record<string, unknown> | undefined {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-		return Object.fromEntries(Object.entries(parsed));
+		return parsed as Record<string, unknown>;
 	} catch {
-		// reason: a missing or torn carrier is simply no plan for this session
+		// reason: a missing or torn file is simply no object here
 		return undefined;
 	}
 }
@@ -64,7 +61,7 @@ export function readPlanCarrier(
 	sessionId: string,
 ): Record<string, unknown> | undefined {
 	if (!sessionId.trim()) return undefined;
-	const body = readCarrierFile(carrierPathFor(stateDir, sessionId));
+	const body = readJsonObject(carrierPathFor(stateDir, sessionId));
 	return body?.sessionId === sessionId ? body : undefined;
 }
 
@@ -76,7 +73,7 @@ export function clearPlanCarrier(stateDir: string, sessionId: string): void {
 	if (!sessionId.trim()) return;
 	const path = carrierPathFor(stateDir, sessionId);
 	try {
-		const body = readCarrierFile(path);
+		const body = readJsonObject(path);
 		if (body !== undefined && body.sessionId !== sessionId) return;
 		unlinkSync(path);
 	} catch {

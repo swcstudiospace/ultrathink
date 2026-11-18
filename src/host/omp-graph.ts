@@ -75,12 +75,14 @@ export function waveLayout(nodes: ReadonlyArray<{ id: string; dependsOn: string[
 	const last = Math.max(-1, ...level.values());
 	for (const node of nodes) if (!level.has(node.id)) level.set(node.id, last + 1);
 	const waves: string[][] = [];
+	const placed = new Set<string>();
 	for (const node of nodes) {
+		if (placed.has(node.id)) continue;
+		placed.add(node.id);
 		const index = level.get(node.id) ?? 0;
-		if (waves.some((wave) => wave.includes(node.id))) continue;
 		(waves[index] ??= []).push(node.id);
 	}
-	return waves.filter((wave) => wave !== undefined);
+	return waves;
 }
 
 function within(now: number, start: number | undefined, span: number): boolean {

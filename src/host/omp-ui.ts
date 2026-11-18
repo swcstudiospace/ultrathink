@@ -316,7 +316,21 @@ function formatTokens(n: number): string {
 	return `${Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)}${suffix}`;
 }
 const SUBSTRATE_USAGES = ["IN_USE", "NOT_OBSERVED_IN_WINDOW", "UNKNOWN"] as const;
-const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/g;
+/** Control characters the status line never shows. Not global: `.test` on a global regex keeps `lastIndex` between calls. */
+const CONTROL_CHAR = /[\x00-\x1f\x7f-\x9f]/;
+
+/** The first `limit` code points of `text` that are not control characters. Stops early, so a long untrusted string is never fully expanded. */
+function firstCodePoints(text: string, limit: number): string {
+	let out = "";
+	let count = 0;
+	for (const ch of text) {
+		if (count >= limit) break;
+		if (CONTROL_CHAR.test(ch)) continue;
+		out += ch;
+		count++;
+	}
+	return out;
+}
 
 function oneOf<T extends string>(values: readonly T[], value: unknown): value is T {
 	return typeof value === "string" && (values as readonly string[]).includes(value);
@@ -352,18 +366,14 @@ export function parseSubstrateStatus(data: unknown): SubstrateSegment | undefine
 		if (counts === undefined || planes === undefined || typeof updatedAt !== "string")
 			return undefined;
 		const why =
-			reason === null
-				? null
-				: typeof reason === "string"
-					? Array.from(reason.replace(CONTROL_CHARS, "")).slice(0, 40).join("")
-					: undefined;
+			reason === null ? null : typeof reason === "string" ? firstCodePoints(reason, 40) : undefined;
 		if (why === undefined) return undefined;
 		return {
 			state,
 			usage,
 			coverage: counts,
 			planesDown: planes,
-			updatedAt: Array.from(updatedAt.replace(CONTROL_CHARS, "")).slice(0, 8).join(""),
+			updatedAt: firstCodePoints(updatedAt, 8),
 			reason: why,
 		};
 	} catch {
@@ -640,14 +650,14 @@ function shownSavings(state: BarState): TokenSavingsSnapshot | undefined {
 
 /** Saved stays in the name chip. Turn time and TTFT share that chip when requested. Prefix, tools and graph-ready share it only when the flag is 1. `before`/`now` follows the name, with cache, query, RTK delta, payload size, idle time, cost, bill and output on that segment. Those extras drop before planning's protected stage or saved. Provider cache tokens are never folded into savedTokens. Another session's snapshot adds neither the chip nor that segment. */
 function withSavings(
-	state: BarState,
+	savings: TokenSavingsSnapshot | undefined,
+	planning: boolean,
 	p: Paint,
 	segments: string[],
 	includeTurn: boolean,
 	includeTtft = true,
 	includeStability = true,
 ): string[] {
-	const savings = shownSavings(state);
 	if (!savings || segments.length === 0) return segments;
 	const saved = `saved ${formatTokens(savings.savedTokens)}`;
 	const chipParts = [saved];
@@ -671,8 +681,7 @@ function withSavings(
 		detail += ` · out ${formatTokens(savings.providerOutput)}`;
 	const compare = p.fg("dim", detail);
 	const rest = segments.slice(1);
-	if (state.phase === "planning" && rest.length > 0)
-		return [named, rest[0] ?? "", compare, ...rest.slice(1)];
+	if (planning && rest.length > 0) return [named, rest[0] ?? "", compare, ...rest.slice(1)];
 	return [named, compare, ...rest];
 }
 
@@ -812,7 +821,15 @@ export function renderBarLine(state: BarState, theme: unknown, width: number, no
 	let includeTtft = true;
 	let includeStability = true;
 	const savings = shownSavings(state);
-	let segments = withSavings(state, p, base, includeTurn, includeTtft, includeStability);
+	let segments = withSavings(
+		savings,
+		state.phase === "planning",
+		p,
+		base,
+		includeTurn,
+		includeTtft,
+		includeStability,
+	);
 	// planning keeps spinner+name and the current stage (first two); others keep the name
 	const minimum = state.phase === "planning" ? 2 : 1;
 	const sizeOf = (parts: string[]) => {
@@ -828,7 +845,15 @@ export function renderBarLine(state: BarState, theme: unknown, width: number, no
 		sizeOf(segments.slice(0, minimum)) > width
 	) {
 		includeStability = false;
-		segments = withSavings(state, p, base, includeTurn, includeTtft, includeStability);
+		segments = withSavings(
+			savings,
+			state.phase === "planning",
+			p,
+			base,
+			includeTurn,
+			includeTtft,
+			includeStability,
+		);
 	}
 	// TTFT shares the name chip unless it pushes planning's protected pair over the width. RTK, payload, idle and cost stay on before/now, never the name, so they cannot displace the stage.
 	if (
@@ -838,7 +863,15 @@ export function renderBarLine(state: BarState, theme: unknown, width: number, no
 		sizeOf(segments.slice(0, 2)) > width
 	) {
 		includeTtft = false;
-		segments = withSavings(state, p, base, includeTurn, includeTtft, includeStability);
+		segments = withSavings(
+			savings,
+			state.phase === "planning",
+			p,
+			base,
+			includeTurn,
+			includeTtft,
+			includeStability,
+		);
 	}
 	// Turn milliseconds share the saved chip unless they push planning's protected pair over the width.
 	if (
@@ -848,7 +881,15 @@ export function renderBarLine(state: BarState, theme: unknown, width: number, no
 		sizeOf(segments.slice(0, 2)) > width
 	) {
 		includeTurn = false;
-		segments = withSavings(state, p, base, includeTurn, includeTtft, includeStability);
+		segments = withSavings(
+			savings,
+			state.phase === "planning",
+			p,
+			base,
+			includeTurn,
+			includeTtft,
+			includeStability,
+		);
 	}
 	if (
 		state.phase === "planning" &&

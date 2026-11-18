@@ -796,14 +796,12 @@ describe("grok-bot track bridge", () => {
 			JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord,
 			options,
 		);
-		expect(
-			again.calls.filter((call) => call.tool === "save_issue").some((call) => call.keys[0] === key),
-		).toBe(false);
-		expect(
-			again.calls.some(
-				(call) => call.tool === "list_issues" || call.tool === "notion-query-data-sources",
-			),
-		).toBe(false);
+		// The lookups run ahead of the creates; the recorder answers them empty, so the payload says it assumes no rows.
+		expect(again.assumesEmptyTracker).toBe(true);
+		const lookup = again.calls.findIndex((call) => call.tool === "list_issues");
+		expect(lookup).toBeGreaterThanOrEqual(0);
+		expect(lookup).toBeLessThan(again.calls.findIndex((call) => call.tool === "save_issue"));
+		expect(again.calls.some((call) => call.tool === "notion-query-data-sources")).toBe(true);
 		expect(again.counts.linearIssues).toBe(first.counts.linearIssues - 1);
 
 		const other = tmp();
@@ -1310,13 +1308,17 @@ describe("grok-bot transcript", () => {
 		);
 		// The plugin's reader ignores the simple shape on its own.
 		expect(conversationFromJsonl(readFileSync(src, "utf8"))).toBe("User: Claude-shaped line");
-		const path = normalizeTranscript(src, join(root, "journal"));
-		expect(conversationFromJsonl(readFileSync(path, "utf8"))).toBe(
+		const copy = normalizeTranscript(src, join(root, "journal"));
+		expect(copy.unreadable).toBe(false);
+		expect(conversationFromJsonl(readFileSync(copy.path, "utf8"))).toBe(
 			"User: We use pnpm and Vitest in this repo.\n\nAssistant: Noted: pnpm + Vitest.\n\nUser: Claude-shaped line",
 		);
-		expect(
-			readFileSync(normalizeTranscript(join(root, "missing.jsonl"), join(root, "journal")), "utf8"),
-		).toBe("");
+		const missing = normalizeTranscript(join(root, "missing.jsonl"), join(root, "journal"));
+		expect(missing.unreadable).toBe(false);
+		expect(readFileSync(missing.path, "utf8")).toBe("");
+		const directory = normalizeTranscript(root, join(root, "journal-dir"));
+		expect(directory.unreadable).toBe(true);
+		expect(readFileSync(directory.path, "utf8")).toBe("");
 	});
 });
 
@@ -1646,17 +1648,23 @@ describe("grok-bot answers", () => {
 		writeFileSync(`${lastPath}.lock`, String(process.pid));
 		try {
 			expect(() =>
-				recordAnswers(statePath, { answers: { q1: "JSON lines" } }, 301, virtualLastLock()),
-			).toThrow(/could not refresh/);
-			expect(() =>
-				recordRefs(
+				recordAnswers(
 					statePath,
-					{ notion: { task: "https://www.notion.so/saved-task" } },
-					302,
+					{ answers: { q1: "JSON lines" } },
+					301,
 					undefined,
 					virtualLastLock(),
 				),
 			).toThrow(/could not refresh/);
+			const refreshed = recordRefs(
+				statePath,
+				{ notion: { task: "https://www.notion.so/saved-task" } },
+				302,
+				undefined,
+				virtualLastLock(),
+			);
+			expect(refreshed.warning).toMatch(/could not refresh/);
+			expect(refreshed.tracking.notion.taskUrl).toBe("https://www.notion.so/saved-task");
 			const saved = JSON.parse(readFileSync(statePath, "utf8")) as SessionRecord;
 			expect(saved.clarifications?.[0]?.answer).toBe("JSON lines");
 			expect(saved.tracking?.notion.taskUrl).toBe("https://www.notion.so/saved-task");
@@ -2174,27 +2182,16 @@ describe("grok-bot graph_register payload", () => {
 		expect(graphRegisterPayload(bare, { withNodes: true })).not.toHaveProperty("edges");
 	});
 
-	test("a record status naming a Substrate node state becomes state on nodes and steps; others omit it", async () => {
+	test("a task status is never a node state: nodes and steps carry no state, and the task status is sent unchanged", async () => {
 		const after = await plannedAndTracked();
-		const withStatus = (status: string): Registered => {
+		for (const status of ["Done", "In Progress", "Implementing", "Todo", "Cancelled", ""]) {
 			const copy = structuredClone(after);
 			if (!copy.plan) throw new Error("fixture has no plan");
 			copy.plan.task.status = status;
-			return graphRegisterPayload(copy, { withNodes: true }) as unknown as Registered;
-		};
-		for (const [status, state] of [
-			["Implementing", "started"],
-			["In Review", "started_review"],
-			["Done", "completed"],
-			["Todo", "unstarted"],
-			["Cancelled", "canceled"],
-		] as const) {
-			const registered = withStatus(status);
-			expect(registered.nodes.every((n) => n.state === state)).toBe(true);
-			expect(registered.steps.every((s) => s.state === state)).toBe(true);
-		}
-		for (const status of ["Planning", "Planned", "constructor", ""]) {
-			const registered = withStatus(status);
+			const payload = graphRegisterPayload(copy, { withNodes: true });
+			expect(payload.status).toBe(status || undefined);
+			const registered = payload as unknown as Registered;
+			expect(registered.nodes.length).toBeGreaterThan(0);
 			expect(registered.nodes.some((n) => "state" in n)).toBe(false);
 			expect(registered.steps.some((s) => "state" in s)).toBe(false);
 		}
@@ -2206,5 +2203,120 @@ describe("grok-bot graph_register payload", () => {
 		expect(graphRegisterPayload(after, { surface: "omp" }).surface).toBe("omp");
 		expect(graphRegisterPayload(after, { surface: "prime-agent" }).surface).toBe("pi");
 		expect(graphRegisterPayload(after, { surface: "no-such-host" }).surface).toBe("claude-code");
+	});
+});
+
+describe("grok-bot unreadable inputs and debounce timers", () => {
+	test("an unreadable meta.json refuses the plan instead of reading as absent", async () => {
+		const root = tmp();
+		const stateDir = join(root, "state");
+		const dir = journalDir(stateDir, "s1");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "meta.json"), "{not json");
+		await expect(
+			runGrokbotPlan({
+				sessionId: "s1",
+				prompt:
+					"Build a Rust service that mirrors S3 buckets into a local cache with retries and metrics.",
+				cwd: root,
+				stateDir,
+				env: testEnv(root),
+				debounceMs: 5,
+			}),
+		).rejects.toThrow();
+		expect(readFileSync(join(dir, "meta.json"), "utf8")).toBe("{not json");
+	});
+
+	test("an unreadable transcript is reported as unreadable; a missing one is an empty conversation", async () => {
+		const root = tmp();
+		const stateDir = join(root, "state");
+		const seen: Array<string | undefined> = [];
+		const plan = (async (request: { transcript_path?: string }) => {
+			seen.push(request.transcript_path);
+			return { context: "", skipped: "transcript test" };
+		}) as unknown as typeof planPrompt;
+		const base = { cwd: root, stateDir, env: testEnv(root), debounceMs: 5, plan };
+		const unreadable = await runGrokbotPlan({
+			...base,
+			sessionId: "s-dir",
+			prompt: PROMPT,
+			transcriptPath: root,
+		});
+		expect(unreadable.transcript).toBe("unreadable");
+		const missing = await runGrokbotPlan({
+			...base,
+			sessionId: "s-missing",
+			prompt: PROMPT,
+			transcriptPath: join(root, "absent.jsonl"),
+		});
+		expect(missing.transcript).toBeUndefined();
+		expect(seen).toHaveLength(2);
+		expect(readFileSync(seen[0] as string, "utf8")).toBe("");
+		expect(readFileSync(seen[1] as string, "utf8")).toBe("");
+	});
+
+	test("the debounce timer is cleared when the run settles without its abort firing", async () => {
+		const root = tmp();
+		const scheduled: object[] = [];
+		const cleared: unknown[] = [];
+		const timers = {
+			setTimeout: () => {
+				const handle = {};
+				scheduled.push(handle);
+				return handle;
+			},
+			clearTimeout: (handle: unknown) => {
+				cleared.push(handle);
+			},
+		};
+		const plan = (async (
+			_request: unknown,
+			_env: unknown,
+			deps: {
+				selectEngine: () => Promise<{
+					complete: (system: string, user: string, signal?: AbortSignal) => Promise<string>;
+				}>;
+			},
+		) => {
+			const engine = await deps.selectEngine();
+			// An already-cancelled signal: the request is journalled and its timer scheduled, but the abort never fires.
+			await engine
+				.complete("a planner stage this host does not recognise", "payload", AbortSignal.abort())
+				.catch(() => undefined);
+			return { context: "", skipped: "timer test" };
+		}) as unknown as typeof planPrompt;
+		const result = await runGrokbotPlan({
+			sessionId: "s1",
+			prompt: PROMPT,
+			cwd: root,
+			stateDir: join(root, "state"),
+			env: testEnv(root),
+			plan,
+			timers,
+		});
+		expect(result.status).toBe("needs-model");
+		expect(scheduled).toHaveLength(1);
+		expect(cleared).toHaveLength(1);
+		expect(cleared[0]).toBe(scheduled[0]);
+	});
+
+	test("a corrupt pending or replaced request is refused as unreadable instead of throwing", () => {
+		const root = tmp();
+		const dir = journalDir(join(root, "state"), "s1");
+		const key = "0123456789abcdef0123456789abcdef";
+		mkdirSync(join(dir, "pending"), { recursive: true });
+		writeFileSync(join(dir, "pending", `${key}.json`), "{not json");
+		expect(storeAnswer(dir, key, CLARIFY)).toEqual({
+			ok: false,
+			errors: [`pending request ${key} is unreadable`],
+		});
+		rmSync(join(dir, "pending", `${key}.json`));
+		mkdirSync(join(dir, "requests"), { recursive: true });
+		writeFileSync(join(dir, "requests", `${key}.json`), "{not json");
+		expect(storeAnswer(dir, key, CLARIFY, { replace: true })).toEqual({
+			ok: false,
+			errors: [`pending request ${key} is unreadable`],
+		});
+		expect(existsSync(join(dir, "answers"))).toBe(false);
 	});
 });

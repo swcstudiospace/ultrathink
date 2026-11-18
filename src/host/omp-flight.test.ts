@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Effort } from "@oh-my-pi/pi-ai";
@@ -732,13 +732,12 @@ describe("flight lifecycle (D-12)", () => {
 					expect(lookupAbortedAtObservation).toBe(invalid);
 					expect(levelReads).toBe(1);
 					expect(rec.calls).toHaveLength(1);
-					for (const path of [
-						"sessions/s1.json",
-						"sessions/s1.xml",
-						"last.json",
-						"last-plan.s1.json",
-					])
+					for (const path of ["sessions/s1.json", "sessions/s1.xml", "last.json"])
 						expect(existsSync(join(stateDir, path))).toBe(!invalid);
+					expect(
+						existsSync(stateDir) &&
+							readdirSync(stateDir).some((name) => name.startsWith("last-plan.s1")),
+					).toBe(!invalid);
 					if (invalid) {
 						expect(response).toMatchObject({ context: "", skipped: "aborted" });
 						expect(
@@ -1438,8 +1437,13 @@ describe("flight lifecycle (D-12)", () => {
 					(entry) => entry.type === "stage" && (entry.stage === "track" || entry.stage === "state"),
 				),
 			).toEqual([]);
-			for (const path of ["sessions/s1.json", "sessions/s1.xml", "last.json", "last-plan.s1.json"])
+			for (const path of ["sessions/s1.json", "sessions/s1.xml", "last.json"])
 				expect(existsSync(join(stateDir, path))).toBe(false);
+			expect(
+				existsSync(stateDir)
+					? readdirSync(stateDir).filter((name) => name.startsWith("last-plan.s1"))
+					: [],
+			).toEqual([]);
 			expect(h.sent).toEqual([]);
 			h.emit("session_shutdown");
 			await flush();

@@ -68,4 +68,11 @@ describe("resolveStateDirDetail", () => {
 		expect(undef).toEqual({ dir: defaultDir });
 		expect("rejected" in undef).toBe(false);
 	});
+
+	test("returns the lexically resolved path that it validated", () => {
+		const raw = `${homedir()}${sep}a${sep}..${sep}state`;
+		expect(resolveStateDirDetail({ ULTRATHINK_STATE_DIR: raw })).toEqual({
+			dir: join(homedir(), "state"),
+		});
+	});
 });

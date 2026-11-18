@@ -67,6 +67,12 @@ export interface TrackPayloads {
 	linearTeam?: string;
 	project?: string;
 	notionDataSource?: string;
+	/**
+	 * Always true. The recorder answers each lookup (`list_issues`, `notion-query-data-sources`) with no rows, so the
+	 * creates after it assume the tracker holds no matching row. Desk Lead runs the lookups first and records, rather
+	 * than creates, any row they match (same footer or Graph ID, same title); otherwise the run duplicates that row.
+	 */
+	assumesEmptyTracker: true;
 	calls: RecordedCall[];
 	counts: {
 		linearIssues: number;
@@ -165,11 +171,14 @@ export async function buildTrackPayloads(
 		concurrency: 1,
 		budgetMs: 600_000,
 	});
+	// The lookups run ahead of the creates they gate; the recorder answers them empty (see assumesEmptyTracker).
 	const emitted = calls.filter(
 		(call) =>
 			call.tool === "save_issue" ||
+			call.tool === "list_issues" ||
 			call.tool === "notion-create-pages" ||
-			call.tool === "notion-fetch",
+			call.tool === "notion-fetch" ||
+			call.tool === "notion-query-data-sources",
 	);
 	const created = (provider: "linear" | "notion", tool: string) =>
 		emitted.filter((c) => c.provider === provider && c.tool === tool);
@@ -180,6 +189,7 @@ export async function buildTrackPayloads(
 		...(options.linearTeam ? { linearTeam: options.linearTeam } : {}),
 		...(options.project ? { project: options.project } : {}),
 		...(options.notionDataSource ? { notionDataSource: options.notionDataSource } : {}),
+		assumesEmptyTracker: true,
 		calls: emitted,
 		counts: {
 			linearIssues: linearCreates.filter((c) => !c.keys[0]?.includes(".")).length,
@@ -243,6 +253,7 @@ function assertRefShapes(refs: RealRefs): void {
  * Writes real refs into the record's tracking and re-renders the spec, like `ultrathink-mcp track complete`.
  * `lastLock` is the clock and sleep of the wait for a busy last.json lock (tests only; production waits 3 s).
  * Malformed refs throw before anything is read or written, so a rejected file never reports a status.
+ * A busy or failed last.json mirror comes back as `warning`: the record and its XML are already saved by then.
  */
 export function recordRefs(
 	statePath: string,
@@ -250,7 +261,7 @@ export function recordRefs(
 	now = Date.now(),
 	lock?: LockOptions,
 	lastLock?: LastLockOptions,
-): { tracking: TrackingRefs; todos: string } {
+): { tracking: TrackingRefs; todos: string; warning?: string } {
 	assertRefShapes(refs);
 	return withFileLock(
 		statePath,
@@ -304,56 +315,29 @@ export function recordRefs(
 			record.result = { ...record.result, xml };
 			writeFileAtomic(statePath, `${JSON.stringify(record, null, 2)}\n`);
 			writeFileAtomic(statePath.replace(/\.json$/, ".xml"), xml);
-			mirrorLast(statePath, record, lastLock);
-			return { tracking, todos: formatTrackingTodos(plan, tracking) };
+			let warning: string | undefined;
+			try {
+				mirrorLast(statePath, record, lastLock);
+			} catch (error) {
+				warning = error instanceof Error ? error.message : String(error);
+			}
+			return {
+				tracking,
+				todos: formatTrackingTodos(plan, tracking),
+				...(warning ? { warning } : {}),
+			};
 		},
 		{ ...CLI_LOCK, ...lock },
 	);
-}
-
-/** Substrate's Linear workflow states (agent-substrate `types.ts` NODE_STATES), the only values `state` accepts. */
-type NodeState =
-	| "backlog"
-	| "unstarted"
-	| "started"
-	| "started_review"
-	| "completed"
-	| "canceled"
-	| "duplicate";
-
-/** Record status words (compared case-insensitively, hyphens and runs of whitespace folded to one space) that name a Substrate node state. */
-const NODE_STATE_BY_STATUS: Readonly<Record<string, NodeState>> = {
-	backlog: "backlog",
-	unstarted: "unstarted",
-	todo: "unstarted",
-	started: "started",
-	"in progress": "started",
-	implementing: "started",
-	started_review: "started_review",
-	"in review": "started_review",
-	completed: "completed",
-	done: "completed",
-	canceled: "canceled",
-	cancelled: "canceled",
-	duplicate: "duplicate",
-};
-
-/** The Substrate node state for a record status, or undefined when the status names none (the state is then omitted, never coerced). */
-function nodeStateOf(status: string | undefined): NodeState | undefined {
-	if (!status) return undefined;
-	const key = status
-		.trim()
-		.toLowerCase()
-		.replace(/[-\s]+/g, " ");
-	return Object.hasOwn(NODE_STATE_BY_STATUS, key) ? NODE_STATE_BY_STATUS[key] : undefined;
 }
 
 /**
  * The upstream kickoff skill's optional `graph_register` call (Agent Substrate), built from the tracking refs with absent
  * fields left out. Desk Lead sends it through its desk gateway (`desk_graph_register`). It carries only the fields the
  * Substrate schema accepts (mcp.ts `graph_register` inputSchema): top level `graph_id`, `notion_task_page`, `repo`,
- * `branch`, `surface`, `status`, `pr_url`; nodes `node_id`, `linear_issue_id`, `linear_identifier`, `notion_page`, `state`;
- * steps `node_id`, `step`, `linear_sub_issue_id`, `notion_page`, `state`; edges `from_node`, `to_node`, `kind`. `surface`
+ * `branch`, `surface`, `status`, `pr_url`; nodes `node_id`, `linear_issue_id`, `linear_identifier`, `notion_page`;
+ * steps `node_id`, `step`, `linear_sub_issue_id`, `notion_page`; edges `from_node`, `to_node`, `kind`. No `state` is sent:
+ * the record's task status describes the whole task, not each node or step. `surface`
  * goes through {@link hostToSurface}, so a host that is not a Substrate surface still sends a valid one. `nodes`, `steps`
  * and `edges` are omitted unless asked for: the desk gateway currently rejects them (see FULL-REVIEW.md), and the call is
  * idempotent by graph_id. An edge `requires` runs from the dependent node to the node it depends on.
@@ -379,7 +363,6 @@ export function graphRegisterPayload(
 	if (options.withNodes && t) {
 		const clean = (o: Record<string, unknown>) =>
 			Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== ""));
-		const state = nodeStateOf(task.status);
 		payload.nodes = plan.issues.map((issue) => {
 			const ref = t.linear.nodes[issue.nodeId];
 			return clean({
@@ -387,7 +370,6 @@ export function graphRegisterPayload(
 				linear_issue_id: ref?.id,
 				linear_identifier: ref?.identifier,
 				notion_page: t.notion.nodes[issue.nodeId],
-				state,
 			});
 		});
 		payload.steps = plan.subIssues.map((sub) => {
@@ -398,7 +380,6 @@ export function graphRegisterPayload(
 				step: sub.step,
 				linear_sub_issue_id: ref?.id,
 				notion_page: t.notion.steps[key],
-				state,
 			});
 		});
 		const known = new Set(plan.issues.map((issue) => issue.nodeId));

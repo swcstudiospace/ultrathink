@@ -2,14 +2,12 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * `ultrathink-grokbot skills status`: read-only drift check between the staged skills (hosts/grok-bot/skills) and the
- * copies Grok Bot loads (default /home/box/agent-data/workflows), the grok-bot analogue of `scripts/setup.ts status`.
+ * copies Grok Bot loads (passed as --installed), the grok-bot analogue of `scripts/setup.ts status`.
  * It never installs or overwrites: installing needs Ming's approval and a backup, done by Desk Lead.
  */
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-
-export const DEFAULT_INSTALLED_SKILLS = "/home/box/agent-data/workflows";
 
 export interface SkillDrift {
 	name: string;
@@ -23,7 +21,7 @@ const sha = (path: string): string =>
 
 export function skillsStatus(
 	stagedRoot: string,
-	installedRoot = DEFAULT_INSTALLED_SKILLS,
+	installedRoot: string,
 ): { skills: SkillDrift[]; counts: Record<SkillDrift["state"], number> } {
 	const names = readdirSync(stagedRoot, { withFileTypes: true })
 		.filter((d) => d.isDirectory() && existsSync(join(stagedRoot, d.name, "SKILL.md")))

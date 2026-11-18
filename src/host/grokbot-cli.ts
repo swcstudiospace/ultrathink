@@ -14,6 +14,7 @@ import { runRagflowCommand } from "../ragflow/cli.ts";
 import { parseScore } from "../ship/greptile.ts";
 import { runTeachCommand } from "../teach/cli.ts";
 import { DISTILL_SYSTEM } from "../teach/observe.ts";
+import type { TeachDigest } from "../teach/types.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../think/prompts.ts";
 import { workflowWaves } from "../think/graph.ts";
 import { readControl, sessionRecordPath, type SessionRecord } from "../claude/state.ts";
@@ -38,7 +39,7 @@ import { installChildReaper } from "../resilience/child.ts";
 import { buildCloudPrompt, type UnitDispatch, validateCloudPrompt } from "./grokbot-prompts.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import { parseAnswersInput, recordAnswers } from "./grokbot-hitl.ts";
-import { DEFAULT_INSTALLED_SKILLS, skillsStatus } from "./grokbot-skills.ts";
+import { skillsStatus } from "./grokbot-skills.ts";
 import { GROKBOT_TEACH_HOST, grokbotDigest } from "./grokbot-teach.ts";
 
 const USAGE = `usage: ultrathink-grokbot <command>
@@ -62,15 +63,46 @@ const USAGE = `usage: ultrathink-grokbot <command>
   decisions check | probe <point> <cases.json>
   teach <subcommand…>                         Teachable Moments (host grok-bot; promote: --target drafts only, never --install)
   teach digest --session S --transcript F [--outcome completed|failed|interrupted]   TeachDigest JSON for teach observe --stdin
-  skills status [--installed DIR]             read-only drift check: staged hosts/grok-bot/skills vs installed copies
+  skills status --installed DIR               read-only drift check: staged hosts/grok-bot/skills vs installed copies
   hindsight … | ragflow …`;
 
 type Out = { code: number; text: string };
 
+/** The value after `name`, or undefined when the flag is absent, has no value, or is followed by another flag. */
 function flag(args: string[], name: string): string | undefined {
 	const i = args.indexOf(name);
-	return i >= 0 ? args[i + 1] : undefined;
+	const value = i >= 0 ? args[i + 1] : undefined;
+	return value === undefined || value.startsWith("--") ? undefined : value;
 }
+
+/** Flags that take no value; every other `--flag` takes the next token when that token is not a flag. */
+const BOOLEAN_FLAGS: Record<string, true> = {
+	"--all": true,
+	"--due": true,
+	"--install": true,
+	"--replace": true,
+	"--replan": true,
+	"--stdin": true,
+	"--with-nodes": true,
+};
+
+/** The arguments that are neither flags nor flag values, so a boolean flag before a key never swallows the key. */
+function positionals(args: string[]): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i] as string;
+		if (!arg.startsWith("--")) {
+			out.push(arg);
+			continue;
+		}
+		const next = args[i + 1];
+		if (!BOOLEAN_FLAGS[arg] && next !== undefined && !next.startsWith("--")) i++;
+	}
+	return out;
+}
+
+const isOutcome = (value: string | undefined): value is NonNullable<TeachDigest["outcome"]> =>
+	value === "completed" || value === "failed" || value === "interrupted";
 
 async function readStdin(): Promise<string> {
 	return await new Response(Bun.stdin.stream()).text();
@@ -324,6 +356,444 @@ export async function reviewRead(
 	};
 }
 
+/** What a command reads besides its own arguments: the planner's state directory, the working directory and the environment. */
+interface Ctx {
+	stateDir: string;
+	cwd: string;
+	env: NodeJS.ProcessEnv;
+}
+
+type Handler = (rest: string[], ctx: Ctx) => Promise<Out> | Out;
+
+async function cmdPlan(rest: string[], { stateDir, cwd, env }: Ctx): Promise<Out> {
+	const file = flag(rest, "--prompt-file");
+	const prompt = file
+		? readFileSync(file, "utf8")
+		: rest.includes("--stdin")
+			? await readStdin()
+			: undefined;
+	if (prompt === undefined) return { code: 2, text: "plan needs --prompt-file F or --stdin" };
+	const transcript = flag(rest, "--transcript");
+	const result = await runGrokbotPlan({
+		sessionId: session(rest),
+		prompt,
+		cwd,
+		stateDir,
+		env,
+		replan: rest.includes("--replan"),
+		...(transcript ? { transcriptPath: resolve(transcript) } : {}),
+	});
+	const { response, ...view } = result;
+	return {
+		code: result.status === "invalid" ? 1 : 0,
+		text: json({
+			...view,
+			...(response
+				? {
+						statePath: response.statePath,
+						specPath: response.specPath,
+						skipped: response.skipped,
+					}
+				: {}),
+		}),
+	};
+}
+
+function cmdPending(rest: string[], { stateDir }: Ctx): Out {
+	const dir = journalDir(stateDir, session(rest));
+	return {
+		code: 0,
+		text: json(
+			listPending(dir).map(({ key, stage, nodeId, nodeKind, nodeTitle }) => ({
+				key,
+				stage,
+				nodeId,
+				nodeKind,
+				nodeTitle,
+			})),
+		),
+	};
+}
+
+function cmdShow(rest: string[], { stateDir }: Ctx): Out {
+	const dir = journalDir(stateDir, session(rest));
+	const key = positionals(rest)[0];
+	const request = listPending(dir).find((r) => r.key === key);
+	if (!request) return { code: 1, text: `no pending request ${key}` };
+	const part = flag(rest, "--part");
+	if (part === "system") return { code: 0, text: request.system };
+	if (part === "user") return { code: 0, text: request.user };
+	return {
+		code: 0,
+		text: `# stage ${request.stage}${request.nodeId ? ` · ${request.nodeId} (${request.nodeKind}) ${request.nodeTitle}` : ""}\n## SYSTEM\n${request.system}\n## USER\n${request.user}`,
+	};
+}
+
+async function cmdAnswer(rest: string[], { stateDir }: Ctx): Promise<Out> {
+	const dir = journalDir(stateDir, session(rest));
+	const key = positionals(rest)[0];
+	if (!key) return { code: 2, text: "answer needs <key>" };
+	const file = flag(rest, "--file");
+	const raw = file ? readFileSync(file, "utf8") : await readStdin();
+	const result = storeAnswer(dir, key, raw, { replace: rest.includes("--replace") });
+	return { code: result.ok ? 0 : 1, text: json(result) };
+}
+
+async function cmdAnswers(rest: string[], { stateDir }: Ctx): Promise<Out> {
+	const id = session(rest);
+	const file = flag(rest, "--file");
+	const raw = file
+		? readFileSync(file, "utf8")
+		: rest.includes("--stdin")
+			? await readStdin()
+			: undefined;
+	if (raw === undefined) return { code: 2, text: "answers needs --file F or --stdin" };
+	const outcome = recordAnswers(statePathFor(stateDir, id), parseAnswersInput(JSON.parse(raw)));
+	if (outcome.unknownIds.length)
+		return {
+			code: 1,
+			text: `unknown question id(s): ${outcome.unknownIds.join(", ")} (nothing recorded)`,
+		};
+	return {
+		code: 0,
+		text: `HITL · ${outcome.matched.length} answer(s) recorded\n${json(outcome.list.map(({ id, question, answer, default: def, blocking }) => ({ id, question, blocking, ...(answer ? { answer } : { default: def }) })))}`,
+	};
+}
+
+function cmdSkills(rest: string[]): Out {
+	if (rest[0] !== "status")
+		return {
+			code: 2,
+			text: "skills status --installed DIR (read-only; installs need Ming's approval)",
+		};
+	const installed = flag(rest, "--installed");
+	if (!installed)
+		return {
+			code: 2,
+			text: "skills status needs --installed DIR (read-only; installs need Ming's approval)",
+		};
+	const staged = resolve(import.meta.dir, "../../hosts/grok-bot/skills");
+	const report = skillsStatus(staged, resolve(installed));
+	return {
+		code: report.counts.drift || report.counts["not-installed"] ? 1 : 0,
+		text: json(report),
+	};
+}
+
+function cmdStatus(rest: string[], { stateDir, cwd }: Ctx): Out {
+	const id = session(rest);
+	const dir = journalDir(stateDir, id);
+	let check: unknown;
+	try {
+		check = checkRecord(readRecord(stateDir, id).record, {
+			thinkOff: thinkingOff(stateDir, cwd),
+		});
+	} catch {
+		// reason: an unreadable record yields no check result; the status output reports it as absent
+		check = undefined;
+	}
+	return {
+		code: 0,
+		text: json({
+			meta: { ...readMeta(dir), original: undefined },
+			pending: listPending(dir).length,
+			check,
+		}),
+	};
+}
+
+function cmdDeepen(rest: string[], { stateDir, cwd }: Ctx): Out {
+	const check = checkRecord(readRecord(stateDir, session(rest)).record, {
+		thinkOff: thinkingOff(stateDir, cwd),
+	});
+	return {
+		code: 0,
+		text: json({
+			totalSteps: check.totalSteps,
+			band: check.band,
+			belowBand: check.belowBand,
+			deepen: deepenTargets(check),
+		}),
+	};
+}
+
+async function cmdSummary(rest: string[], { stateDir, cwd }: Ctx): Promise<Out> {
+	return { code: 0, text: json(await summarize(stateDir, session(rest), cwd)) };
+}
+
+async function cmdTrack(rest: string[], { stateDir, cwd, env }: Ctx): Promise<Out> {
+	const sub = rest[0];
+	const id = session(rest);
+	const { record, path } = readRecord(stateDir, id);
+	if (sub === "payloads") {
+		const config = loadConfig(claudeConfigPaths(cwd, env));
+		if (trackingOff(config, readControl(stateDir))) {
+			const empty = {
+				graphId: record.plan?.graphId,
+				calls: [] as unknown[],
+				counts: {
+					linearIssues: 0,
+					linearSubIssues: 0,
+					notionTask: 0,
+					notionIssues: 0,
+					notionSubIssues: 0,
+				},
+				tracking: "off" as const,
+			};
+			const out = flag(rest, "--out");
+			if (out) writeFileSync(out, `${json(empty)}\n`);
+			return {
+				code: 0,
+				text: out
+					? json({
+							out,
+							counts: empty.counts,
+							calls: 0,
+							graphId: empty.graphId,
+							tracking: "off",
+						})
+					: json(empty),
+			};
+		}
+		const payloads = await buildTrackPayloads(record, {
+			linearTeam: config.linear.team,
+			notionDataSource: config.notion.dataSourceUrl,
+			project: flag(rest, "--project") ?? "Kanban",
+			agent: flag(rest, "--agent") ?? "grok-bot",
+		});
+		const text = json(payloads);
+		const out = flag(rest, "--out");
+		if (out) writeFileSync(out, `${text}\n`);
+		return {
+			code: 0,
+			text: out
+				? json({
+						out,
+						counts: payloads.counts,
+						calls: payloads.calls.length,
+						graphId: payloads.graphId,
+					})
+				: text,
+		};
+	}
+	if (sub === "record") {
+		const refsFile = flag(rest, "--refs");
+		if (!refsFile) return { code: 2, text: "track record needs --refs F" };
+		const config = loadConfig(claudeConfigPaths(cwd, env));
+		const parsed: unknown = JSON.parse(readFileSync(refsFile, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+			throw new Error("track record: --refs must be a JSON object");
+		const refs = parsed as Parameters<typeof recordRefs>[1];
+		const { tracking, todos } = recordRefs(path, {
+			...refs,
+			trackers: refs.trackers ?? {
+				linear: config.linear.team.trim() !== "",
+				notion: config.notion.dataSourceUrl.trim() !== "",
+			},
+		});
+		return {
+			code: tracking.status === "failed" ? 1 : 0,
+			text: `tracking ${tracking.status} · graph ${tracking.graphId}\n\n${todos}`,
+		};
+	}
+	if (sub === "register")
+		return {
+			code: 0,
+			text: json(graphRegisterPayload(record, { withNodes: rest.includes("--with-nodes") })),
+		};
+	return { code: 2, text: "track payloads|record|register" };
+}
+
+/** `owner/name` as GitHub spells it; `.` and `..` segments are refused so the REST path cannot climb out of /repos. */
+function isRepoSlug(value: string): boolean {
+	const parts = value.split("/");
+	return (
+		parts.length === 2 &&
+		parts.every((part) => /^[\w.-]+$/.test(part) && part !== "." && part !== "..")
+	);
+}
+
+async function cmdReview(rest: string[]): Promise<Out> {
+	if (rest[0] !== "read")
+		return {
+			code: 2,
+			text: "review read --repo owner/name --pr N (read-only; never retriggers)",
+		};
+	const repo = flag(rest, "--repo");
+	const pr = flag(rest, "--pr");
+	if (!repo || !pr) return { code: 2, text: "review read needs --repo and --pr" };
+	if (!isRepoSlug(repo))
+		return { code: 2, text: `review read --repo must be owner/name (got ${JSON.stringify(repo)})` };
+	if (!/^\d+$/.test(pr))
+		return {
+			code: 2,
+			text: `review read --pr must be a pull request number (got ${JSON.stringify(pr)})`,
+		};
+	const fromDir = flag(rest, "--from-dir");
+	const read = await reviewRead(repo, pr, fromDir ? dirFetcher(resolve(fromDir)) : fetch);
+	// A fixture read is not the live GitHub API: its output says where the files came from.
+	return {
+		code: 0,
+		text: json(fromDir ? { ...read, source: "fixture", fixtureDir: resolve(fromDir) } : read),
+	};
+}
+
+/** Why a units entry cannot become a prompt, or undefined when its mode, repo and branch are usable. */
+function unitProblem(entry: unknown): string | undefined {
+	if (!entry || typeof entry !== "object" || Array.isArray(entry))
+		return "unit entry must be an object";
+	const { mode, repo, branch } = entry as Record<string, unknown>;
+	if (mode !== "new" && mode !== "followup")
+		return `mode must be "new" or "followup" (got ${JSON.stringify(mode)})`;
+	if (typeof repo !== "string" || repo.trim() === "") return "repo must be a non-empty string";
+	if (typeof branch !== "string" || branch.trim() === "")
+		return "branch must be a non-empty string";
+	return undefined;
+}
+
+function cmdPromptsBuild(rest: string[], { stateDir }: Ctx): Out {
+	const units = flag(rest, "--units");
+	if (!units)
+		return {
+			code: 2,
+			text: "prompts build needs --session S --units units.json [--out-dir D] (units: [{unit, mode, repo, branch, agentId?, pr?, seat?, base?, verify?, notes?, file?}])",
+		};
+	const { record } = readRecord(stateDir, session(rest));
+	const outDir = resolve(flag(rest, "--out-dir") ?? ".");
+	const list: unknown = JSON.parse(readFileSync(units, "utf8"));
+	if (!Array.isArray(list))
+		return { code: 2, text: "--units must be a JSON array of unit dispatches" };
+	const report: Array<Record<string, unknown>> = [];
+	let failed = 0;
+	/** Records one unit's failure; the entry names the unit as far as the entry itself does. */
+	const refuse = (entry: unknown, message: string): void => {
+		failed++;
+		const fields = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {};
+		report.push({
+			unit: fields.unit,
+			mode: fields.mode,
+			agent: fields.agentId,
+			path: undefined,
+			ok: false,
+			errors: [message],
+			chars: 0,
+		});
+	};
+	for (const entry of list as unknown[]) {
+		const problem = unitProblem(entry);
+		if (problem !== undefined) {
+			refuse(entry, problem);
+			continue;
+		}
+		const dispatch = entry as UnitDispatch & { file?: string };
+		try {
+			const target = promptPath(outDir, dispatch.file ?? `${dispatch.unit}.prompt.xml`);
+			if ("error" in target) {
+				refuse(dispatch, target.error);
+				continue;
+			}
+			const xml = buildCloudPrompt(record, dispatch);
+			const check = validateCloudPrompt(xml, dispatch, record.result.original);
+			if (check.ok) writeFileAtomic(target.path, xml);
+			else failed++;
+			report.push({
+				unit: dispatch.unit,
+				mode: dispatch.mode,
+				agent: dispatch.agentId,
+				path: check.ok ? target.path : undefined,
+				...check,
+			});
+		} catch (error) {
+			refuse(dispatch, error instanceof Error ? error.message : String(error));
+		}
+	}
+	return { code: failed ? 1 : 0, text: json(report) };
+}
+
+function cmdPrompts(rest: string[], ctx: Ctx): Out | Promise<Out> {
+	if (rest[0] === "build") return cmdPromptsBuild(rest, ctx);
+	const all: Record<string, string> = {
+		uplift: UPLIFT_SYSTEM_PROMPT,
+		graph: GRAPH_SYSTEM_PROMPT,
+		cot: COT_SYSTEM_PROMPT,
+		clarify: CLARIFY_SYSTEM_PROMPT,
+		distill: DISTILL_SYSTEM,
+	};
+	const which = rest[0];
+	if (which)
+		return all[which]
+			? { code: 0, text: all[which] }
+			: { code: 2, text: `unknown prompt ${which}` };
+	return {
+		code: 0,
+		text: Object.entries(all)
+			.map(([k, v]) => `## ${k}\n${v}`)
+			.join("\n\n"),
+	};
+}
+
+async function cmdCtl(rest: string[], { stateDir, cwd }: Ctx): Promise<Out> {
+	// Grok Bot names no session to the CLI: the caller passes the planner's `--session` (the flag plan and show take).
+	const { sessionId, args } = takeSessionFlag(rest);
+	return {
+		code: 0,
+		text: grokbotStatusLines(
+			await runControl(args, {
+				stateDir,
+				cwd,
+				host: GROKBOT_ENGINE_HOST,
+				modelResolution: hostResolution(),
+				sessionId,
+			}),
+		),
+	};
+}
+
+async function cmdTeach(rest: string[], { stateDir, cwd, env }: Ctx): Promise<Out> {
+	if (rest[0] === "digest") {
+		const transcript = flag(rest, "--transcript");
+		if (!transcript) return { code: 2, text: "teach digest needs --session S --transcript F" };
+		const outcome = flag(rest, "--outcome");
+		if (rest.includes("--outcome") && !isOutcome(outcome))
+			return { code: 2, text: "--outcome must be completed, failed or interrupted" };
+		const digest = grokbotDigest(resolve(transcript), {
+			sessionId: session(rest),
+			cwd,
+			...(isOutcome(outcome) ? { outcome } : {}),
+		});
+		return digest
+			? { code: 0, text: json(digest) }
+			: { code: 1, text: "transcript has no user/assistant turns" };
+	}
+	const blocked = promoteGuard(rest);
+	if (blocked) return { code: 2, text: blocked };
+	// Moments are captured as host grok-bot; an unknown host's promotion target is drafts, so even with
+	// teach.autoPromote on nothing is installed into another host's skill directory. No completer is injected:
+	// memory distillation is pinned to the memory chain (`selectEngine` purpose "memory"), never the bot's model.
+	const teachEnv = { ...env, ULTRATHINK_HOST: GROKBOT_TEACH_HOST };
+	return await runTeachCommand(rest, { cwd, env: teachEnv, stateDir, stdin: readStdin });
+}
+
+const COMMANDS: Record<string, Handler> = {
+	plan: cmdPlan,
+	pending: cmdPending,
+	show: cmdShow,
+	answer: cmdAnswer,
+	answers: cmdAnswers,
+	skills: cmdSkills,
+	status: cmdStatus,
+	deepen: cmdDeepen,
+	summary: cmdSummary,
+	track: cmdTrack,
+	review: cmdReview,
+	prompts: cmdPrompts,
+	ctl: cmdCtl,
+	decisions: (rest, { cwd }) => runDecisionsCommand(rest, { cwd }),
+	hindsight: (rest, { cwd, env }) => runHindsightCommand(rest, { cwd, env }),
+	ragflow: (rest, { cwd, env }) => runRagflowCommand(rest, { cwd, env }),
+	teach: cmdTeach,
+};
+
 export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<Out> {
 	env.ULTRATHINK_SHIP = "0";
 	env.ULTRATHINK_HOST = GROKBOT_ENGINE_HOST;
@@ -331,374 +801,10 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 	env.ULTRATHINK_STATE_DIR = stateDir;
 	const [command, ...rest] = argv;
 	const cwd = resolve(flag(rest, "--cwd") ?? process.cwd());
-	switch (command) {
-		case "plan": {
-			const file = flag(rest, "--prompt-file");
-			const prompt = file
-				? readFileSync(file, "utf8")
-				: rest.includes("--stdin")
-					? await readStdin()
-					: undefined;
-			if (prompt === undefined) return { code: 2, text: "plan needs --prompt-file F or --stdin" };
-			const transcript = flag(rest, "--transcript");
-			const result = await runGrokbotPlan({
-				sessionId: session(rest),
-				prompt,
-				cwd,
-				stateDir,
-				env,
-				replan: rest.includes("--replan"),
-				...(transcript ? { transcriptPath: resolve(transcript) } : {}),
-			});
-			const { response, ...view } = result;
-			return {
-				code: result.status === "invalid" ? 1 : 0,
-				text: json({
-					...view,
-					...(response
-						? {
-								statePath: response.statePath,
-								specPath: response.specPath,
-								skipped: response.skipped,
-							}
-						: {}),
-				}),
-			};
-		}
-		case "pending": {
-			const dir = journalDir(stateDir, session(rest));
-			return {
-				code: 0,
-				text: json(
-					listPending(dir).map(({ key, stage, nodeId, nodeKind, nodeTitle }) => ({
-						key,
-						stage,
-						nodeId,
-						nodeKind,
-						nodeTitle,
-					})),
-				),
-			};
-		}
-		case "show": {
-			const dir = journalDir(stateDir, session(rest));
-			const key = rest.find((arg, i) => !arg.startsWith("--") && !rest[i - 1]?.startsWith("--"));
-			const request = listPending(dir).find((r) => r.key === key);
-			if (!request) return { code: 1, text: `no pending request ${key}` };
-			const part = flag(rest, "--part");
-			if (part === "system") return { code: 0, text: request.system };
-			if (part === "user") return { code: 0, text: request.user };
-			return {
-				code: 0,
-				text: `# stage ${request.stage}${request.nodeId ? ` · ${request.nodeId} (${request.nodeKind}) ${request.nodeTitle}` : ""}\n## SYSTEM\n${request.system}\n## USER\n${request.user}`,
-			};
-		}
-		case "answer": {
-			const dir = journalDir(stateDir, session(rest));
-			const key = rest.find((arg, i) => !arg.startsWith("--") && !rest[i - 1]?.startsWith("--"));
-			if (!key) return { code: 2, text: "answer needs <key>" };
-			const file = flag(rest, "--file");
-			const raw = file ? readFileSync(file, "utf8") : await readStdin();
-			const result = storeAnswer(dir, key, raw, { replace: rest.includes("--replace") });
-			return { code: result.ok ? 0 : 1, text: json(result) };
-		}
-		case "answers": {
-			const id = session(rest);
-			const file = flag(rest, "--file");
-			const raw = file
-				? readFileSync(file, "utf8")
-				: rest.includes("--stdin")
-					? await readStdin()
-					: undefined;
-			if (raw === undefined) return { code: 2, text: "answers needs --file F or --stdin" };
-			const outcome = recordAnswers(statePathFor(stateDir, id), parseAnswersInput(JSON.parse(raw)));
-			if (outcome.unknownIds.length)
-				return {
-					code: 1,
-					text: `unknown question id(s): ${outcome.unknownIds.join(", ")} (nothing recorded)`,
-				};
-			return {
-				code: 0,
-				text: `HITL · ${outcome.matched.length} answer(s) recorded\n${json(outcome.list.map(({ id, question, answer, default: def, blocking }) => ({ id, question, blocking, ...(answer ? { answer } : { default: def }) })))}`,
-			};
-		}
-		case "skills": {
-			if (rest[0] !== "status")
-				return {
-					code: 2,
-					text: "skills status [--installed DIR] (read-only; installs need Ming's approval)",
-				};
-			const staged = resolve(import.meta.dir, "../../hosts/grok-bot/skills");
-			const report = skillsStatus(
-				staged,
-				resolve(flag(rest, "--installed") ?? DEFAULT_INSTALLED_SKILLS),
-			);
-			return {
-				code: report.counts.drift || report.counts["not-installed"] ? 1 : 0,
-				text: json(report),
-			};
-		}
-		case "status": {
-			const id = session(rest);
-			const dir = journalDir(stateDir, id);
-			let check: unknown;
-			try {
-				check = checkRecord(readRecord(stateDir, id).record, {
-					thinkOff: thinkingOff(stateDir, cwd),
-				});
-			} catch {
-				// reason: an unreadable record yields no check result; the status output reports it as absent
-				check = undefined;
-			}
-			return {
-				code: 0,
-				text: json({
-					meta: { ...readMeta(dir), original: undefined },
-					pending: listPending(dir).length,
-					check,
-				}),
-			};
-		}
-		case "deepen": {
-			const check = checkRecord(readRecord(stateDir, session(rest)).record, {
-				thinkOff: thinkingOff(stateDir, cwd),
-			});
-			return {
-				code: 0,
-				text: json({
-					totalSteps: check.totalSteps,
-					band: check.band,
-					belowBand: check.belowBand,
-					deepen: deepenTargets(check),
-				}),
-			};
-		}
-		case "summary":
-			return { code: 0, text: json(await summarize(stateDir, session(rest), cwd)) };
-		case "track": {
-			const sub = rest[0];
-			const id = session(rest);
-			const { record, path } = readRecord(stateDir, id);
-			if (sub === "payloads") {
-				const config = loadConfig(claudeConfigPaths(cwd, env));
-				if (trackingOff(config, readControl(stateDir))) {
-					const empty = {
-						graphId: record.plan?.graphId,
-						calls: [] as unknown[],
-						counts: {
-							linearIssues: 0,
-							linearSubIssues: 0,
-							notionTask: 0,
-							notionIssues: 0,
-							notionSubIssues: 0,
-						},
-						tracking: "off" as const,
-					};
-					const out = flag(rest, "--out");
-					if (out) writeFileSync(out, `${json(empty)}\n`);
-					return {
-						code: 0,
-						text: out
-							? json({
-									out,
-									counts: empty.counts,
-									calls: 0,
-									graphId: empty.graphId,
-									tracking: "off",
-								})
-							: json(empty),
-					};
-				}
-				const payloads = await buildTrackPayloads(record, {
-					linearTeam: config.linear.team,
-					notionDataSource: config.notion.dataSourceUrl,
-					project: flag(rest, "--project") ?? "Kanban",
-					agent: flag(rest, "--agent") ?? "grok-bot",
-				});
-				const text = json(payloads);
-				const out = flag(rest, "--out");
-				if (out) writeFileSync(out, `${text}\n`);
-				return {
-					code: 0,
-					text: out
-						? json({
-								out,
-								counts: payloads.counts,
-								calls: payloads.calls.length,
-								graphId: payloads.graphId,
-							})
-						: text,
-				};
-			}
-			if (sub === "record") {
-				const refsFile = flag(rest, "--refs");
-				if (!refsFile) return { code: 2, text: "track record needs --refs F" };
-				const config = loadConfig(claudeConfigPaths(cwd, env));
-				const parsed: unknown = JSON.parse(readFileSync(refsFile, "utf8"));
-				if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-					throw new Error("track record: --refs must be a JSON object");
-				const refs = parsed as Parameters<typeof recordRefs>[1];
-				const { tracking, todos } = recordRefs(path, {
-					...refs,
-					trackers: refs.trackers ?? {
-						linear: config.linear.team.trim() !== "",
-						notion: config.notion.dataSourceUrl.trim() !== "",
-					},
-				});
-				return {
-					code: tracking.status === "failed" ? 1 : 0,
-					text: `tracking ${tracking.status} · graph ${tracking.graphId}\n\n${todos}`,
-				};
-			}
-			if (sub === "register")
-				return {
-					code: 0,
-					text: json(graphRegisterPayload(record, { withNodes: rest.includes("--with-nodes") })),
-				};
-			return { code: 2, text: "track payloads|record|register" };
-		}
-		case "review": {
-			if (rest[0] !== "read")
-				return {
-					code: 2,
-					text: "review read --repo owner/name --pr N (read-only; never retriggers)",
-				};
-			const repo = flag(rest, "--repo");
-			const pr = flag(rest, "--pr");
-			if (!repo || !pr) return { code: 2, text: "review read needs --repo and --pr" };
-			const fromDir = flag(rest, "--from-dir");
-			return {
-				code: 0,
-				text: json(await reviewRead(repo, pr, fromDir ? dirFetcher(resolve(fromDir)) : fetch)),
-			};
-		}
-		case "prompts": {
-			if (rest[0] === "build") {
-				const units = flag(rest, "--units");
-				if (!units)
-					return {
-						code: 2,
-						text: "prompts build needs --session S --units units.json [--out-dir D] (units: [{unit, mode, repo, branch, agentId?, pr?, seat?, base?, verify?, notes?, file?}])",
-					};
-				const { record } = readRecord(stateDir, session(rest));
-				const outDir = resolve(flag(rest, "--out-dir") ?? ".");
-				const list = JSON.parse(readFileSync(units, "utf8")) as Array<
-					UnitDispatch & { file?: string }
-				>;
-				const report: Array<Record<string, unknown>> = [];
-				let failed = 0;
-				for (const dispatch of list) {
-					const target = promptPath(outDir, dispatch.file ?? `${dispatch.unit}.prompt.xml`);
-					if ("error" in target) {
-						failed++;
-						report.push({
-							unit: dispatch.unit,
-							mode: dispatch.mode,
-							agent: dispatch.agentId,
-							path: undefined,
-							ok: false,
-							errors: [target.error],
-							chars: 0,
-						});
-						continue;
-					}
-					let xml: string;
-					try {
-						xml = buildCloudPrompt(record, dispatch);
-					} catch (error) {
-						failed++;
-						report.push({
-							unit: dispatch.unit,
-							mode: dispatch.mode,
-							agent: dispatch.agentId,
-							path: undefined,
-							ok: false,
-							errors: [error instanceof Error ? error.message : String(error)],
-							chars: 0,
-						});
-						continue;
-					}
-					const check = validateCloudPrompt(xml, dispatch, record.result.original);
-					if (check.ok) writeFileAtomic(target.path, xml);
-					else failed++;
-					report.push({
-						unit: dispatch.unit,
-						mode: dispatch.mode,
-						agent: dispatch.agentId,
-						path: check.ok ? target.path : undefined,
-						...check,
-					});
-				}
-				return { code: failed ? 1 : 0, text: json(report) };
-			}
-			const all: Record<string, string> = {
-				uplift: UPLIFT_SYSTEM_PROMPT,
-				graph: GRAPH_SYSTEM_PROMPT,
-				cot: COT_SYSTEM_PROMPT,
-				clarify: CLARIFY_SYSTEM_PROMPT,
-				distill: DISTILL_SYSTEM,
-			};
-			const which = rest[0];
-			if (which)
-				return all[which]
-					? { code: 0, text: all[which] }
-					: { code: 2, text: `unknown prompt ${which}` };
-			return {
-				code: 0,
-				text: Object.entries(all)
-					.map(([k, v]) => `## ${k}\n${v}`)
-					.join("\n\n"),
-			};
-		}
-		case "ctl": {
-			// Grok Bot names no session to the CLI: the caller passes the planner's `--session` (the flag plan and show take).
-			const { sessionId, args } = takeSessionFlag(rest);
-			return {
-				code: 0,
-				text: grokbotStatusLines(
-					await runControl(args, {
-						stateDir,
-						cwd,
-						host: GROKBOT_ENGINE_HOST,
-						modelResolution: hostResolution(),
-						sessionId,
-					}),
-				),
-			};
-		}
-		case "decisions":
-			return await runDecisionsCommand(rest, { cwd });
-		case "hindsight":
-			return await runHindsightCommand(rest, { cwd, env });
-		case "ragflow":
-			return await runRagflowCommand(rest, { cwd, env });
-		case "teach": {
-			if (rest[0] === "digest") {
-				const transcript = flag(rest, "--transcript");
-				if (!transcript) return { code: 2, text: "teach digest needs --session S --transcript F" };
-				const outcome = flag(rest, "--outcome");
-				if (outcome !== undefined && !["completed", "failed", "interrupted"].includes(outcome))
-					return { code: 2, text: "--outcome must be completed, failed or interrupted" };
-				const digest = grokbotDigest(resolve(transcript), {
-					sessionId: session(rest),
-					cwd,
-					...(outcome ? { outcome: outcome as "completed" } : {}),
-				});
-				return digest
-					? { code: 0, text: json(digest) }
-					: { code: 1, text: "transcript has no user/assistant turns" };
-			}
-			const blocked = promoteGuard(rest);
-			if (blocked) return { code: 2, text: blocked };
-			// Moments are captured as host grok-bot; an unknown host's promotion target is drafts, so even with
-			// teach.autoPromote on nothing is installed into another host's skill directory. No completer is injected:
-			// memory distillation is pinned to the memory chain (`selectEngine` purpose "memory"), never the bot's model.
-			const teachEnv = { ...env, ULTRATHINK_HOST: GROKBOT_TEACH_HOST };
-			return await runTeachCommand(rest, { cwd, env: teachEnv, stateDir, stdin: readStdin });
-		}
-		default:
-			return { code: command ? 2 : 0, text: USAGE };
-	}
+	const handler =
+		command !== undefined && Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
+	if (!handler) return { code: command ? 2 : 0, text: USAGE };
+	return await handler(rest, { stateDir, cwd, env });
 }
 
 if (import.meta.main) {

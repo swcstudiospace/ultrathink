@@ -234,6 +234,19 @@ describe("confirmInsightLesson", () => {
 		expect(result.message).toContain("no longer in this snapshot");
 	});
 
+	test("refuses an existing but unreadable record with a read failure, not a missing one", async () => {
+		const h = harness({ hindsight: fullClient() });
+		const moment = await seedCandidate(h);
+		const selection = selectionOf(moment);
+		const path = join(storeDir(h.ctx.stateDir), "moments", `${moment.id}.json`);
+		writeFileSync(path, "{ not json");
+		const result = await confirmInsightLesson(selection, h.runtime);
+		expect(result.status).toBe("refused");
+		expect(result.message).toContain("Could not read lesson record");
+		expect(result.message).not.toContain("no longer in this snapshot");
+		expect(readFileSync(path, "utf8")).toBe("{ not json");
+	});
+
 	test("refuses when the session is no longer current and changes nothing", async () => {
 		const h = harness({ hindsight: fullClient() });
 		const moment = await seedCandidate(h);

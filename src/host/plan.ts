@@ -11,7 +11,7 @@ import { redactSecrets } from "../redact.ts";
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
 import { isChildInvocation } from "../claude/complete.ts";
 import type { LockOptions } from "../claude/atomic.ts";
-import { type HookDeps, runPromptSubmit } from "../claude/hook.ts";
+import { type HookDeps, type PromptSubmitResult, runPromptSubmit } from "../claude/hook.ts";
 import {
 	clearSkipOnce,
 	hostSessionId,
@@ -31,7 +31,12 @@ import { clearPlanCarrier, writePlanCarrier } from "./carrier.ts";
 import { createGatewayTracker, trackCommand, type Tracker } from "../track/gateway.ts";
 import { createGatewayTot, type PrdOutcome, type TotSeams } from "../think/tot/stage.ts";
 import { detectHost } from "./detect.ts";
-import { type ModelResolution, type NativeEngineSelector, selectEngine } from "./engine.ts";
+import {
+	type ModelResolution,
+	type NativeEngineSelector,
+	type SelectedEngine,
+	selectEngine,
+} from "./engine.ts";
 import { resolveStateDir } from "./paths.ts";
 import type { ProgressSink } from "./progress.ts";
 import type { HostId } from "./types.ts";
@@ -145,24 +150,22 @@ export function wouldSkipPlanning(
 	} = {},
 ): boolean {
 	try {
+		// An invalid host is refused by planPrompt before any precheck, so it skips here too.
+		if (request.invalidHost) return true;
 		const env = options.env ?? process.env;
 		if (skipReason(request, env)) return true;
 		const cwd = request.cwd?.trim() || process.cwd();
 		const host = request.host ?? detectHost(env);
-		if (parseUltrathinkCommand(request.prompt ?? "")) return true;
-		const target = planningTarget(request.prompt ?? "", { cwd, host });
+		// The armed flag is not read here: the preamble check runs unarmed, which is planPrompt's answer whether or not a skip is armed.
+		const target = precheckTarget(request.prompt ?? "", cwd, host, false);
 		if ("skip" in target) return true;
 		const stateDir = options.stateDir ?? resolveStateDir({ ...env, ULTRATHINK_HOST: host });
 		const control = options.control ?? readControl(stateDir);
 		const config = options.config ?? loadConfig(claudeConfigPaths(cwd, env));
+		// An armed skip counts as plannable here, so skipOnce stays false.
 		const decision = decideUplift(
 			{ text: target.text, source: "user", idle: true },
-			{
-				enabled: control.enabled ?? config.uplift.enabled,
-				skipOnce: false,
-				skipTrivial: config.uplift.skipTrivial,
-				maxChars: config.uplift.maxChars,
-			},
+			upliftState(config, control, false),
 		);
 		return decision.action !== "uplift";
 	} catch {
@@ -180,6 +183,162 @@ function causeOf(error: unknown): string {
 			label = `${label}/${error.code}`;
 	}
 	return redactSecrets(label).replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/** The uplift state a planning turn decides on: control's planning switch over config's, and the armed skip. */
+function upliftState(
+	config: UltrathinkConfig,
+	control: ControlState,
+	skipOnce: boolean,
+): UpliftState {
+	return {
+		enabled: control.enabled ?? config.uplift.enabled,
+		skipOnce,
+		skipTrivial: config.uplift.skipTrivial,
+		maxChars: config.uplift.maxChars,
+	};
+}
+
+/**
+ * The stateless prechecks `planPrompt` and `wouldSkipPlanning` share, in planPrompt's order: a `/ultrathink-*` command or a
+ * target the planner does not plan skips, and so does a Hermes skill loaded with no task (or only an ack) unless `skipArmed`:
+ * an armed skip is spent by the real run, not here. Pure: nothing is read from or written to disk.
+ */
+function precheckTarget(
+	prompt: string,
+	cwd: string,
+	host: HostId,
+	skipArmed: boolean,
+): { skip: string } | { text: string; skill?: SkillInvocation } {
+	// `/ultrathink-<verb>` (and the older `/ultrathink:<verb>` / `/ultrathink <verb>`) is a control command, never a request to plan.
+	if (parseUltrathinkCommand(prompt)) return { skip: "ultrathink-command" };
+	const target = planningTarget(prompt, { cwd, host });
+	if ("skip" in target) return { skip: target.skip };
+	const { skill } = target;
+	// A Hermes skill loaded with no task (or only an ack) is a preamble, not a request to plan. An armed
+	// /ultrathink-skip must still be consumed by runPromptSubmit, as a trivial prompt consumes it on Claude.
+	if (
+		!skipArmed &&
+		host === "hermes" &&
+		skill &&
+		(!skill.instruction || isTrivial(skill.instruction))
+	)
+		return { skip: "skill-preamble" };
+	return target;
+}
+
+/**
+ * The `runPromptSubmit` deps of one planned turn: the captured config, control and state directory, the selected engine
+ * and its resolution, and the host's seams. The trackers and the PRD stage are built here, after selection.
+ */
+function buildHookDeps(turn: {
+	host: HostId;
+	env: Record<string, string | undefined>;
+	config: UltrathinkConfig;
+	control: ControlState;
+	engine: SelectedEngine;
+	resolution: ModelResolution;
+	stateDir: string;
+	skipArmed: boolean;
+	options: PlanOptions;
+}): HookDeps {
+	const { host, env, config, control, engine, resolution, stateDir, skipArmed, options } = turn;
+	const log = debugLog(env);
+	// The PRD stage writes through the same trackers as the rows: an injected tracker (a test) keeps it off unless a seam is given.
+	const tot =
+		options.tot ??
+		(host !== "hermes" && !options.createTracker && trackingEnabled(config, control, env)
+			? createGatewayTot(config)
+			: undefined);
+	return {
+		config,
+		control,
+		complete: engine.complete,
+		engine: engine.label,
+		engineError: engine.error,
+		engineFailover: engine.failover,
+		engineReport: engine.report,
+		// One limiter per flight: the engine route's own (Omp's native binding feeds it), reused by the think stage.
+		...(engine.throttle ? { throttle: engine.throttle } : {}),
+		modelResolution: resolution,
+		stateDir,
+		...(options.stateLock ? { stateLock: options.stateLock } : {}),
+		armedSkip: skipArmed,
+		surface: host,
+		conversation: recentConversationFromTranscript,
+		brief: (input) =>
+			fetchBrief(input, env, config.substrate.url, {
+				backend: config.substrate.backend,
+				gateway: config.gateway,
+			}),
+		// On Hermes the kickoff skill creates rows through `track complete`, so an abandoned or killed hook never leaves orphan rows.
+		track:
+			host !== "hermes" && trackingEnabled(config, control, env)
+				? (options.createTracker ?? createGatewayTracker)(config, { log })
+				: undefined,
+		...(tot ? { tot } : {}),
+		trackingOff: trackingOff(config, control),
+		trackCommand: trackCommand(),
+		progress: options.progress,
+		// The plan gate itself runs in runPromptSubmit (AD-P1); the host's env holds its key and URL override.
+		decisionsDeps: { env },
+		...(options.recall ? { recall: options.recall } : {}),
+		...(options.ground ? { ground: options.ground } : {}),
+		...(options.realmProbe ? { realmProbe: options.realmProbe } : {}),
+		...(options.think ? { think: options.think } : {}),
+		...(options.onUplift ? { onUplift: options.onUplift } : {}),
+		signal: options.signal,
+	};
+}
+
+/**
+ * The caller's response for a planned turn: the context, the plan's paths and carrier, the record's view and the PRD
+ * outcome. The carrier is written here: a pointer for hosts that drop the context, fail-open.
+ */
+function projectPlanResponse(
+	host: HostId,
+	stateDir: string,
+	sessionId: string,
+	result: PromptSubmitResult & { output: NonNullable<PromptSubmitResult["output"]> },
+	resolution: ModelResolution,
+	started: number,
+): PlanResponse {
+	const context = result.output.hookSpecificOutput.additionalContext;
+	const specPath = sessionPath(stateDir, sessionId).replace(/\.json$/, ".xml");
+	const statePath = sessionPath(stateDir, sessionId);
+	const graphId = result.record?.plan?.graphId;
+	let carrier: string | undefined;
+	try {
+		carrier = writePlanCarrier({
+			host,
+			stateDir,
+			sessionId,
+			specPath,
+			statePath,
+			graphId,
+			context,
+		});
+	} catch {
+		// reason: fail-open: the carrier is a pointer for hosts that drop context; the plan still stands
+	}
+	return {
+		context,
+		specPath,
+		statePath,
+		graphId,
+		carrierPath: carrier,
+		summary: result.output.systemMessage,
+		modelResolution: resolution,
+		...(result.record
+			? {
+					view: {
+						...buildPlanView(result.record, Date.now() - started),
+						...(result.panels ? { panels: result.panels } : {}),
+					},
+				}
+			: {}),
+		...(result.prd ? { prd: result.prd } : {}),
+	};
 }
 
 async function planPromptTurn(
@@ -255,22 +414,11 @@ async function planPromptTurn(
 	const skipArmed = readSkipOnce(stateDir, sessionId);
 	let control: ControlState = options.control ?? {};
 	try {
-		// `/ultrathink-<verb>` (and the older `/ultrathink:<verb>` / `/ultrathink <verb>`) is a control command, never a request to plan.
-		if (parseUltrathinkCommand(text)) return skip("ultrathink-command");
-		const target = planningTarget(text, { cwd, host });
+		const target = precheckTarget(text, cwd, host, skipArmed);
 		if ("skip" in target) return skip(target.skip);
 		text = target.text;
 		skill = target.skill;
 		control = options.control ?? readControl(stateDir, { log });
-		// A Hermes skill loaded with no task (or only an ack) is a preamble, not a request to plan. An armed
-		// /ultrathink-skip must still be consumed by runPromptSubmit, as a trivial prompt consumes it on Claude.
-		if (
-			!skipArmed &&
-			host === "hermes" &&
-			skill &&
-			(!skill.instruction || isTrivial(skill.instruction))
-		)
-			return skip("skill-preamble");
 	} catch {
 		// reason: fail-open: a throwing skill parser plans the prompt as written
 	}
@@ -280,12 +428,7 @@ async function planPromptTurn(
 		// Every uplift skip is decided here, before an engine is selected: the stateless ones (raw:, commands, uplifted XML,
 		// graph hand-offs, acks), planning turned off, and an armed /ultrathink-skip, which is consumed and saved now, as the
 		// Claude hook does, so a failed engine selection can never leave it armed for a later task.
-		const state: UpliftState = {
-			enabled: control.enabled ?? config.uplift.enabled,
-			skipOnce: skipArmed,
-			skipTrivial: config.uplift.skipTrivial,
-			maxChars: config.uplift.maxChars,
-		};
+		const state = upliftState(config, control, skipArmed);
 		const decision = decideUplift({ text, source: "user", idle: true }, state);
 		if (skipArmed && !state.skipOnce) {
 			try {
@@ -324,12 +467,6 @@ async function planPromptTurn(
 				summary: engine.notice ?? `Prompt Uplift skipped · ${resolution.label}`,
 			};
 		if (options.signal?.aborted) return skip("aborted", resolution);
-		// The PRD stage writes through the same trackers as the rows: an injected tracker (a test) keeps it off unless a seam is given.
-		const tot =
-			options.tot ??
-			(host !== "hermes" && !options.createTracker && trackingEnabled(config, control, env)
-				? createGatewayTot(config)
-				: undefined);
 		const result = await runPromptSubmit(
 			{
 				session_id: sessionId,
@@ -338,45 +475,17 @@ async function planPromptTurn(
 				cwd,
 				transcript_path: request.transcript_path,
 			},
-			{
+			buildHookDeps({
+				host,
+				env,
 				config,
 				control,
-				complete: engine.complete,
-				engine: engine.label,
-				engineError: engine.error,
-				engineFailover: engine.failover,
-				engineReport: engine.report,
-				// One limiter per flight: the engine route's own (Omp's native binding feeds it), reused by the think stage.
-				...(engine.throttle ? { throttle: engine.throttle } : {}),
-				modelResolution: resolution,
+				engine,
+				resolution,
 				stateDir,
-				...(options.stateLock ? { stateLock: options.stateLock } : {}),
-				armedSkip: skipArmed,
-				surface: host,
-				conversation: recentConversationFromTranscript,
-				brief: (input) =>
-					fetchBrief(input, env, config.substrate.url, {
-						backend: config.substrate.backend,
-						gateway: config.gateway,
-					}),
-				// On Hermes the kickoff skill creates rows through `track complete`, so an abandoned or killed hook never leaves orphan rows.
-				track:
-					host !== "hermes" && trackingEnabled(config, control, env)
-						? (options.createTracker ?? createGatewayTracker)(config, { log })
-						: undefined,
-				...(tot ? { tot } : {}),
-				trackingOff: trackingOff(config, control),
-				trackCommand: trackCommand(),
-				progress: options.progress,
-				// The plan gate itself runs in runPromptSubmit (AD-P1); the host's env holds its key and URL override.
-				decisionsDeps: { env },
-				...(options.recall ? { recall: options.recall } : {}),
-				...(options.ground ? { ground: options.ground } : {}),
-				...(options.realmProbe ? { realmProbe: options.realmProbe } : {}),
-				...(options.think ? { think: options.think } : {}),
-				...(options.onUplift ? { onUplift: options.onUplift } : {}),
-				signal: options.signal,
-			},
+				skipArmed,
+				options,
+			}),
 		);
 		// A flight cancelled once its plan was built delivers nothing: no carrier, no context.
 		if (options.signal?.aborted) return skip("aborted", resolution);
@@ -385,42 +494,14 @@ async function planPromptTurn(
 				...skip(result.skipped, resolution),
 				...(result.notice ? { summary: result.notice } : {}),
 			};
-		const context = result.output.hookSpecificOutput.additionalContext;
-		const specPath = sessionPath(stateDir, sessionId).replace(/\.json$/, ".xml");
-		const statePath = sessionPath(stateDir, sessionId);
-		const graphId = result.record?.plan?.graphId;
-		let carrier: string | undefined;
-		try {
-			carrier = writePlanCarrier({
-				host,
-				stateDir,
-				sessionId,
-				specPath,
-				statePath,
-				graphId,
-				context,
-			});
-		} catch {
-			// reason: fail-open: the carrier is a pointer for hosts that drop context; the plan still stands
-		}
-		return {
-			context,
-			specPath,
-			statePath,
-			graphId,
-			carrierPath: carrier,
-			summary: result.output.systemMessage,
-			modelResolution: resolution,
-			...(result.record
-				? {
-						view: {
-							...buildPlanView(result.record, Date.now() - started),
-							...(result.panels ? { panels: result.panels } : {}),
-						},
-					}
-				: {}),
-			...(result.prd ? { prd: result.prd } : {}),
-		};
+		return projectPlanResponse(
+			host,
+			stateDir,
+			sessionId,
+			{ ...result, output: result.output },
+			resolution,
+			started,
+		);
 	} catch (error) {
 		// Provider cancellation need not abort the caller's signal. Preserve it here with only the safe selection record.
 		if (options.signal?.aborted || isAbortError(error)) return skip("aborted", resolution);

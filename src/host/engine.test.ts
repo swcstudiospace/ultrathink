@@ -133,6 +133,40 @@ describe("selectEngine grok login handling", () => {
 	});
 });
 
+describe("selectEngine failover chaining", () => {
+	test("a grok route chains only when it has more than one candidate", async () => {
+		const usable = { ...defaultConfig().grok, home: grokLogin() };
+		const single = configWith({
+			think: { ...defaultConfig().think, engine: "grok" },
+			grok: { ...usable, fallbackModels: [] },
+		});
+		const chained = configWith({
+			think: { ...defaultConfig().think, engine: "grok" },
+			grok: { ...usable, fallbackModels: ["grok-fallback-test"] },
+		});
+		expect(
+			engineOf(await selectEngine(single, {}, "/repo", { host: "claude-code" })).failover,
+		).toBeUndefined();
+		expect(
+			engineOf(await selectEngine(chained, {}, "/repo", { host: "claude-code" })).failover,
+		).toBeDefined();
+	});
+
+	test("a claude route chains with Grok only when a Grok candidate is usable", async () => {
+		const claudeWith = (home: string) =>
+			configWith({
+				think: { ...defaultConfig().think, engine: "claude" },
+				claude: { ...defaultConfig().claude, fallbackToGrok: true },
+				grok: { ...defaultConfig().grok, home, fallbackModels: [] },
+			});
+		const host = { host: "claude-code" } as const;
+		const withLogin = await selectEngine(claudeWith(grokLogin()), {}, "/repo", host);
+		const withoutLogin = await selectEngine(claudeWith(emptyHome()), {}, "/repo", host);
+		expect(engineOf(withLogin).failover).toBeDefined();
+		expect(engineOf(withoutLogin).failover).toBeUndefined();
+	});
+});
+
 describe("HOST_DEFAULT_ENGINES", () => {
 	test("covers every host", () => {
 		expect(Object.keys(HOST_DEFAULT_ENGINES).sort()).toEqual([

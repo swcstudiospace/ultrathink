@@ -16,20 +16,22 @@ import {
 	chmodSync,
 	closeSync,
 	existsSync,
+	fstatSync,
+	linkSync,
 	mkdirSync,
 	openSync,
 	opendirSync,
-	readFileSync,
 	renameSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
 	writeSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { errorCode } from "../claude/atomic.ts";
 import { processIdentity } from "../swarm/lane.ts";
+import { readJsonObject } from "./carrier.ts";
 
 const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
 const PRUNE_SCAN_LIMIT = 200;
@@ -63,10 +65,9 @@ const ownedClaims = new Set<string>();
 export function markClaimedTurnsDone(): void {
 	for (const path of ownedClaims) {
 		try {
-			const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-			if (typeof value !== "object" || value === null) continue;
+			const owner = readJsonObject(path);
 			// Only a claim still ours: a takeover after our death is not ours to stamp.
-			if (Object.fromEntries(Object.entries(value)).pid !== process.pid) continue;
+			if (owner?.pid !== process.pid) continue;
 			const tmp = `${path}.done-${process.pid}`;
 			writeFileSync(tmp, ownRecord(true), { mode: 0o600 });
 			renameSync(tmp, path);
@@ -88,9 +89,9 @@ function rememberOwnedClaim(path: string): void {
  */
 function claimDead(path: string): boolean {
 	try {
-		const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-		if (typeof value !== "object" || value === null) return false;
-		const { pid, startTime, done } = Object.fromEntries(Object.entries(value));
+		const owner = readJsonObject(path);
+		if (owner === undefined) return false;
+		const { pid, startTime, done } = owner;
 		if (done === true) return false;
 		if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return false;
 		try {
@@ -109,14 +110,110 @@ function claimDead(path: string): boolean {
 	}
 }
 
+/**
+ * Publishes this process's owner record at `path`, failing with EEXIST when a claim already exists. The record is
+ * written whole to a unique temp file and hard-linked into place, so a crash never leaves an empty claim. A
+ * filesystem without hard links falls back to an exclusive create.
+ */
 function writeOwnedClaim(path: string): void {
-	const fd = openSync(path, "wx", 0o600);
+	const record = ownRecord();
+	const tmp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.new`;
 	try {
-		writeSync(fd, ownRecord());
+		writeFileSync(tmp, record, { mode: 0o600 });
+		try {
+			linkSync(tmp, path);
+		} catch (error) {
+			if (errorCode(error) === "EEXIST") throw error;
+			// reason: no hard links here; the exclusive create still keeps duplicates out
+			const fd = openSync(path, "wx", 0o600);
+			try {
+				writeSync(fd, record);
+			} finally {
+				closeSync(fd);
+			}
+		}
 	} finally {
-		closeSync(fd);
+		try {
+			unlinkSync(tmp);
+		} catch {
+			// reason: the temp file is already gone
+		}
 	}
 	rememberOwnedClaim(path);
+}
+
+/** The takeover mutex this process created, by file identity: release removes only that file. */
+interface MutexLock {
+	dev: number;
+	ino: number;
+}
+
+/** Exclusively creates the mutex at `mutex`, or returns undefined when another hook holds it. */
+function tryCreateMutex(mutex: string): MutexLock | undefined {
+	try {
+		const fd = openSync(mutex, "wx", 0o600);
+		try {
+			const { dev, ino } = fstatSync(fd);
+			return { dev, ino };
+		} finally {
+			closeSync(fd);
+		}
+	} catch (error) {
+		if (errorCode(error) === "EEXIST") return undefined;
+		throw error;
+	}
+}
+
+/**
+ * Moves the takeover mutex aside and deletes it only when the moved file itself is stale: a mutex whose holder died
+ * would otherwise block takeover until the claim expires. Judging the moved file (not a name that may have been
+ * replaced meanwhile) means a fresh mutex another duplicate created is put back under its name, not deleted.
+ * True when a stale mutex was removed.
+ */
+function removeStaleMutex(mutex: string, now: number): boolean {
+	const aside = `${mutex}.${process.pid}.${randomBytes(4).toString("hex")}`;
+	try {
+		renameSync(mutex, aside);
+	} catch {
+		// reason: another duplicate removed or replaced it first
+		return false;
+	}
+	let stale = false;
+	try {
+		stale = now - statSync(aside).mtimeMs > TAKEOVER_STALE_MS;
+	} catch {
+		// reason: an unreadable mutex is treated as live and put back
+	}
+	if (!stale) {
+		try {
+			linkSync(aside, mutex);
+		} catch {
+			// reason: a third duplicate recreated the mutex first; it holds the takeover now
+		}
+	}
+	try {
+		unlinkSync(aside);
+	} catch {
+		// reason: already gone
+	}
+	return stale;
+}
+
+/** Takes the takeover mutex, clearing a stale one once. Undefined when another hook is taking over. */
+function acquireMutex(mutex: string, now: number): MutexLock | undefined {
+	const held = tryCreateMutex(mutex);
+	if (held) return held;
+	return removeStaleMutex(mutex, now) ? tryCreateMutex(mutex) : undefined;
+}
+
+/** Removes the takeover mutex only while it is still the file this process created. */
+function releaseMutex(mutex: string, lock: MutexLock): void {
+	try {
+		const current = statSync(mutex);
+		if (current.dev === lock.dev && current.ino === lock.ino) unlinkSync(mutex);
+	} catch {
+		// reason: pruned or already gone
+	}
 }
 
 /**
@@ -126,18 +223,8 @@ function writeOwnedClaim(path: string): void {
  */
 function takeOver(path: string, now: number): boolean {
 	const mutex = `${path}.takeover`;
-	try {
-		closeSync(openSync(mutex, "wx", 0o600));
-	} catch (error) {
-		if (errorCode(error) !== "EEXIST") throw error;
-		try {
-			// A mutex whose holder died would block takeover until the claim itself expires.
-			if (now - statSync(mutex).mtimeMs > TAKEOVER_STALE_MS) unlinkSync(mutex);
-		} catch {
-			// reason: another duplicate released or replaced it first
-		}
-		return false;
-	}
+	const lock = acquireMutex(mutex, now);
+	if (!lock) return false;
 	try {
 		if (!claimDead(path)) return false;
 		unlinkSync(path);
@@ -148,11 +235,7 @@ function takeOver(path: string, now: number): boolean {
 		if (errorCode(error) === "EEXIST") return false;
 		throw error;
 	} finally {
-		try {
-			unlinkSync(mutex);
-		} catch {
-			// reason: pruned or already gone
-		}
+		releaseMutex(mutex, lock);
 	}
 }
 

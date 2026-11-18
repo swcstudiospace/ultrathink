@@ -4,8 +4,8 @@
  * `ultrathink-grokbot prompts build`: turns one planned graph node into a cloud-agent prompt. The prompt is derived from
  * the plan, never from a static template: the full uplifted spec, the unit's node question and conclusion, its
  * Chain-of-Thought steps (one SUBISSUE each, linked to tracker refs when kickoff has run), the predecessor conclusions,
- * the synthesize node's WORKFLOW, the clarifications (answers or stated defaults), the verify commands, and at most ten
- * desk rules. `validateCloudPrompt` checks well-formedness and content before anything is shown or launched.
+ * the synthesize node's WORKFLOW, the clarifications (answers or stated defaults), the verify commands, the mandatory
+ * desk rules and at most ten of the unit's own. `validateCloudPrompt` checks well-formedness and content before anything is shown or launched.
  */
 import type { SessionRecord } from "../claude/state.ts";
 import { nodeStepTitles, splitRationaleSteps } from "../track/plan.ts";
@@ -15,7 +15,8 @@ import { stripTrackingXml } from "../track/render.ts";
 import { MAX_STEPS, MIN_STEPS } from "../think/types.ts";
 import { hasSecretShape } from "../redact.ts";
 
-const MAX_DESK_RULES = 10;
+/** The unit's own rules on top of DEFAULT_DESK_RULES, which every prompt carries. */
+const MAX_EXTRA_DESK_RULES = 10;
 
 export const DEFAULT_DESK_RULES: readonly string[] = [
 	"Never merge, enable auto-merge or delete branches; the PR stays a draft until Ming approves the merge.",
@@ -82,11 +83,12 @@ export function buildCloudPrompt(record: SessionRecord, dispatch: UnitDispatch):
 	const tracking: TrackingRefs | undefined = record.tracking;
 	const steps = nodeStepTitles(node);
 	const rawSteps = splitRationaleSteps(node.thinking ?? "");
-	const rules = dispatch.rules ?? DEFAULT_DESK_RULES;
-	if (rules.length > MAX_DESK_RULES)
+	const extra = dispatch.rules ?? [];
+	if (extra.length > MAX_EXTRA_DESK_RULES)
 		throw new Error(
-			`DESK_RULES must have 1-${MAX_DESK_RULES} rules (got ${rules.length}); trim the unit's rules`,
+			`unit DESK_RULES may add at most ${MAX_EXTRA_DESK_RULES} rules to the ${DEFAULT_DESK_RULES.length} mandatory ones (got ${extra.length}); trim the unit's rules`,
 		);
+	const rules = [...DEFAULT_DESK_RULES, ...extra];
 	const issue = tracking?.linear.nodes[node.id];
 	const notion = tracking?.notion.nodes[node.id];
 	const workflow = workflowOf(record);
@@ -230,8 +232,14 @@ export function validateCloudPrompt(
 	for (const section of need)
 		if (!xml.includes(section)) errors.push(`missing ${section.replace(/[<> ]/g, "")}`);
 	const rules = (xml.match(/<RULE>/g) ?? []).length;
-	if (rules === 0 || rules > MAX_DESK_RULES)
-		errors.push(`DESK_RULES must have 1-${MAX_DESK_RULES} rules (got ${rules})`);
+	const maxRules = DEFAULT_DESK_RULES.length + MAX_EXTRA_DESK_RULES;
+	if (rules < DEFAULT_DESK_RULES.length || rules > maxRules)
+		errors.push(
+			`DESK_RULES must have ${DEFAULT_DESK_RULES.length}-${maxRules} rules (got ${rules})`,
+		);
+	for (const rule of DEFAULT_DESK_RULES)
+		if (!xml.includes(`<RULE>${esc(rule)}</RULE>`))
+			errors.push(`DESK_RULES must carry the mandatory rule: ${rule}`);
 	const subs = unitSubissueCount(xml);
 	if (subs < MIN_STEPS || subs > MAX_STEPS)
 		errors.push(`unit must carry ${MIN_STEPS}-${MAX_STEPS} SUBISSUE steps (got ${subs})`);

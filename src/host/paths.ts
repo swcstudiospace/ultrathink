@@ -103,7 +103,7 @@ export function resolveStateDirDetail(
 	if (!permitted) return refuse("outside-home");
 
 	if (isPlanningPath(override)) return refuse("planning-path");
-	return { dir: override };
+	return { dir: path };
 }
 
 export function resolveStateDir(env: Record<string, string | undefined> = process.env): string {

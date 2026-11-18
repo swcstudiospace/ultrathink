@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Effort } from "@oh-my-pi/pi-ai";
@@ -316,8 +324,8 @@ describe("named legacy flight identity (REV15-005)", () => {
 				{ cwd: root, model: fakeModel("acme", "unchanged-session-model"), ...t.ctx },
 			);
 			const pending = { message: expect.objectContaining({ customType: "ultrathink-pending" }) };
-			const paths = ["sessions/s1.json", "sessions/s1.xml", "last.json", "last-plan.s1.json"].map(
-				(path) => join(stateDir, path),
+			const paths = ["sessions/s1.json", "sessions/s1.xml", "last.json"].map((path) =>
+				join(stateDir, path),
 			);
 			emit("session_start");
 			try {
@@ -368,6 +376,11 @@ describe("named legacy flight identity (REV15-005)", () => {
 					expect.objectContaining({ type: "end", outcome: "skipped", detail: "aborted" }),
 				);
 				for (const path of paths) expect(existsSync(path)).toBe(false);
+				expect(
+					existsSync(stateDir)
+						? readdirSync(stateDir).filter((name) => name.startsWith("last-plan.s1"))
+						: [],
+				).toEqual([]);
 				expect(sent).toEqual([]);
 
 				await current.uplifted.promise;
@@ -395,7 +408,6 @@ describe("named legacy flight identity (REV15-005)", () => {
 				expect(response).toMatchObject({
 					specPath: paths[1],
 					statePath: paths[0],
-					carrierPath: paths[3],
 					modelResolution: {
 						host: "omp",
 						transport: `grok-${transport}`,
@@ -404,6 +416,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 						source: "engine-model",
 					},
 				});
+				expect(response.carrierPath).toMatch(/last-plan\.s1\.[0-9a-f]{12}\.json$/);
 				expect(response.graphId).toBeTruthy();
 				expect(current.tracked).toHaveLength(1);
 				expect(current.tracked[0]?.task.upliftedPrompt).toContain(currentMarker);
@@ -423,7 +436,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 				expect(record?.result.xml).toContain(currentMarker);
 				expect(record?.result.xml).toContain(original);
 				expect(readLast(stateDir)).toEqual(record);
-				expect(JSON.parse(readFileSync(paths[3]!, "utf8"))).toMatchObject({
+				expect(JSON.parse(readFileSync(response.carrierPath!, "utf8"))).toMatchObject({
 					host: "omp",
 					sessionId: "s1",
 					specPath: response.specPath,
@@ -431,7 +444,8 @@ describe("named legacy flight identity (REV15-005)", () => {
 					graphId: response.graphId,
 					context: response.context,
 				});
-				const saved = paths.map((path) => readFileSync(path, "utf8"));
+				const written = [...paths, response.carrierPath!];
+				const saved = written.map((path) => readFileSync(path, "utf8"));
 				for (const content of saved) {
 					expect(content).toContain(currentMarker);
 					expect(content).toContain(original);
@@ -452,7 +466,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 				old.delivery.resolve();
 				await flush();
 				expect(t.line()).toBe(currentLine);
-				expect(paths.map((path) => readFileSync(path, "utf8"))).toEqual(saved);
+				expect(written.map((path) => readFileSync(path, "utf8"))).toEqual(saved);
 				expect(old.tracked).toEqual([]);
 				expect(current.tracked).toHaveLength(1);
 				expect(sent).toHaveLength(2);
