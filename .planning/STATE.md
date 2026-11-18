@@ -188,6 +188,7 @@ Resume file: None
 | 76 | verification_deferred_human | /gsd:verify-work 76 |
 | 110 | verification_deferred_human | /gsd:verify-work 110 |
 | 111 | verification_deferred_human | /gsd:verify-work 111 |
+| 112 | verification_deferred_human | /gsd:verify-work 112 |
 | 108 | accepted_tech_debt | Owner closed v1.22 on 2026-11-12 without supplying live evidence (MCP-12/MCP-13 unverified against hosted; phase 107 not deployed). Not a verification pass. |
 | 104 | withdrawn | Owner withdrew phase 104 and its former verification gate; historical records are preserved in the withdrawal archive. |
 
