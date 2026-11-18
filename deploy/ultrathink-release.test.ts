@@ -447,6 +447,7 @@ const GATE_FILES = [
 	"src/mcp/providers.ts",
 	"src/net/body.ts",
 	"src/redact.ts",
+	"src/resilience/sleep.ts",
 ];
 // Root-only commands are stubbed on PATH: `id` reports root, `chown` does nothing, `setpriv` runs its command as the
 // current user and `systemctl` does nothing.
