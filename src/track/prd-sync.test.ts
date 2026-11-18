@@ -278,8 +278,8 @@ describe("syncPrds", () => {
 		const report = await syncPrds([prd("x")], deps({ linear: linear.caller }));
 		expect(delays.some((ms) => ms >= 3000)).toBe(true);
 		expect(report.keys[0]?.linear.outcome).toBe("created");
-		expect(report.keys[0]?.linear.attempts).toBe(3);
-		expect(linear.count("get_issue")).toBe(2);
+		expect(report.keys[0]?.linear.attempts).toBe(4);
+		expect(linear.count("get_issue")).toBe(3);
 	});
 
 	test("a 400 is not retried and leaves the ledger failed", async () => {
