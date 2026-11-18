@@ -1,73 +1,44 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
-import { CLAUDE_AUTH_MODES, type ClaudeAuthMode } from "./claude/complete.ts";
+import { join } from "node:path";
+import type { ClaudeAuthMode } from "./claude/complete.ts";
 import type { PstackStage } from "./cursor/pstack.ts";
-import { DEFAULT_GATEWAY_CONFIG, SEAT_PATTERN, type GatewayConfig } from "./gateway/types.ts";
+import { DEFAULT_GATEWAY_CONFIG, type GatewayConfig } from "./gateway/types.ts";
 import { DEFAULT_HINDSIGHT_CONFIG, type HindsightConfig } from "./hindsight/types.ts";
 import { DEFAULT_RAGFLOW_CONFIG, type RagflowConfig } from "./ragflow/types.ts";
-import {
-	DECISION_POINTS,
-	DEFAULT_DECISIONS_CONFIG,
-	type DecisionPoint,
-	type DecisionsConfig,
-	isJevModelId,
-} from "./decisions/types.ts";
-import {
-	DEFAULT_GROK_CONFIG,
-	GROK_EFFORTS,
-	GROK_TRANSPORTS,
-	type GrokConfig,
-	type GrokEffort,
-	type GrokTransport,
-} from "./grok/types.ts";
+import { DEFAULT_DECISIONS_CONFIG, type DecisionsConfig } from "./decisions/types.ts";
+import { DEFAULT_GROK_CONFIG, type GrokConfig } from "./grok/types.ts";
 import { DEFAULT_HITL_CONFIG, type HitlConfig } from "./hitl/types.ts";
-import {
-	DEFAULT_SHIP_CONFIG,
-	GREPTILE_MAX_SCORE,
-	JUDGE_MODES,
-	type JudgeMode,
-	MERGE_METHODS,
-	type ShipConfig,
-} from "./ship/types.ts";
-import {
-	DEFAULT_MUSE_CONFIG,
-	MUSE_EFFORTS,
-	type MuseConfig,
-	type MuseEffort,
-} from "./muse/types.ts";
-import { checkServiceUrl } from "./net/safe-url.ts";
+import { DEFAULT_SHIP_CONFIG, type ShipConfig } from "./ship/types.ts";
+import { DEFAULT_MUSE_CONFIG, type MuseConfig } from "./muse/types.ts";
 import {
 	defaultRecallSettings,
 	parseRecallSettings,
 	type RecallSettings,
 } from "./recall/config.ts";
-import {
-	CAPTURE_MODES,
-	DEFAULT_TEACH_CONFIG,
-	type CaptureMode,
-	type TeachConfig,
-} from "./teach/types.ts";
-import {
-	MAX_NODES,
-	MIN_NODES,
-	THINK_ENGINES,
-	THINK_REASONING_CEILINGS,
-	type ThinkConfig,
-	type ThinkEngine,
-	type ThinkReasoningCeiling,
-} from "./think/types.ts";
-import { type HostId, isHostId } from "./host/types.ts";
-import {
-	type LegacyRoute,
-	ROUTE_DEFAULT_MODELS,
-	TOT_BREAKER_THRESHOLD,
-	TOT_PRD_CANDIDATES,
-} from "./route-defaults.ts";
+import { DEFAULT_TEACH_CONFIG, type TeachConfig } from "./teach/types.ts";
+import { MAX_NODES, MIN_NODES, type ThinkConfig } from "./think/types.ts";
+import type { HostId } from "./host/types.ts";
+import { type LegacyRoute, ROUTE_DEFAULT_MODELS } from "./route-defaults.ts";
 import { readJson } from "./shared.ts";
+import { asRecord } from "./config/fields.ts";
+import { defaultTotModels, mergeModels, providerDictionary } from "./config/models.ts";
+import { mergeClaude } from "./config/claude.ts";
+import { mergeGrok } from "./config/grok.ts";
+import { mergeMuse } from "./config/muse.ts";
+import { mergeUplift } from "./config/uplift.ts";
+import { mergeThink } from "./config/think.ts";
+import { mergeHitl, tightenHitl } from "./config/hitl.ts";
+import { mergeLinear, mergeNotion, mergeTrack, tightenTrack } from "./config/tracking.ts";
+import { mergeShip, tightenShip } from "./config/ship.ts";
+import { mergeDecisions } from "./config/decisions.ts";
+import { mergeGateway, mergeHindsight, mergeRagflow, mergeSubstrate } from "./config/services.ts";
+import { mergeTeach } from "./config/teach.ts";
+import { mergePstack } from "./config/pstack.ts";
+import { mergeState, mergeSwarm, mergeUi } from "./config/runtime.ts";
 
-interface ClaudeConfig {
+export interface ClaudeConfig {
 	/** `claude` binary used for headless completions. A project file cannot set this. */
 	bin: string;
 	/**
@@ -109,7 +80,7 @@ const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
 	echo: true,
 };
 
-interface NotionConfig {
+export interface NotionConfig {
 	/** Data source URL for the "Agent Task Graph" database (`collection://<id>`); "" = Notion tracking not configured. */
 	dataSourceUrl: string;
 }
@@ -118,7 +89,7 @@ const DEFAULT_NOTION_CONFIG: NotionConfig = {
 	dataSourceUrl: "",
 };
 
-interface LinearConfig {
+export interface LinearConfig {
 	/** Linear team name that Issues/Sub-Issues are created under; "" = Linear tracking not configured. */
 	team: string;
 }
@@ -127,7 +98,7 @@ const DEFAULT_LINEAR_CONFIG: LinearConfig = {
 	team: "",
 };
 
-interface TrackConfig {
+export interface TrackConfig {
 	/** Create Linear/Notion rows from the hook before the agent sees the prompt. */
 	enabled: boolean;
 	/** Whole tracker-creation budget in ms. 0 = no limit: no timer is created and the run waits for every row. Capped at `MAX_TIMER_MS`. */
@@ -142,7 +113,7 @@ const DEFAULT_TRACK_CONFIG: TrackConfig = {
 	concurrency: 6,
 };
 
-interface SubstrateConfig {
+export interface SubstrateConfig {
 	/** Agent Substrate service base URL (`POST <url>/brief`); "" = never contacted. `SUBSTRATE_URL` overrides it. */
 	url: string;
 	/**
@@ -156,7 +127,7 @@ const DEFAULT_SUBSTRATE_CONFIG: SubstrateConfig = {
 	url: "",
 };
 
-interface StateConfig {
+export interface StateConfig {
 	/** Days a session record is kept before the scheduled prune may remove it; 0 = keep forever. User files only. */
 	retentionDays: number;
 }
@@ -166,13 +137,13 @@ const DEFAULT_STATE_CONFIG: StateConfig = {
 };
 
 /** Stages a user mapping may remap: every pstack stage except `orchestrate`, the router that carries all moments. */
-type PstackMappingStage = Exclude<PstackStage, "orchestrate">;
+export type PstackMappingStage = Exclude<PstackStage, "orchestrate">;
 
 /**
  * Cursor pstack bridge (`src/cursor/pstack.ts`): `/gsd-*` slash commands detected in Cursor's beforeSubmitPrompt
  * hook. Opt-in and user-only — every key comes from user files; a project layer is ignored entirely.
  */
-interface PstackConfig {
+export interface PstackConfig {
 	/** Whether the bridge injects pstack skill instructions; only a user file can turn this on. */
 	enabled: boolean;
 	/** Absolute Cursor directory to resolve pstack from; absent uses the hook's own resolution. */
@@ -193,7 +164,7 @@ const DEFAULT_PSTACK_CONFIG: PstackConfig = {
  * explicit `/ultrathink-swarm` command. Opt-in and user-only — every key comes from user files; a project layer is
  * ignored entirely, so a cloned repository cannot turn auto-spawning on.
  */
-interface SwarmConfig {
+export interface SwarmConfig {
 	/** Whether SDLC-sounding prompts auto-spawn swarm lanes; only a user file can turn this on. */
 	autoRun: boolean;
 }
@@ -206,7 +177,7 @@ const DEFAULT_SWARM_CONFIG: SwarmConfig = {
  * Display settings (`ui.*`). User files only: a project layer cannot change how the host draws. `reducedMotion` turns
  * off the live graph's spinner, flash and pop; the final state renders the same.
  */
-interface UiConfig {
+export interface UiConfig {
 	/** Whether the live graph draws without motion. Default false. */
 	reducedMotion: boolean;
 }
@@ -229,7 +200,7 @@ export interface HostModelOverride {
  * built-in lists come from `TOT_PRD_CANDIDATES`. `breakerThreshold` is the number of consecutive cheap-model failures
  * after which the whole stage runs on the selected model. GoT and CoT never read any of it.
  */
-interface TotModelsConfig {
+export interface TotModelsConfig {
 	model: string;
 	candidates: Record<string, readonly string[]>;
 	breakerThreshold: number;
@@ -240,7 +211,7 @@ interface TotModelsConfig {
  * into them. `enabled` left unset follows tracking (on when tracking produced rows, so off when tracking is off); an
  * explicit boolean wins. `concurrency` is the PRDs written at once (1-16); `maxPrdChars` and `maxPrdLines` bound one PRD.
  */
-interface TotConfig {
+export interface TotConfig {
 	enabled?: boolean;
 	concurrency: number;
 	maxPrdChars: number;
@@ -248,14 +219,14 @@ interface TotConfig {
 }
 
 /** `think` with the Tree-of-Thought stage settings; `ThinkConfig` stays the GoT/CoT part every think stage reads. */
-type ThinkSettings = ThinkConfig & { tot: TotConfig };
+export type ThinkSettings = ThinkConfig & { tot: TotConfig };
 
 /**
  * Planning model selection (`models` in any config layer). `hosts` targets an existing host; `providerDefaults` maps an
  * exact credential provider id to the selector native Omp planning uses when the live model is unusable. Neither can
  * define endpoints, headers or credentials, and no legacy CLI route consumes `providerDefaults` (its eligible set is empty).
  */
-interface ModelsConfig {
+export interface ModelsConfig {
 	hosts: Partial<Record<HostId, HostModelOverride>>;
 	providerDefaults: Record<string, string>;
 	tot: TotModelsConfig;
@@ -359,342 +330,6 @@ export function defaultConfig(): UltrathinkConfig {
 	};
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
-	return value as Record<string, unknown>;
-}
-
-function mergeUplift(
-	uplift: Record<string, unknown> | undefined,
-	defaults: UltrathinkConfig["uplift"],
-	project = false,
-): UltrathinkConfig["uplift"] {
-	if (!uplift) return defaults;
-	return {
-		enabled: typeof uplift.enabled === "boolean" ? uplift.enabled : defaults.enabled,
-		skipTrivial:
-			typeof uplift.skipTrivial === "boolean" ? uplift.skipTrivial : defaults.skipTrivial,
-		echo: typeof uplift.echo === "boolean" ? uplift.echo : defaults.echo,
-		maxChars:
-			!project &&
-			typeof uplift.maxChars === "number" &&
-			Number.isInteger(uplift.maxChars) &&
-			uplift.maxChars >= 0
-				? uplift.maxChars
-				: defaults.maxChars,
-	};
-}
-
-/** A positive integer within [min, max] as written; anything else keeps the lower value. */
-function boundedInt(value: unknown, min: number, max: number, fallback: number): number {
-	return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
-		? value
-		: fallback;
-}
-
-function mergeTot(tot: Record<string, unknown> | undefined, defaults: TotConfig): TotConfig {
-	if (!tot) return defaults;
-	const enabled = typeof tot.enabled === "boolean" ? tot.enabled : defaults.enabled;
-	return {
-		...(enabled === undefined ? {} : { enabled }),
-		concurrency: boundedInt(tot.concurrency, 1, 16, defaults.concurrency),
-		maxPrdChars: boundedInt(tot.maxPrdChars, 500, 100_000, defaults.maxPrdChars),
-		maxPrdLines: boundedInt(tot.maxPrdLines, 20, 2000, defaults.maxPrdLines),
-	};
-}
-
-function mergeThink(
-	think: Record<string, unknown> | undefined,
-	defaults: ThinkSettings,
-): ThinkSettings {
-	if (!think) return defaults;
-	const minNodes =
-		typeof think.minNodes === "number" && Number.isInteger(think.minNodes) && think.minNodes >= 1
-			? think.minNodes
-			: defaults.minNodes;
-	const maxNodes =
-		typeof think.maxNodes === "number" &&
-		Number.isInteger(think.maxNodes) &&
-		think.maxNodes >= minNodes
-			? Math.min(think.maxNodes, MAX_NODES)
-			: defaults.maxNodes;
-	const fillRetries =
-		typeof think.fillRetries === "number" &&
-		Number.isInteger(think.fillRetries) &&
-		think.fillRetries > 0
-			? think.fillRetries
-			: defaults.fillRetries;
-	const repair = typeof think.repair === "boolean" ? think.repair : defaults.repair;
-	return {
-		enabled: typeof think.enabled === "boolean" ? think.enabled : defaults.enabled,
-		minNodes: Math.min(minNodes, maxNodes),
-		maxNodes,
-		engine: THINK_ENGINES.includes(think.engine as ThinkEngine)
-			? (think.engine as ThinkEngine)
-			: defaults.engine,
-		reasoningCeiling: THINK_REASONING_CEILINGS.includes(
-			think.reasoningCeiling as ThinkReasoningCeiling,
-		)
-			? (think.reasoningCeiling as ThinkReasoningCeiling)
-			: defaults.reasoningCeiling,
-		fillRetries,
-		repair,
-		tot: mergeTot(asRecord(think.tot), defaults.tot),
-	};
-}
-
-/**
- * Largest delay `setTimeout`/`AbortSignal.timeout` accept (signed 32-bit ms, ~24.8 days). Timers clamp bigger
- * values to 1 ms, so a budget of e.g. `1e10` meant as "no limit" would fire at once; every ms budget is capped here.
- */
-export const MAX_TIMER_MS = 2_147_483_647;
-
-function nonNegativeMs(value: unknown, fallback: number): number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0
-		? Math.min(value, MAX_TIMER_MS)
-		: fallback;
-}
-
-/**
- * A call timer a project file sets can only shorten a bound the earlier files set. A project `0` (no timer) or an unusable
- * value keeps the earlier value, so a repository cannot remove a bound by writing `0` (K5).
- */
-function projectTimerMs(value: unknown, base: number, project: boolean): number {
-	if (!project) return nonNegativeMs(value, base);
-	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return base;
-	const capped = Math.min(value, MAX_TIMER_MS);
-	return base > 0 ? Math.min(base, capped) : capped;
-}
-
-/** `project` (a repository-controlled layer) cannot choose the executable or its setting sources; model/effort/timers stay open. */
-function mergeClaude(
-	claude: Record<string, unknown> | undefined,
-	defaults: ClaudeConfig,
-	project: boolean,
-): ClaudeConfig {
-	if (!claude) return defaults;
-	const positive = (value: unknown, fallback: number): number =>
-		typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
-	return {
-		bin: project ? defaults.bin : nonEmpty(claude.bin, defaults.bin),
-		auth:
-			!project && CLAUDE_AUTH_MODES.includes(claude.auth as ClaudeAuthMode)
-				? (claude.auth as ClaudeAuthMode)
-				: defaults.auth,
-		fallbackToGrok:
-			!project && typeof claude.fallbackToGrok === "boolean"
-				? claude.fallbackToGrok
-				: defaults.fallbackToGrok,
-		model: selectorField(claude.model) ?? defaults.model,
-		thinking: typeof claude.thinking === "boolean" ? claude.thinking : defaults.thinking,
-		settingSources:
-			!project && typeof claude.settingSources === "string"
-				? claude.settingSources.trim()
-				: defaults.settingSources,
-		callTimeoutMs: projectTimerMs(claude.callTimeoutMs, defaults.callTimeoutMs, project),
-		budgetMs: projectTimerMs(claude.budgetMs, defaults.budgetMs, project),
-		concurrency: Math.max(1, Math.floor(positive(claude.concurrency, defaults.concurrency))),
-		echo: typeof claude.echo === "boolean" ? claude.echo : defaults.echo,
-	};
-}
-
-function nonEmpty(value: unknown, fallback: string): string {
-	return typeof value === "string" && value.trim() ? value.trim() : fallback;
-}
-
-const MAX_FALLBACK_MODELS = 8;
-
-/** Array of model ids: trimmed, blanks and control-character entries dropped, deduped in order, capped. Non-array keeps the default. */
-function mergeFallbackModels(value: unknown, fallback: string[]): string[] {
-	if (!Array.isArray(value)) return [...fallback];
-	const out: string[] = [];
-	for (const entry of value) {
-		if (typeof entry !== "string" || hasControlCharacter(entry)) continue;
-		const model = entry.trim();
-		if (!model || out.includes(model)) continue;
-		out.push(model);
-		if (out.length >= MAX_FALLBACK_MODELS) break;
-	}
-	return out;
-}
-
-/** Same trust rule as `mergeClaude`: a project layer keeps `bin`, `home` and `baseUrl` (where the CLI and traffic go). */
-function mergeGrok(
-	grok: Record<string, unknown> | undefined,
-	defaults: GrokConfig,
-	project: boolean,
-): GrokConfig {
-	if (!grok) return defaults;
-	return {
-		enabled: typeof grok.enabled === "boolean" ? grok.enabled : defaults.enabled,
-		baseUrl: project ? defaults.baseUrl : grokBaseUrl(grok.baseUrl, defaults.baseUrl),
-		model: selectorField(grok.model) || defaults.model,
-		reasoningEffort: GROK_EFFORTS.includes(grok.reasoningEffort as GrokEffort)
-			? (grok.reasoningEffort as GrokEffort)
-			: defaults.reasoningEffort,
-		transport: GROK_TRANSPORTS.includes(grok.transport as GrokTransport)
-			? (grok.transport as GrokTransport)
-			: defaults.transport,
-		bin: project ? defaults.bin : nonEmpty(grok.bin, defaults.bin),
-		home: !project && typeof grok.home === "string" ? grok.home.trim() : defaults.home,
-		callTimeoutMs: projectTimerMs(grok.callTimeoutMs, defaults.callTimeoutMs, project),
-		fallbackToClaude:
-			typeof grok.fallbackToClaude === "boolean"
-				? grok.fallbackToClaude
-				: defaults.fallbackToClaude,
-		fallbackModels: mergeFallbackModels(grok.fallbackModels, defaults.fallbackModels),
-	};
-}
-
-/** Same trust rule as `mergeClaude`: a project layer cannot pick the `muse` executable. */
-function mergeMuse(
-	muse: Record<string, unknown> | undefined,
-	defaults: MuseConfig,
-	project: boolean,
-): MuseConfig {
-	if (!muse) return defaults;
-	return {
-		bin: project ? defaults.bin : nonEmpty(muse.bin, defaults.bin),
-		model: selectorField(muse.model) ?? defaults.model,
-		reasoningEffort: MUSE_EFFORTS.includes(muse.reasoningEffort as MuseEffort)
-			? (muse.reasoningEffort as MuseEffort)
-			: defaults.reasoningEffort,
-		callTimeoutMs: projectTimerMs(muse.callTimeoutMs, defaults.callTimeoutMs, project),
-	};
-}
-
-/** C0 and C1 control characters: NUL, newline, ESC (ANSI), DEL and the rest. */
-const CONTROL_CHARACTER = /\p{Cc}/u;
-
-/** A selector or provider string carrying a control character is never sent anywhere; resolution reports it `selector-invalid`. */
-export function hasControlCharacter(value: string): boolean {
-	return CONTROL_CHARACTER.test(value);
-}
-
-/** Shared selector string normalization: blanks stay absent; nonblank controls stay raw so selection can reject them before trim. */
-function normalizeSelectorField(value: string): string {
-	const trimmed = value.trim();
-	if (!trimmed) return "";
-	return hasControlCharacter(value) ? value : trimmed;
-}
-
-/**
- * A model/provider selector after normalization: undefined for a wrong type, "" for an entirely-whitespace blank,
- * otherwise trimmed of surrounding whitespace only. Nonblank strings carrying controls stay as written so resolution
- * can diagnose them before trim hides them; each merge consumer applies its existing blank/reset rule.
- */
-function selectorField(value: unknown): string | undefined {
-	if (typeof value !== "string") return undefined;
-	return normalizeSelectorField(value);
-}
-
-/** Provider keys never merged into a dictionary, in any layer (prototype pollution, T-15-01). An object lookup would hit the prototype itself. */
-const UNSAFE_DICTIONARY_KEYS: readonly string[] = ["__proto__", "constructor", "prototype"];
-
-/** A prototype-free copy of a provider dictionary's own entries, so no inherited property can act as a mapping. */
-function providerDictionary(entries: Readonly<Record<string, string>>): Record<string, string> {
-	const out = Object.create(null) as Record<string, string>;
-	for (const [key, value] of Object.entries(entries)) out[key] = value;
-	return out;
-}
-
-/** A prototype-free copy of a ToT candidate map, each list copied so no layer shares a mutable array. */
-function totCandidates(
-	entries: Readonly<Record<string, readonly string[]>>,
-): Record<string, readonly string[]> {
-	const out = Object.create(null) as Record<string, readonly string[]>;
-	for (const [key, value] of Object.entries(entries)) out[key] = [...value];
-	return out;
-}
-
-function defaultTotModels(): TotModelsConfig {
-	return {
-		model: "",
-		candidates: totCandidates(TOT_PRD_CANDIDATES),
-		breakerThreshold: TOT_BREAKER_THRESHOLD,
-	};
-}
-
-/** A candidate list from a string or an array of strings: blanks, controls and repeats dropped; undefined for any other type. */
-function candidateIds(value: unknown): string[] | undefined {
-	const list: unknown[] | undefined =
-		typeof value === "string" ? [value] : Array.isArray(value) ? value : undefined;
-	if (list === undefined) return undefined;
-	const ids: string[] = [];
-	for (const item of list) {
-		const id = selectorField(item);
-		if (id && !hasControlCharacter(id) && !ids.includes(id)) ids.push(id);
-	}
-	return ids;
-}
-
-/**
- * Per-entry merge of `models.tot`: a wrong type keeps the lower value, a blank `model` clears the override, a provider's
- * list replaces the lower list and an empty list removes the provider; prototype keys and control characters are ignored.
- */
-function mergeTotModels(
-	tot: Record<string, unknown> | undefined,
-	defaults: TotModelsConfig,
-): TotModelsConfig {
-	if (!tot) return defaults;
-	const model = selectorField(tot.model);
-	const candidates = totCandidates(defaults.candidates);
-	for (const [provider, list] of Object.entries(asRecord(tot.candidates) ?? {})) {
-		const key = provider.trim().toLowerCase();
-		if (!key || hasControlCharacter(key) || UNSAFE_DICTIONARY_KEYS.includes(key)) continue;
-		const ids = candidateIds(list);
-		if (ids === undefined) continue;
-		if (ids.length === 0) delete candidates[key];
-		else candidates[key] = ids;
-	}
-	const threshold = tot.breakerThreshold;
-	return {
-		model: model === undefined || hasControlCharacter(model) ? defaults.model : model,
-		candidates,
-		breakerThreshold:
-			typeof threshold === "number" && Number.isInteger(threshold) && threshold >= 1
-				? threshold
-				: defaults.breakerThreshold,
-	};
-}
-
-/**
- * Per-entry merge of `models` (D-05): a wrong type keeps the lower value, a blank host field clears it, a blank provider
- * default removes the lower selector (exposing the host-catalog tier), and unknown hosts, prototype keys and inherited fields are ignored.
- * A project layer (`project`) may set a host's `model` only: its `provider`, `providerDefaults` and `tot` are ignored.
- */
-function mergeModels(
-	models: Record<string, unknown> | undefined,
-	defaults: ModelsConfig,
-	project: boolean,
-): ModelsConfig {
-	if (!models) return defaults;
-	const hosts: Partial<Record<HostId, HostModelOverride>> = { ...defaults.hosts };
-	for (const [host, entry] of Object.entries(asRecord(models.hosts) ?? {})) {
-		const fields = asRecord(entry);
-		if (!fields || !isHostId(host)) continue;
-		const provider =
-			!project && Object.hasOwn(fields, "provider") ? selectorField(fields.provider) : undefined;
-		const model = Object.hasOwn(fields, "model") ? selectorField(fields.model) : undefined;
-		if (provider === undefined && model === undefined) continue;
-		const lower = hosts[host];
-		hosts[host] = {
-			provider: provider ?? lower?.provider ?? "",
-			model: model ?? lower?.model ?? "",
-		};
-	}
-	const providerDefaults = providerDictionary(defaults.providerDefaults);
-	// A project layer cannot choose the provider a host plans with, the provider defaults or the ToT allowlist.
-	if (project) return { hosts, providerDefaults, tot: defaults.tot };
-	for (const [provider, selector] of Object.entries(asRecord(models.providerDefaults) ?? {})) {
-		if (UNSAFE_DICTIONARY_KEYS.includes(provider)) continue;
-		const value = selectorField(selector);
-		if (value === "") delete providerDefaults[provider];
-		else if (value !== undefined) providerDefaults[provider] = value;
-	}
-	return { hosts, providerDefaults, tot: mergeTotModels(asRecord(models.tot), defaults.tot) };
-}
-
 /** What a layer leaves on a legacy route model's provenance; a blank clears Claude and Muse, Grok's non-empty merge ignores it. */
 function modelPin(
 	section: Record<string, unknown> | undefined,
@@ -705,567 +340,6 @@ function modelPin(
 	if (typeof model !== "string") return lower;
 	if (model.trim()) return "file-pin";
 	return blankClears ? "explicit-blank" : lower;
-}
-
-/**
- * A non-empty http(s) URL with trailing slashes stripped; anything else falls back. A URL with a query or a fragment
- * falls back too. A user name or password is kept: the doctor shows the URL with it removed, and a bearer-carrying
- * request is refused by the service-URL policy at use.
- */
-function httpUrl(value: unknown, fallback: string): string {
-	if (typeof value !== "string") return fallback;
-	const trimmed = value.trim().replace(/\/+$/, "");
-	if (!trimmed) return fallback;
-	try {
-		const url = new URL(trimmed);
-		if (url.search || url.hash) return fallback;
-		if (url.protocol === "https:") return trimmed;
-		// Cleartext is allowed only to loopback and private (RFC 1918) addresses, which do not route on the public internet.
-		return url.protocol === "http:" &&
-			/^(localhost|127(\.\d{1,3}){3}|10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|\[::1\])$/.test(
-				url.hostname,
-			)
-			? trimmed
-			: fallback;
-	} catch {
-		return fallback;
-	}
-}
-
-/**
- * `grok.baseUrl` receives the Grok key as a bearer token, so it takes the service-URL policy of `checkServiceUrl`
- * (https, or http only to loopback, `*.ts.net` or 100.64.0.0/10), not the wider rule of `httpUrl`.
- */
-function grokBaseUrl(value: unknown, fallback: string): string {
-	const checked = checkServiceUrl(value);
-	return checked.ok ? checked.url : fallback;
-}
-
-function mergeHitl(hitl: Record<string, unknown> | undefined, defaults: HitlConfig): HitlConfig {
-	if (!hitl) return defaults;
-	return {
-		enabled: typeof hitl.enabled === "boolean" ? hitl.enabled : defaults.enabled,
-		maxQuestions:
-			typeof hitl.maxQuestions === "number" &&
-			Number.isInteger(hitl.maxQuestions) &&
-			hitl.maxQuestions >= 1 &&
-			hitl.maxQuestions <= 4
-				? hitl.maxQuestions
-				: defaults.maxQuestions,
-		knowledgeBase:
-			typeof hitl.knowledgeBase === "boolean" ? hitl.knowledgeBase : defaults.knowledgeBase,
-	};
-}
-
-function mergeNotion(
-	notion: Record<string, unknown> | undefined,
-	defaults: NotionConfig,
-): NotionConfig {
-	if (!notion) return defaults;
-	return { dataSourceUrl: nonEmpty(notion.dataSourceUrl, defaults.dataSourceUrl) };
-}
-
-function mergeLinear(
-	linear: Record<string, unknown> | undefined,
-	defaults: LinearConfig,
-): LinearConfig {
-	if (!linear) return defaults;
-	return { team: nonEmpty(linear.team, defaults.team) };
-}
-
-function mergeTrack(
-	track: Record<string, unknown> | undefined,
-	defaults: TrackConfig,
-): TrackConfig {
-	if (!track) return defaults;
-	return {
-		enabled: typeof track.enabled === "boolean" ? track.enabled : defaults.enabled,
-		budgetMs:
-			typeof track.budgetMs === "number" && Number.isFinite(track.budgetMs) && track.budgetMs >= 0
-				? Math.min(track.budgetMs, MAX_TIMER_MS)
-				: defaults.budgetMs,
-		concurrency:
-			typeof track.concurrency === "number" &&
-			Number.isFinite(track.concurrency) &&
-			track.concurrency >= 1
-				? Math.floor(track.concurrency)
-				: defaults.concurrency,
-	};
-}
-
-function positiveInt(value: unknown, fallback: number): number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 1
-		? Math.floor(value)
-		: fallback;
-}
-
-/** Absent keeps the lower layer's reviewer; any value other than "greptile" or "claude" is a config error, not a silent fallback. */
-function reviewerField(value: unknown, fallback: ShipConfig["reviewer"]): ShipConfig["reviewer"] {
-	if (value === undefined) return fallback;
-	if (value === "greptile" || value === "claude") return value;
-	throw new Error(`ship.reviewer must be "greptile" or "claude", got ${JSON.stringify(value)}`);
-}
-
-function mergeShip(ship: Record<string, unknown> | undefined, defaults: ShipConfig): ShipConfig {
-	if (!ship) return defaults;
-	const skills =
-		Array.isArray(ship.skills) && ship.skills.every((s) => typeof s === "string" && s.trim())
-			? (ship.skills as string[]).map((s) => s.trim())
-			: defaults.skills;
-	const owners = Array.isArray(ship.owners)
-		? [
-				...new Set(
-					ship.owners
-						.filter((owner): owner is string => typeof owner === "string")
-						.map((owner) => owner.trim())
-						.filter((owner) => owner !== ""),
-				),
-			]
-		: defaults.owners;
-	return {
-		enabled: typeof ship.enabled === "boolean" ? ship.enabled : defaults.enabled,
-		autoMerge: typeof ship.autoMerge === "boolean" ? ship.autoMerge : defaults.autoMerge,
-		skills,
-		owners,
-		minScore:
-			typeof ship.minScore === "number" &&
-			Number.isFinite(ship.minScore) &&
-			ship.minScore >= 1 &&
-			ship.minScore <= GREPTILE_MAX_SCORE
-				? ship.minScore
-				: defaults.minScore,
-		requireNoComments:
-			typeof ship.requireNoComments === "boolean"
-				? ship.requireNoComments
-				: defaults.requireNoComments,
-		maxRounds: positiveInt(ship.maxRounds, defaults.maxRounds),
-		mergeMethod: MERGE_METHODS.includes(ship.mergeMethod as ShipConfig["mergeMethod"])
-			? (ship.mergeMethod as ShipConfig["mergeMethod"])
-			: defaults.mergeMethod,
-		deleteBranch:
-			typeof ship.deleteBranch === "boolean" ? ship.deleteBranch : defaults.deleteBranch,
-		greptileOrganization:
-			typeof ship.greptileOrganization === "string"
-				? ship.greptileOrganization.trim()
-				: defaults.greptileOrganization,
-		reviewTimeoutMs: positiveInt(ship.reviewTimeoutMs, defaults.reviewTimeoutMs),
-		pollMs: positiveInt(ship.pollMs, defaults.pollMs),
-		waitMs: positiveInt(ship.waitMs, defaults.waitMs),
-		reviewRetries:
-			typeof ship.reviewRetries === "number" &&
-			Number.isFinite(ship.reviewRetries) &&
-			ship.reviewRetries >= 0
-				? Math.floor(ship.reviewRetries)
-				: defaults.reviewRetries,
-		mergeTimeoutMs: positiveInt(ship.mergeTimeoutMs, defaults.mergeTimeoutMs),
-		judge: JUDGE_MODES.includes(ship.judge as JudgeMode)
-			? (ship.judge as JudgeMode)
-			: defaults.judge,
-		reviewer: reviewerField(ship.reviewer, defaults.reviewer),
-	};
-}
-
-/** `"gateway"` is kept. `"direct"` clears it. Anything else keeps the earlier layer. Absent means direct. */
-function backendField(
-	value: unknown,
-	fallback: "direct" | "gateway" | undefined,
-): "gateway" | undefined {
-	if (value === "direct") return undefined;
-	if (value === "gateway") return "gateway";
-	return fallback === "gateway" ? "gateway" : undefined;
-}
-
-/**
- * A project layer (a file a cloned repository controls) never reaches the service target: `url` is where the Substrate
- * bearer token, the repository, the branch and the host name are sent, so only the user layers set it. The same trust
- * rule as `mergeHindsight`; `backend` is user-only for the same reason.
- */
-function mergeSubstrate(
-	substrate: Record<string, unknown> | undefined,
-	defaults: SubstrateConfig,
-	project: boolean,
-): SubstrateConfig {
-	if (!substrate || project) return defaults;
-	const url = httpUrl(substrate.url, defaults.url);
-	const backend = backendField(substrate.backend, defaults.backend);
-	return backend === "gateway" ? { url, backend } : { url };
-}
-
-function mergeGateway(
-	gateway: Record<string, unknown> | undefined,
-	defaults: GatewayConfig,
-	project: boolean,
-): GatewayConfig {
-	if (!gateway || project) return defaults;
-	const seat =
-		typeof gateway.seat === "string" && SEAT_PATTERN.test(gateway.seat)
-			? gateway.seat
-			: defaults.seat;
-	return {
-		url: nonEmpty(gateway.url, defaults.url),
-		seat,
-		timeoutMs: intInRange(gateway.timeoutMs, 1, MAX_SERVICE_TIMEOUT_MS, defaults.timeoutMs),
-	};
-}
-
-/** A finite number in [0, 1]; anything else falls back. */
-function unitInterval(value: unknown, fallback: number): number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
-		? value
-		: fallback;
-}
-
-/** Upper bound for `decisions.timeoutMs`; a larger (or non-finite) value keeps the previous layer's (K4). */
-const MAX_DECISIONS_TIMEOUT_MS = 30_000;
-
-/**
- * Per-field merge; only the fourteen known keys are read, so a layer can never add a URL (D1). `enabled` is ignored in
- * every layer: Jev is always on, and only ULTRATHINK_DECISIONS=0 disables it. `model` is accepted only when it is a Jev
- * model id (the OpenRouter key is Jev's alone); in every layer, project files included, anything else keeps the earlier
- * layer's value. A project layer (a file a cloned repository controls) may only tighten consent (K5): `zdr` false→true and
- * `points` narrowed to the intersection with the lower layers. Of the thresholds, a project layer can only make a gate
- * stricter: `shipVetoAtOrBelow`, `shipApproveAt`, `groundedAt`, `teachableAutoAt` and `skillworthyAt` can only rise, and
- * `blockingAt` can only fall. `planSkipBelow` and `teachableBelow` merge as usual: they decide planning and storage.
- */
-function mergeDecisions(
-	decisions: Record<string, unknown> | undefined,
-	defaults: DecisionsConfig,
-	project: boolean,
-): DecisionsConfig {
-	if (!decisions) return defaults;
-	let points = Array.isArray(decisions.points)
-		? [
-				...new Set(
-					decisions.points.filter((p): p is DecisionPoint =>
-						DECISION_POINTS.includes(p as DecisionPoint),
-					),
-				),
-			]
-		: defaults.points;
-	if (project && points !== defaults.points)
-		points = defaults.points.filter((p) => points.includes(p));
-	const zdr = typeof decisions.zdr === "boolean" ? decisions.zdr : defaults.zdr;
-	return {
-		// Jev is always on: the file value is ignored in every layer; only ULTRATHINK_DECISIONS=0 disables.
-		enabled: true,
-		model:
-			typeof decisions.model === "string" && isJevModelId(decisions.model.trim())
-				? decisions.model.trim()
-				: defaults.model,
-		points,
-		timeoutMs:
-			typeof decisions.timeoutMs === "number" &&
-			Number.isFinite(decisions.timeoutMs) &&
-			decisions.timeoutMs > 0 &&
-			decisions.timeoutMs <= MAX_DECISIONS_TIMEOUT_MS
-				? decisions.timeoutMs
-				: defaults.timeoutMs,
-		zdr: project ? defaults.zdr || zdr : zdr,
-		planSkipBelow: unitInterval(decisions.planSkipBelow, defaults.planSkipBelow),
-		shipVetoAtOrBelow: strictness(
-			project,
-			unitInterval(decisions.shipVetoAtOrBelow, defaults.shipVetoAtOrBelow),
-			defaults.shipVetoAtOrBelow,
-			"higher",
-		),
-		shipApproveAt: strictness(
-			project,
-			unitInterval(decisions.shipApproveAt, defaults.shipApproveAt),
-			defaults.shipApproveAt,
-			"higher",
-		),
-		groundedAt: strictness(
-			project,
-			unitInterval(decisions.groundedAt, defaults.groundedAt),
-			defaults.groundedAt,
-			"higher",
-		),
-		blockingAt: strictness(
-			project,
-			unitInterval(decisions.blockingAt, defaults.blockingAt),
-			defaults.blockingAt,
-			"lower",
-		),
-		teachableBelow: unitInterval(decisions.teachableBelow, defaults.teachableBelow),
-		teachableAutoAt: strictness(
-			project,
-			unitInterval(decisions.teachableAutoAt, defaults.teachableAutoAt),
-			defaults.teachableAutoAt,
-			"higher",
-		),
-		skillworthyAt: strictness(
-			project,
-			unitInterval(decisions.skillworthyAt, defaults.skillworthyAt),
-			defaults.skillworthyAt,
-			"higher",
-		),
-	};
-}
-
-/** An integer in [min, max]; anything else falls back. */
-function intInRange(value: unknown, min: number, max: number, fallback: number): number {
-	return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
-		? value
-		: fallback;
-}
-
-/** A project layer can make a decision threshold stricter than the layer below it, never looser; a user layer sets it freely. */
-function strictness(
-	project: boolean,
-	value: number,
-	base: number,
-	stricter: "higher" | "lower",
-): number {
-	if (!project) return value;
-	return stricter === "higher" ? Math.max(value, base) : Math.min(value, base);
-}
-
-function booleanOr(value: unknown, fallback: boolean): boolean {
-	return typeof value === "boolean" ? value : fallback;
-}
-
-/** Upper bound for the Hindsight and RAGFlow request budgets. */
-const MAX_SERVICE_TIMEOUT_MS = 120_000;
-const HINDSIGHT_BANK = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const MAX_DATASET_IDS = 20;
-
-/**
- * A project layer (a file a cloned repository controls) never reaches the service target or turns anything on: it is
- * ignored apart from `enabled`, which can only go true -> false, so a repository cannot point memory traffic at its own host.
- */
-function mergeHindsight(
-	hindsight: Record<string, unknown> | undefined,
-	defaults: HindsightConfig,
-	project: boolean,
-): HindsightConfig {
-	if (!hindsight) return defaults;
-	const enabled = booleanOr(hindsight.enabled, defaults.enabled);
-	if (project) return { ...defaults, enabled: defaults.enabled && enabled };
-	const backend = backendField(hindsight.backend, defaults.backend);
-	const merged: HindsightConfig = {
-		enabled,
-		url: nonEmpty(hindsight.url, defaults.url),
-		bank:
-			typeof hindsight.bank === "string" && HINDSIGHT_BANK.test(hindsight.bank)
-				? hindsight.bank
-				: defaults.bank,
-		timeoutMs: intInRange(hindsight.timeoutMs, 1, MAX_SERVICE_TIMEOUT_MS, defaults.timeoutMs),
-		retainTimeoutMs: intInRange(
-			hindsight.retainTimeoutMs,
-			1,
-			MAX_SERVICE_TIMEOUT_MS,
-			defaults.retainTimeoutMs,
-		),
-	};
-	if (backend === "gateway") merged.backend = "gateway";
-	return merged;
-}
-
-/** Same trust rule as `mergeHindsight`; `ground` (sends the prompt to RAGFlow) can only be turned off by a project file. */
-function mergeRagflow(
-	ragflow: Record<string, unknown> | undefined,
-	defaults: RagflowConfig,
-	project: boolean,
-): RagflowConfig {
-	if (!ragflow) return defaults;
-	const enabled = booleanOr(ragflow.enabled, defaults.enabled);
-	const ground = booleanOr(ragflow.ground, defaults.ground);
-	if (project)
-		return { ...defaults, enabled: defaults.enabled && enabled, ground: defaults.ground && ground };
-	let datasetIds = defaults.datasetIds;
-	if (Array.isArray(ragflow.datasetIds)) {
-		const ids = ragflow.datasetIds
-			.filter((id): id is string => typeof id === "string" && id.trim() !== "")
-			.map((id) => id.trim());
-		if (ids.length === ragflow.datasetIds.length && ids.length <= MAX_DATASET_IDS)
-			datasetIds = [...new Set(ids)];
-	}
-	const backend = backendField(ragflow.backend, defaults.backend);
-	const merged: RagflowConfig = {
-		enabled,
-		url: nonEmpty(ragflow.url, defaults.url),
-		datasetIds,
-		topK: intInRange(ragflow.topK, 1, 20, defaults.topK),
-		similarityThreshold: unitInterval(ragflow.similarityThreshold, defaults.similarityThreshold),
-		timeoutMs: intInRange(ragflow.timeoutMs, 1, MAX_SERVICE_TIMEOUT_MS, defaults.timeoutMs),
-		ground,
-		groundChars: intInRange(ragflow.groundChars, 500, 8_000, defaults.groundChars),
-	};
-	if (backend === "gateway") merged.backend = "gateway";
-	return merged;
-}
-
-/**
- * A project layer can only turn `enabled`, `recall` and `autoPromote` off and lower `capture` (auto -> observe -> explicit);
- * every other key is ignored there. `CAPTURE_MODES` is ordered lowest first.
- */
-function mergeTeach(
-	teach: Record<string, unknown> | undefined,
-	defaults: TeachConfig,
-	project: boolean,
-): TeachConfig {
-	if (!teach) return defaults;
-	const enabled = booleanOr(teach.enabled, defaults.enabled);
-	const recall = booleanOr(teach.recall, defaults.recall);
-	const autoPromote = booleanOr(teach.autoPromote, defaults.autoPromote);
-	const requested = CAPTURE_MODES.find((mode) => mode === teach.capture);
-	if (project) {
-		const capture: CaptureMode =
-			requested !== undefined &&
-			CAPTURE_MODES.indexOf(requested) < CAPTURE_MODES.indexOf(defaults.capture)
-				? requested
-				: defaults.capture;
-		return {
-			...defaults,
-			enabled: defaults.enabled && enabled,
-			capture,
-			recall: defaults.recall && recall,
-			autoPromote: defaults.autoPromote && autoPromote,
-		};
-	}
-	return {
-		enabled,
-		capture: requested ?? defaults.capture,
-		recall,
-		recallLimit: intInRange(teach.recallLimit, 1, 10, defaults.recallLimit),
-		recallChars: intInRange(teach.recallChars, 500, 8_000, defaults.recallChars),
-		promoteAfter: intInRange(teach.promoteAfter, 2, 20, defaults.promoteAfter),
-		autoPromote,
-		observeMinToolCalls: intInRange(teach.observeMinToolCalls, 0, 50, defaults.observeMinToolCalls),
-		timeoutMs: intInRange(teach.timeoutMs, 500, 30_000, defaults.timeoutMs),
-	};
-}
-
-/**
- * A project layer (a file a cloned repository controls) is ignored entirely: a hostile `retentionDays: 1` would delete
- * the user's history. Only user files can opt in to the scheduled prune.
- */
-function mergeState(
-	state: Record<string, unknown> | undefined,
-	defaults: StateConfig,
-	project: boolean,
-): StateConfig {
-	if (!state || project) return defaults;
-	return { retentionDays: intInRange(state.retentionDays, 0, 3650, defaults.retentionDays) };
-}
-
-/** An absolute path as written (trimmed); blank, relative or wrong-typed values keep the lower layer's. */
-function absolutePathField(value: unknown, fallback: string | undefined): string | undefined {
-	if (typeof value !== "string") return fallback;
-	const trimmed = value.trim();
-	return trimmed && isAbsolute(trimmed) ? trimmed : fallback;
-}
-
-/** The four stages a user mapping may remap; `orchestrate` routes over all of them and is not a mapping key. */
-const PSTACK_MAPPING_STAGES: readonly PstackMappingStage[] = [
-	"discuss",
-	"plan",
-	"execute",
-	"review",
-];
-
-/** A fresh mapping holding only the known stages and only their string entries; everything else is dropped. */
-function pstackMapping(
-	mapping: unknown,
-): Partial<Record<PstackMappingStage, string[]>> | undefined {
-	const record = asRecord(mapping);
-	if (!record) return undefined;
-	const merged: Partial<Record<PstackMappingStage, string[]>> = {};
-	for (const stage of PSTACK_MAPPING_STAGES) {
-		const value = record[stage];
-		if (!Array.isArray(value)) continue;
-		merged[stage] = value.filter((name): name is string => typeof name === "string");
-	}
-	return Object.keys(merged).length ? merged : undefined;
-}
-
-/**
- * The pstack bridge is opt-in and user-only: a project layer (a file a cloned repository controls) is ignored
- * entirely — its `enabled: true` stays the default false, and it can retarget neither cursorDir nor mapping.
- */
-function mergePstack(
-	pstack: Record<string, unknown> | undefined,
-	defaults: PstackConfig,
-	project: boolean,
-): PstackConfig {
-	if (!pstack || project) return defaults;
-	// A later layer replaces only the stages it names. Omitting `mapping`, or naming no valid stage, keeps the earlier map.
-	const mapping = pstackMapping(pstack.mapping);
-	return {
-		enabled: booleanOr(pstack.enabled, defaults.enabled),
-		cursorDir: absolutePathField(pstack.cursorDir, defaults.cursorDir),
-		mapping: mapping ? { ...defaults.mapping, ...mapping } : defaults.mapping,
-		contextCapChars: positiveInt(pstack.contextCapChars, defaults.contextCapChars ?? 2000),
-	};
-}
-
-/**
- * Swarm auto-run is opt-in and user-only: a project layer (a file a cloned repository controls) is ignored
- * entirely, and a non-boolean `autoRun` keeps the lower layer's value.
- */
-function mergeSwarm(
-	swarm: Record<string, unknown> | undefined,
-	defaults: SwarmConfig,
-	project: boolean,
-): SwarmConfig {
-	if (!swarm || project) return defaults;
-	return { autoRun: booleanOr(swarm.autoRun, defaults.autoRun) };
-}
-
-/**
- * Motion settings are user-only: a project layer (a file a cloned repository controls) is ignored entirely. A
- * non-boolean `reducedMotion` keeps the lower layer's value.
- */
-function mergeUi(
-	ui: Record<string, unknown> | undefined,
-	defaults: UiConfig,
-	project: boolean,
-): UiConfig {
-	if (!ui || project) return defaults;
-	return { reducedMotion: booleanOr(ui.reducedMotion, defaults.reducedMotion) };
-}
-
-/**
- * Project layers are repository-controlled, so they may only tighten these sections (default-deny, K5). Each helper
- * lets a project move a key toward the safer side and nothing else. `ship.greptileOrganization` is the one other key a
- * project file fills: only where no earlier file sets it. It names an organization the user's own Greptile account
- * already belongs to, and the repository's code goes to Greptile for review either way. Notion and Linear are user-only
- * (see `mergeConfig`). Think is user-only. `ship.owners` is user-only, so the base list passes through unchanged.
- */
-function tightenShip(ship: Record<string, unknown> | undefined, base: ShipConfig): ShipConfig {
-	if (!ship) return base;
-	const minScore = ship.minScore;
-	return {
-		...base,
-		enabled: ship.enabled === false ? false : base.enabled,
-		autoMerge: ship.autoMerge === false ? false : base.autoMerge,
-		deleteBranch: ship.deleteBranch === false ? false : base.deleteBranch,
-		greptileOrganization:
-			base.greptileOrganization || typeof ship.greptileOrganization !== "string"
-				? base.greptileOrganization
-				: ship.greptileOrganization.trim(),
-		minScore:
-			typeof minScore === "number" &&
-			Number.isFinite(minScore) &&
-			minScore > base.minScore &&
-			minScore <= GREPTILE_MAX_SCORE
-				? minScore
-				: base.minScore,
-	};
-}
-
-function tightenTrack(track: Record<string, unknown> | undefined, base: TrackConfig): TrackConfig {
-	if (!track) return base;
-	return { ...base, enabled: track.enabled === false ? false : base.enabled };
-}
-
-function tightenHitl(hitl: Record<string, unknown> | undefined, base: HitlConfig): HitlConfig {
-	if (!hitl) return base;
-	return {
-		...base,
-		enabled: base.enabled || hitl.enabled === true,
-		knowledgeBase: base.knowledgeBase && hitl.knowledgeBase !== false,
-	};
 }
 
 /** Merges one config layer onto `base`; `project` marks a repository-controlled layer (consent may only tighten, K5). */

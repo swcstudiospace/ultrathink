@@ -6,7 +6,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultConfig, mergeConfig } from "../config.ts";
 import { RetryExhaustedError, unwrapRetryError, withRetry } from "../resilience/retry.ts";
-import { attachReport } from "../types.ts";
+import { attachReport } from "../completion-report.ts";
 import {
 	captureFirstError,
 	engineForSessionModel,

@@ -28,7 +28,7 @@ import { NODE, UPLIFT } from "../../../src/test.helpers.ts";
 import { COT_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT } from "../../../src/think/prompts.ts";
 import { instantThink } from "../../../src/think/test.helpers.ts";
 import { FALLBACK_GRAPH } from "../../../src/think/types.ts";
-import { attachReport, type CompletionReport } from "../../../src/types.ts";
+import { attachReport, type CompletionReport } from "../../../src/completion-report.ts";
 import { UPLIFT_SYSTEM_PROMPT } from "../../../src/uplift/prompt.ts";
 import type { UltrathinkConfig } from "../config/config.ts";
 import { createLedger } from "../cost/ledger.ts";

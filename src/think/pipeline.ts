@@ -12,7 +12,8 @@ import { abortableSleep } from "../resilience/sleep.ts";
 import type { FlightThrottle } from "../resilience/throttle.ts";
 import { isAbortError } from "../shared.ts";
 import { nodeStepTitles } from "../track/plan.ts";
-import { readReport, TRUNCATED_REPLY, type UpliftResult } from "../types.ts";
+import { readReport } from "../completion-report.ts";
+import { TRUNCATED_REPLY, type UpliftResult } from "../types.ts";
 import { escapeXml } from "../uplift/xml.ts";
 import {
 	dependencyLevels,

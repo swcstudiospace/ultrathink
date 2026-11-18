@@ -7,13 +7,12 @@ import { join } from "node:path";
 import {
 	claudeConfigPaths,
 	defaultConfig,
-	hasControlCharacter,
 	loadConfig,
-	MAX_TIMER_MS,
 	mergeConfig,
 	type UltrathinkConfig,
 	userConfigPath,
 } from "./config.ts";
+import { hasControlCharacter, MAX_TIMER_MS } from "./config/fields.ts";
 import type { DecisionsConfig } from "./decisions/types.ts";
 import { DEFAULT_GROK_CONFIG } from "./grok/types.ts";
 import { HOSTS } from "./host/types.ts";

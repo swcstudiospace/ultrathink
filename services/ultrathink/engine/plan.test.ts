@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { type ClaudeCompleteOptions, ClaudeResultError } from "../../../src/claude/complete.ts";
 import type { GrokCompleteOptions } from "../../../src/grok/complete.ts";
 import { ROUTE_DEFAULT_MODELS } from "../../../src/route-defaults.ts";
-import { attachReport, readReport } from "../../../src/types.ts";
+import { attachReport, readReport } from "../../../src/completion-report.ts";
 import {
 	createPlanBackend,
 	PlanCompleterError,

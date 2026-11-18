@@ -41,7 +41,7 @@ import {
 } from "../resilience/retry.ts";
 import type { abortableSleep } from "../resilience/sleep.ts";
 import { isAbortError } from "../shared.ts";
-import { attachReport, readReport } from "../types.ts";
+import { attachReport, readReport } from "../completion-report.ts";
 
 export type Completer = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
 
