@@ -27,7 +27,7 @@ import { type PlanResponse, planPrompt } from "../../../src/host/plan.ts";
 import { redactSecrets } from "../../../src/redact.ts";
 import { isAbortError } from "../../../src/shared.ts";
 import { type CompletionReport, readReport } from "../../../src/types.ts";
-import type { UltrathinkConfig } from "../config/config.ts";
+import { DEFAULT_PLAN_CONCURRENCY, type UltrathinkConfig } from "../config/config.ts";
 import { CeilingError, type Ledger, LedgerWriteError } from "../cost/ledger.ts";
 import { currentRequestContext } from "../obs/context.ts";
 import {
@@ -520,7 +520,7 @@ export function createHeadlessPlanner(opts: HeadlessOptions): HeadlessPlanner {
 			createPlanBackend({
 				model: planModel,
 				fallback: config.planFallback ?? "none",
-				concurrency: config.planConcurrency ?? 2,
+				concurrency: config.planConcurrency ?? DEFAULT_PLAN_CONCURRENCY,
 				timeoutMs: config.modelTimeoutMs,
 				env: opts.env ?? process.env,
 			});

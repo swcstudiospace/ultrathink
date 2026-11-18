@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { PhaseRecord, Run, Store } from "../store/store.ts";
+import { oneLine } from "../engine/text.ts";
 import { fsyncDirectory } from "./durable.ts";
 
 const STATE_FILE = "STATE.md";
@@ -35,10 +36,6 @@ interface DecisionRow {
 	question: string;
 	options: string;
 	default_option: string | null;
-}
-
-function oneLine(value: string): string {
-	return value.replace(/\s+/g, " ").trim();
 }
 
 function isDecisionOption(value: unknown): value is DecisionOption {
