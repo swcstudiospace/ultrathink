@@ -15,6 +15,7 @@ import {
 	type OverrideDecision,
 	PhaseLoopCorruptError,
 	type PhaseName,
+	recordAudit,
 	type RuntimeConnectedCheck,
 	resetPhaseLoopStateForTests,
 	resolve,
@@ -623,5 +624,82 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		const restored = restorePhaseLoop(fileStore(dir), "claude");
 		expect(restored.restored).toBe(true);
 		expect(restored.state.closedBy).toEqual({ kind: "audit", recordId: "audit-1", recordedAt: AT });
+	});
+
+	test("recording an audit again under the same id replaces it, and the record survives a restart", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		recordAudit("claude", { ...PASSING_AUDIT, result: "fail" }, store);
+		expect(recordAudit("claude", PASSING_AUDIT, store).accepted).toBe(true);
+		expect(storedRecord(dir, "claude")?.audits).toEqual([PASSING_AUDIT]);
+		resetPhaseLoopStateForTests();
+		const restored = restorePhaseLoop(fileStore(dir), "claude");
+		expect(restored.state.audits).toEqual([PASSING_AUDIT]);
+		expect(confirmShip("claude", passing(), CONNECTED, fileStore(dir)).accepted).toBe(true);
+	});
+
+	test("an audit with a blank id is refused and writes nothing", () => {
+		const { store, saves } = countingStore(dir);
+		reachVerify("claude", store);
+		const before = saves();
+		expect(recordAudit("claude", { ...PASSING_AUDIT, id: " " }, store).refusals).toEqual([
+			"audit record needs an id",
+		]);
+		expect(saves()).toBe(before);
+		expect(storedRecord(dir, "claude")?.audits).toBeUndefined();
+	});
+
+	test("an accepted override close keeps its decision and reason; a refused one keeps none", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		const refused = confirmShip(
+			"claude",
+			{ afterVerify: true, override: { ...OWNER_OVERRIDE, reason: "" } },
+			CONNECTED,
+			store,
+		);
+		expect(refused.accepted).toBe(false);
+		expect(storedRecord(dir, "claude")?.overrides).toBeUndefined();
+		const closed = confirmShip(
+			"claude",
+			{ afterVerify: true, override: OWNER_OVERRIDE },
+			CONNECTED,
+			store,
+		);
+		expect(closed.accepted).toBe(true);
+		expect(storedRecord(dir, "claude")?.overrides).toEqual([OWNER_OVERRIDE]);
+	});
+
+	test("a done entry records who resolved it and when; a blank resolver is refused", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		open("claude", { id: "h1", owner: "alice" }, store);
+		const blankResolver = resolve(
+			"claude",
+			"h1",
+			{ state: "done", evidenceId: "e1", resolvedBy: " " },
+			store,
+		);
+		expect(blankResolver.refusals).toEqual(["done HTIL entry h1 needs resolvedBy"]);
+		expect(storedRecord(dir, "claude")?.humanItems).toEqual([
+			{ id: "h1", owner: "alice", state: "open" },
+		]);
+		const done = resolve(
+			"claude",
+			"h1",
+			{ state: "done", evidenceId: "e1", resolvedBy: "alice", resolvedAt: AT },
+			store,
+		);
+		expect(done.accepted).toBe(true);
+		expect(storedRecord(dir, "claude")?.humanItems).toEqual([
+			{
+				id: "h1",
+				owner: "alice",
+				state: "done",
+				evidenceId: "e1",
+				resolvedBy: "alice",
+				resolvedAt: AT,
+			},
+		]);
 	});
 });

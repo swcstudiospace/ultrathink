@@ -255,4 +255,41 @@ describe("file phase loop store", () => {
 			expect(store.load("claude").status).toBe("quarantined");
 		}
 	});
+
+	test("audits, overrides, and resolution metadata round trip", () => {
+		const at = "2026-11-17T10:00:00.000Z";
+		const record: PhaseLoopRecord = {
+			...STATE,
+			humanItems: [
+				{
+					id: "h1",
+					owner: "alice",
+					state: "done",
+					evidenceId: "e1",
+					resolvedBy: "alice",
+					resolvedAt: at,
+				},
+			],
+			audits: [{ id: "review:abc", kind: "validation", result: "pass", recordedAt: at }],
+			overrides: [{ decisionId: "override:abc", owner: "alice", decidedAt: at, reason: "ship" }],
+		};
+		fileStore(stateDir).save("claude", record);
+		expect(fileStore(stateDir).load("claude")).toEqual({ status: "found", record });
+	});
+
+	test("malformed audits or overrides quarantine the record", () => {
+		const store = fileStore(stateDir);
+		const at = "2026-11-17T10:00:00.000Z";
+		const malformed: Record<string, unknown>[] = [
+			{ audits: [{ id: "review:abc", kind: "validation", result: "maybe", recordedAt: at }] },
+			{ audits: [{ id: 7, kind: "audit", result: "pass", recordedAt: at }] },
+			{ audits: "none" },
+			{ overrides: [{ decisionId: "d1", owner: "alice", decidedAt: at }] },
+		];
+		for (const fields of malformed) {
+			store.save("claude", STATE);
+			writeFileSync(join(stateDir, nth(recordFiles(), 0)), JSON.stringify({ ...STATE, ...fields }));
+			expect(store.load("claude").status).toBe("quarantined");
+		}
+	});
 });

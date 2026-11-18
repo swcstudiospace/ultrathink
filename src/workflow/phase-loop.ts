@@ -50,11 +50,14 @@ export interface HtilEntry {
 	state: "open" | "done" | "deferred";
 	evidenceId?: string;
 	decisionId?: string;
+	/** Who resolved a done entry, and when (ISO 8601). Set by `resolve` when the caller gives them. */
+	resolvedBy?: string;
+	resolvedAt?: string;
 }
 
 /** How an open HTIL entry leaves the open set. Each resolution needs its record. */
 export type HtilResolution =
-	| { state: "done"; evidenceId: string }
+	| { state: "done"; evidenceId: string; resolvedBy?: string; resolvedAt?: string }
 	| { state: "deferred"; decisionId: string };
 
 /** Outcome of a gated call. A refusal names every reason and changes nothing. */
@@ -83,6 +86,10 @@ export interface PhaseLoopState {
 	humanItems: HtilEntry[];
 	/** The record the accepted close cites (LIFE-02). Absent until a close is accepted. */
 	closedBy?: ClosedBy;
+	/** Every audit or validation result recorded for the loop, by id (LIFE-02). Absent until one is recorded. */
+	audits?: AuditRecord[];
+	/** The owner decisions an accepted close was made on, with their reasons (LIFE-02). Absent until one is accepted. */
+	overrides?: OverrideDecision[];
 }
 
 /** Result of a resume (LIFE-04): what was restored, and whether an unreadable record was set aside. */
@@ -152,6 +159,10 @@ function snapshot(row: PhaseLoopState): PhaseLoopState {
 		operatorConfirmations: row.operatorConfirmations,
 		humanItems: row.humanItems.map((item) => ({ ...item })),
 		...(row.closedBy === undefined ? {} : { closedBy: { ...row.closedBy } }),
+		...(row.audits === undefined ? {} : { audits: row.audits.map((item) => ({ ...item })) }),
+		...(row.overrides === undefined
+			? {}
+			: { overrides: row.overrides.map((item) => ({ ...item })) }),
 	};
 }
 
@@ -239,6 +250,9 @@ function applyShipConfirmation(
 	row.shipStarts = 1;
 	row.operatorConfirmations += 1;
 	row.closedBy = closedBy;
+	if (closedBy.kind === "override" && input.override !== undefined) {
+		row.overrides = [...(row.overrides ?? []), { ...input.override }];
+	}
 	return [];
 }
 
@@ -294,7 +308,8 @@ export function attemptPhase(
  * Record the one operator confirmation, which closes the phase. Ship starts only when that
  * confirmation follows a recorded Verify on a connected runtime, cites a passing audit by id or
  * carries a complete owner override (LIFE-02), and leaves no HTIL entry open (LIFE-05). An
- * accepted close records that audit or override in `closedBy` in the same save. A refused
+ * accepted close records that audit or override in `closedBy` in the same save. An accepted
+ * override is also kept in `overrides` with its reason. A refused
  * confirmation names each reason in `refusals`. A second confirmation after Ship is refused.
  * With a store, state is read from it and an accepted confirmation is committed before return.
  * A quarantined record throws PhaseLoopCorruptError.
@@ -349,13 +364,34 @@ export function resolve(
 		if (entry.state !== "open") return [`HTIL entry ${entryId} is already ${entry.state}`];
 		if (resolution.state === "done") {
 			if (isBlank(resolution.evidenceId)) return [`done HTIL entry ${entryId} needs evidenceId`];
+			if (resolution.resolvedBy !== undefined && isBlank(resolution.resolvedBy)) {
+				return [`done HTIL entry ${entryId} needs resolvedBy`];
+			}
 			entry.state = "done";
 			entry.evidenceId = resolution.evidenceId;
+			if (resolution.resolvedBy !== undefined) entry.resolvedBy = resolution.resolvedBy;
+			if (resolution.resolvedAt !== undefined) entry.resolvedAt = resolution.resolvedAt;
 			return [];
 		}
 		if (isBlank(resolution.decisionId)) return [`deferred HTIL entry ${entryId} needs decisionId`];
 		entry.state = "deferred";
 		entry.decisionId = resolution.decisionId;
+		return [];
+	});
+}
+
+/**
+ * LIFE-02: records one audit or validation result, so a later close can cite it by id. A record with the same id is
+ * replaced, so the latest result for an id is the one a close reads. A blank id is refused.
+ */
+export function recordAudit(
+	runtimeId: string,
+	audit: AuditRecord,
+	store?: PhaseLoopStore,
+): GateOutcome {
+	return transition(runtimeId, store, (row) => {
+		if (isBlank(audit.id)) return ["audit record needs an id"];
+		row.audits = [...(row.audits ?? []).filter((item) => item.id !== audit.id), { ...audit }];
 		return [];
 	});
 }

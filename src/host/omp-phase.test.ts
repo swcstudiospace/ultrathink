@@ -12,9 +12,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { UPLIFT } from "../test.helpers.ts";
 import { TEST_STATE_DIR_PREFIX } from "../test.state-dir.ts";
+import { attemptPhase } from "../workflow/phase-loop.ts";
+import { fileStore } from "../workflow/phase-loop-store.ts";
 import type { OmpPlan, OmpPlanRequest } from "./omp.ts";
+import { killSessionPhases } from "./omp-phase.ts";
 import { flush, setup } from "./omp-test.helpers.ts";
 import type { PlanView } from "./view.ts";
 
@@ -33,6 +37,8 @@ const DISCUSS = "/gsd-discuss-phase";
 const PLAN = "/gsd-plan-phase";
 const EXECUTE = "/gsd-execute-phase";
 const PLAIN = "Refactor the parser so nested tables are handled correctly.";
+const KILL_AT = "2026-11-17T10:00:00.000Z";
+const KILL_FIXTURE = fileURLToPath(new URL("./kill-checkpoint.fixture.ts", import.meta.url));
 
 /** The phase record file of the session: its key is the session id, hex-encoded. */
 const recordPath = (root: string, sessionId = SESSION): string =>
@@ -46,6 +52,16 @@ interface StoredRecord {
 }
 const readRecord = (root: string): StoredRecord =>
 	JSON.parse(readFileSync(recordPath(root), "utf8")) as StoredRecord;
+
+/** Opens one phase loop for the session in the state dir, as an accepted Discuss attempt does. */
+const openLoop = (root: string): void => {
+	attemptPhase(
+		SESSION,
+		{ phase: "Discuss", completeUpliftCount: 1, unansweredBlockingClarifications: 0 },
+		() => true,
+		fileStore(join(root, "phase-loop")),
+	);
+};
 
 /** The model-facing text of a before_agent_start result; undefined when the handler returned nothing. */
 const textOf = (result: unknown): string | undefined => {
@@ -239,5 +255,44 @@ describe("omp phase record", () => {
 		expect(readRecord(root).humanItems).toEqual([
 			{ id: "verification:01-core", owner: "human", state: "open" },
 		]);
+	});
+
+	test("a kill checkpoint writes a kill reason at the given time over an open phase loop", () => {
+		const root = newRoot();
+		openLoop(root);
+		expect(killSessionPhases({ stateDir: root, sessionId: SESSION, at: KILL_AT })).toEqual({
+			kind: "none",
+		});
+		expect(readRecord(root)).toMatchObject({
+			phaseOrder: ["Discuss"],
+			checkpoint: { reason: "kill", at: KILL_AT },
+		});
+	});
+
+	test("a kill with no phase record writes nothing", () => {
+		const root = newRoot();
+		expect(killSessionPhases({ stateDir: root, sessionId: SESSION, at: KILL_AT })).toEqual({
+			kind: "none",
+		});
+		expect(existsSync(join(root, "phase-loop"))).toBe(false);
+	});
+
+	test("SIGTERM to a host process checkpoints its open loop as killed, and the process exits by that signal", async () => {
+		const root = newRoot();
+		openLoop(root);
+		const proc = Bun.spawn([process.execPath, KILL_FIXTURE], {
+			env: {
+				...process.env,
+				ULTRATHINK_KILL_STATE_DIR: root,
+				ULTRATHINK_KILL_SESSION: SESSION,
+				ULTRATHINK_KILL_NOW: String(Date.parse(KILL_AT)),
+			},
+			stdout: "ignore",
+			stderr: "pipe",
+		});
+		const [stderr] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+		expect(proc.signalCode).toBe("SIGTERM");
+		expect(stderr).not.toContain("could not");
+		expect(readRecord(root).checkpoint).toEqual({ reason: "kill", at: KILL_AT });
 	});
 });
