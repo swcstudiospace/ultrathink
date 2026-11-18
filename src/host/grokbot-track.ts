@@ -201,9 +201,48 @@ export interface RealRefs {
 	trackers?: { linear?: boolean; notion?: boolean };
 }
 
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** An absolute http(s) URL: the shape of a Notion page or a Linear issue link. */
+const isHttpUrl = (value: unknown): value is string => {
+	if (typeof value !== "string") return false;
+	try {
+		return /^https?:$/.test(new URL(value).protocol);
+	} catch {
+		return false;
+	}
+};
+
+/** A Linear issue ref with all four IssueRef fields: a real id, identifier and URL, and a string title. */
+const isIssueRef = (value: unknown): value is IssueRef =>
+	isPlainRecord(value) &&
+	typeof value.id === "string" &&
+	value.id !== "" &&
+	typeof value.identifier === "string" &&
+	value.identifier !== "" &&
+	isHttpUrl(value.url) &&
+	typeof value.title === "string";
+
+/** Rejects refs that are not a map of well-formed Linear issue refs and Notion URLs, before any state is read or written. */
+function assertRefShapes(refs: RealRefs): void {
+	const linear: unknown = refs.linear ?? {};
+	const notion: unknown = refs.notion ?? {};
+	if (!isPlainRecord(linear)) throw new Error("refs: linear must map graph keys to issue refs");
+	if (!isPlainRecord(notion)) throw new Error("refs: notion must map graph keys to page URLs");
+	for (const [key, ref] of Object.entries(linear)) {
+		if (!isIssueRef(ref))
+			throw new Error(`refs: linear.${key} must be {id, identifier, url, title}`);
+	}
+	for (const [key, url] of Object.entries(notion)) {
+		if (!isHttpUrl(url)) throw new Error(`refs: notion.${key} must be an http(s) URL`);
+	}
+}
+
 /**
  * Writes real refs into the record's tracking and re-renders the spec, like `ultrathink-mcp track complete`.
  * `lastLock` is the clock and sleep of the wait for a busy last.json lock (tests only; production waits 3 s).
+ * Malformed refs throw before anything is read or written, so a rejected file never reports a status.
  */
 export function recordRefs(
 	statePath: string,
@@ -212,6 +251,7 @@ export function recordRefs(
 	lock?: LockOptions,
 	lastLock?: LastLockOptions,
 ): { tracking: TrackingRefs; todos: string } {
+	assertRefShapes(refs);
 	return withFileLock(
 		statePath,
 		() => {
@@ -245,17 +285,19 @@ export function recordRefs(
 			const notionConfigured = refs.trackers ? refs.trackers.notion === true : true;
 			const linearDone =
 				!linearConfigured ||
-				(plan.linearIssues.every((i) => tracking.linear.nodes[i.nodeId]) &&
-					plan.linearSubIssues.every((s) => tracking.linear.steps[`${s.nodeId}.${s.step}`]));
+				(plan.linearIssues.every((i) => isIssueRef(tracking.linear.nodes[i.nodeId])) &&
+					plan.linearSubIssues.every((s) =>
+						isIssueRef(tracking.linear.steps[`${s.nodeId}.${s.step}`]),
+					));
 			const notionDone =
 				!notionConfigured ||
-				(!!tracking.notion.taskUrl &&
-					plan.issues.every((r) => tracking.notion.nodes[r.nodeId]) &&
-					plan.subIssues.every((r) => tracking.notion.steps[`${r.nodeId}.${r.step}`]));
+				(isHttpUrl(tracking.notion.taskUrl) &&
+					plan.issues.every((r) => isHttpUrl(tracking.notion.nodes[r.nodeId])) &&
+					plan.subIssues.every((r) => isHttpUrl(tracking.notion.steps[`${r.nodeId}.${r.step}`])));
 			const any =
-				Object.keys(tracking.linear.nodes).length +
-				Object.keys(tracking.notion.nodes).length +
-				(tracking.notion.taskUrl ? 1 : 0);
+				Object.values(tracking.linear.nodes).filter(isIssueRef).length +
+				Object.values(tracking.notion.nodes).filter(isHttpUrl).length +
+				(isHttpUrl(tracking.notion.taskUrl) ? 1 : 0);
 			tracking.status = linearDone && notionDone ? "complete" : any > 0 ? "partial" : "failed";
 			record.tracking = tracking;
 			const xml = injectTrackingXml(record.result.xml, plan, tracking);

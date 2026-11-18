@@ -870,7 +870,7 @@ describe("grok-bot teach guard", () => {
 });
 
 describe("grok-bot review read", () => {
-	test("reads the score from the PR description and counts Greptile threads on the head commit", async () => {
+	test("does not take the review score from the PR description, and counts Greptile threads on the head commit", async () => {
 		const root = tmp();
 		const bot = { login: "greptile-apps[bot]" };
 		writeFileSync(
@@ -919,7 +919,8 @@ describe("grok-bot review read", () => {
 			}),
 		);
 		const read = await reviewRead("o/r", "21", dirFetcher(root));
-		expect(read.score).toBe(3);
+		expect(read.score).toBeUndefined();
+		expect(read.scoreSource).toBe("none");
 		expect(read.reviewedHead).toBe(true);
 		expect(read.greptileThreadsTotal).toBe(2);
 		expect(read.greptileThreadsOnHead).toBe(1);
@@ -927,7 +928,6 @@ describe("grok-bot review read", () => {
 			{ name: "Greptile Review", status: "completed", conclusion: "success" },
 		]);
 		expect(read.checkRunsUnavailable).toBe(false);
-		expect(read.scoreSource).toBe("pr-description");
 	});
 
 	test("prefers the current head review score and follows a next page", async () => {
@@ -1381,6 +1381,7 @@ describe("grok-bot answers", () => {
 				n1: {
 					id: "real-linear-id",
 					identifier: "SPE-901",
+					title: "Real linear node",
 					url: "https://linear.app/x/issue/SPE-901",
 				},
 			},
