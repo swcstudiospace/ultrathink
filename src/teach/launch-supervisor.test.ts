@@ -4,7 +4,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { makeTempDir } from "../../services/ultrathink/test.helpers.ts";
-import { supervise, type TimerPort } from "./launch-supervisor.ts";
+import type { TimerPort } from "../shared.ts";
+import { supervise } from "./launch-supervisor.ts";
 import { readRuns } from "./runlog.ts";
 
 const roots: string[] = [];

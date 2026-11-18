@@ -9,7 +9,7 @@ import { accessSync, constants, lstatSync, readdirSync, statSync, type Stats } f
 import { join } from "node:path";
 import { defaultStateDir } from "../claude/state.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
-import { formatBytes } from "../shared.ts";
+import { formatBytes, plural } from "../shared.ts";
 
 const MAX_SESSIONS = 500;
 const MAX_SESSION_BYTES = 100 * 1024 * 1024;
@@ -51,10 +51,6 @@ export function formatAge(ms: number): string {
 	}
 	const days = Math.floor(ms / DAY_MS);
 	return `${days} ${days === 1 ? "day" : "days"}`;
-}
-
-function plural(count: number, noun: string): string {
-	return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 /** Existence, writability, session count and size, loose permissions and orphaned temp or lock files. Never throws. */
