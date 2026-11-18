@@ -25,7 +25,7 @@ import {
 	type RetryPolicy,
 } from "../resilience/retry.ts";
 import type { abortableSleep } from "../resilience/sleep.ts";
-import { isAbortError } from "../shared.ts";
+import { isAbortError, type TimerPort } from "../shared.ts";
 import type { IssueRef, IssueRow, SubIssueRow, TrackingRefs, TrackPlan } from "./types.ts";
 import { nonEmpty } from "../teach/digest.ts";
 
@@ -45,15 +45,9 @@ function trackingMap<T>(entries: Readonly<Record<string, T>> | undefined): Recor
 	return out;
 }
 
-/** Minimal timer port: the platform `setTimeout`/`clearTimeout` by default, or a test double. */
-export type TimerPort = {
-	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
-	clearTimeout(handle: NodeJS.Timeout | undefined): void;
-};
-
 export const platformTimers: TimerPort = {
 	setTimeout: (fn, ms) => setTimeout(fn, ms),
-	clearTimeout: (handle) => clearTimeout(handle),
+	clearTimeout,
 };
 
 export interface CreateTrackingDeps {
@@ -1320,7 +1314,7 @@ async function createNotion(ctx: RunContext, linear: LinearProgress | undefined)
 	// Rows print the Linear links of what Linear has created. Waiting for Linear is bounded: once the grace is spent,
 	// rows go without links instead of waiting on a stuck provider.
 	const grace = Promise.withResolvers<void>();
-	let graceTimer: NodeJS.Timeout | undefined;
+	let graceTimer: unknown;
 	const waitLinear = async (part: keyof LinearProgress): Promise<void> => {
 		if (!linear) return;
 		graceTimer ??= timers.setTimeout(() => grace.resolve(), deps.linkWaitMs ?? LINK_WAIT_MS);

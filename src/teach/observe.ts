@@ -12,6 +12,7 @@ import { buildTeachableState } from "../decisions/questions.ts";
 import { DEFAULT_DECISIONS_CONFIG } from "../decisions/types.ts";
 import { selectEngine } from "../host/engine.ts";
 import { HOSTS, type HostId } from "../host/types.ts";
+import { nowOf } from "../shared.ts";
 import { appendActivity } from "./activity.ts";
 import { captureMoment } from "./capture.ts";
 import {
@@ -320,14 +321,13 @@ export async function observeDigest(
 	ctx: TeachContext,
 	deps: ObserveDeps = {},
 ): Promise<ObserveReport> {
-	const now = ctx.now ?? Date.now;
-	const started = now();
+	const started = nowOf(ctx);
 	const decisionLog: DecisionSummary[] = [];
 	let dropped = 0;
 	let detail: string | undefined;
 	const done = (captured: CaptureOutcome[], skipped?: string): ObserveReport => ({
 		captured,
-		ms: Math.max(0, now() - started),
+		ms: Math.max(0, nowOf(ctx) - started),
 		dropped,
 		decisions: decisionLog,
 		...(skipped ? { skipped } : {}),

@@ -19,6 +19,7 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PanelBody } from "../recall/panel-model.ts";
+import { nowOf } from "../shared.ts";
 import { teachEnabled, tryStore } from "./context.ts";
 import { projectOf } from "./mapping.ts";
 import { CONTENT_MAX_BYTES, markerIds } from "./promote.ts";
@@ -60,10 +61,6 @@ const UNSAFE_PATH = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]|<\//;
 const GENERATED_DIR = "generated-skills";
 /** Score of a keyed match: a positive floor, so a keyed match is recalled whatever its query overlap. */
 const KEYED_SCORE = 1;
-
-function nowOf(ctx: TeachContext): number {
-	return (ctx.now ?? Date.now)();
-}
 
 function asTarget(value: unknown): SkillTarget {
 	return typeof value === "string" && (SKILL_TARGETS as readonly string[]).includes(value)

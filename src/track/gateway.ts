@@ -11,7 +11,8 @@ import { storePath as defaultStorePath } from "../mcp/store.ts";
 import type { ProgressSink } from "../host/progress.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 import { abortableSleep } from "../resilience/sleep.ts";
-import { createTracking, platformTimers, type TimerPort } from "./create.ts";
+import type { TimerPort } from "../shared.ts";
+import { createTracking, platformTimers } from "./create.ts";
 import type { TrackingRefs, TrackPlan } from "./types.ts";
 
 /** A Notion data source id: a UUID, dashed or not. Any other value never reaches a Notion query. */
