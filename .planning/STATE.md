@@ -1,24 +1,24 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.22
-milestone_name: CIMD and MCP stateless revision
-status: complete
-stopped_at: Tab6a v1.23 reconciliation complete (no phase)
-last_updated: "2026-11-17T00:16:31.503Z"
+milestone: v1.24
+milestone_name: Phase lifecycle design and remaining-work decomposition
+status: in_progress
+stopped_at: v1.24 verification refresh for phases 110-113 in progress
+last_updated: "2026-11-18T05:39:59.000Z"
 state_head: 49374976071dbe29b1e3646cb7132905714b048c
 progress:
-  total_phases: 6
-  completed_phases: 29
-  total_plans: 10
-  completed_plans: 9
-  percent: 90
-last_activity: 2026-11-10
+  total_phases: 5
+  completed_phases: 1
+  total_plans: 5
+  completed_plans: 5
+  percent: 20
+last_activity: 2026-11-18
 implementation_head: bab5a83 (local and pushed candidate; not integrated or deployed)
 implementation_branch: gsd/remove-cimd-phases
 implementation_root: /root/src/worktrees/ultrathink-remove-cimd
-current_phase: 108
-current_phase_name: MCP live verification and revision docs
-last_activity_desc: Owner withdrew CIMD and phases 104/105. Local CIMD removal passed 594 focused tests and independent security review; source remains undeployed. Phase 108 local docs are prepared; hosted verification remains pending.
+current_phase: 110
+current_phase_name: Persist and checkpoint the phase loop
+last_activity_desc: "v1.24 active: phase 109 passed; phases 110-113 executed with stale gap records, being re-verified against origin/main 99ce989"
 ---
 
 # Project State
@@ -186,6 +186,8 @@ Resume file: None
 | 74 | verification_deferred_human | /gsd:verify-work 74 |
 | 75 | verification_deferred_human | /gsd:verify-work 75 |
 | 76 | verification_deferred_human | /gsd:verify-work 76 |
+| 110 | verification_deferred_human | /gsd:verify-work 110 |
+| 111 | verification_deferred_human | /gsd:verify-work 111 |
 | 108 | accepted_tech_debt | Owner closed v1.22 on 2026-11-12 without supplying live evidence (MCP-12/MCP-13 unverified against hosted; phase 107 not deployed). Not a verification pass. |
 | 104 | withdrawn | Owner withdrew phase 104 and its former verification gate; historical records are preserved in the withdrawal archive. |
 
@@ -564,7 +566,9 @@ Not verified: a live Omp session end to end.
 Open decisions: (1) ToT PRDs are inert by default. modelPrices is empty and the default CLI state has no observed model, so zero ToT PRDs are written until both are configured. (2) A planner error without a complete uplift holds tool calls until the 600001 ms clock or the next skipped prompt. (3) Main CI on origin/main fails its Test step from two test-side causes (a config budget default and a TOML leading newline across Bun versions); the fix needs a branch from origin/main.
 
 # All parallel waves (n2 Omp gate, n4 ToT+Codeblocked PRDs, n5 model routing, n6 GSD 18 plugin) delivered by sub tasks and narrow verified green (grep states/gate/ToT/PRD/model/18 + task outputs).
+
 # 4 Tab6a todos MARKED DONE on 2026-11-17 verification (bun test src/workflow/phase-loop* src/think/pipeline* src/plugin/inventory* src/track/code-blocked-prd* src/host/omp* ): n2, n4, n5, n6 all green. GraphId threaded to ToT PRDs; 18-inventory exact; <spec graph> + PhaseLoopState; ToT after CoT.
+
 # n7 verify: GoT commands (grep states in omp, ToT in think/track, model in config, 18 in inventory) confirmed present; AC coverage full (US-1-4 + NFRs); todos closed.
 
 # Evidence over plan. All requested items verifiably done. Current example graph: gsd-n6-18-plugin-connection.

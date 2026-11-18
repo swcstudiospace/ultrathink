@@ -54,11 +54,11 @@ Phases 101–108 (107 verified; 108 closed as accepted tech debt), 30 requiremen
 - **JEV-03:** Superseded by PR #77 (the Vercel rail is removed; Decisions run on OpenRouter only). Green live Jev leg needs paid OpenRouter credits: HTTP 402 observed on 2026-10-30.
 - **CONNECTOR-LIVE:** First real Grok Chat and Claude Desktop connection (USER_ACTION_1, VALIDATION_1 in `ultrathink-mcp/BLOCKER_LEDGER.md`); needs the operator's accounts and is not claimed by v1.14.
 - **MCP-2026-07-28:** Serve the stateless revision (`server/discover`, `Mcp-Method`/`Mcp-Name` headers, `resultType`, `ttlMs`/`cacheScope`) if a hosted client stops falling back; delta and prototype in `milestones/v1.14-phases/63-client-protocol-compatibility/evidence/R1-mcp-2026-07-28-findings.md`. Scheduled as v1.22 phases 106 to 108; 107 and 108 are gated on the trigger.
-- **CIMD:** Client ID Metadata Document support to relieve the 10 registrations per hour per IP limit when a hosted client registers on every connect. Scheduled as v1.22 phases 101 to 105.
+- **CIMD:** Client ID Metadata Document support to relieve the 10 registrations per hour per IP limit when a hosted client registers on every connect. Scheduled as v1.22 phases 101 to 105. Withdrawn by owner 2026-11-10; phases 104 and 105 are withdrawn.
 
 ## Active Milestone: v1.24 Phase lifecycle design and remaining-work decomposition
 
-Approved 2026-11-17; phases 109 to 113 complete. Requirements: `.planning/REQUIREMENTS.md`. Drafts: `.planning/v1.24-REQUIREMENTS-DRAFT.md`, `.planning/v1.24-ROADMAP-DRAFT.md`.
+Approved 2026-11-17; phase 109 complete; phases 110 and 111 deferred for owner verification (verification_deferred_human); phases 112 and 113 in gap closure. Requirements: `.planning/REQUIREMENTS.md`. Drafts: `.planning/v1.24-REQUIREMENTS-DRAFT.md`, `.planning/v1.24-ROADMAP-DRAFT.md`.
 
 ### Phase 109: Design the phase lifecycle
 
@@ -71,7 +71,7 @@ Status: Complete (ADR and state-machine spec merged in PR #116, 2026-11-17).
 
 ### Phase 110: Persist and checkpoint the phase loop
 
-Status: Contract merged (PR #117). Verification gaps_found: nothing on a production path calls checkpoint or restore (phases/110/VERIFICATION.md).
+Status: Verified human_needed on 2026-11-18 at origin/main 99ce989. The three in-repo criteria are met on a production path: restore at `src/host/omp.ts:2314` via `restoreSessionPhases`; pause and SIGINT/SIGTERM checkpoints via `installKillCheckpoint` (PR #159). The hard kill is a stated limit (ADR 0001). Deferred: verification_deferred_human, resume with `/gsd:verify-work 110`; the live Omp restart and Ctrl-C checks need the owner.
 
 **Goal:** the phase loop writes its state at every transition and resumes after an interrupt.
 **Requirements:** LIFE-01, LIFE-04.
@@ -80,7 +80,7 @@ Status: Contract merged (PR #117). Verification gaps_found: nothing on a product
 
 ### Phase 111: Audit gate and owner override record
 
-Status: Contract merged (PR #118). Verification gaps_found: nothing on a production path calls the close gate or the HTIL path (phases/111/VERIFICATION.md).
+Status: Verified human_needed on 2026-11-18 at origin/main 99ce989. The three in-repo criteria are met on a production path: the close refusal and owner-override record (PR #162) and HTIL entries. Deferred: verification_deferred_human, resume with `/gsd:verify-work 111`; the owner identity policy and a live HTIL check need the owner, and the milestone-complete gate is in gsd-core.
 
 **Goal:** a phase or milestone cannot close without an audit record; an override needs a recorded owner decision.
 **Requirements:** LIFE-02, LIFE-05.
@@ -89,7 +89,7 @@ Status: Contract merged (PR #118). Verification gaps_found: nothing on a product
 
 ### Phase 112: Single guarded writer for STATE and ROADMAP
 
-Status: Contract merged (PR #119). Verification gaps_found: the concurrency test is sequential, and nothing in this repo calls the writer (phases/112/VERIFICATION.md). The gsd-core writer is out of repo.
+Status: Gap closure in PR #170 (the contract now matches the guarded writer), pending re-verification. Criterion 1 is met by a four-process contention test. The gsd-core writer is out of repo and still needs the same contract.
 
 **Goal:** one guarded writer for STATE.md and ROADMAP.md; concurrent writes fail loudly.
 **Requirements:** LIFE-03.
@@ -98,7 +98,7 @@ Status: Contract merged (PR #119). Verification gaps_found: the concurrency test
 
 ### Phase 113: Decomposition task matrix
 
-Status: Matrix written (.planning/research/V124-TASK-MATRIX.md). Verification gaps_found: 7 items missing pending human decisions, and 6 stale rows from the pre-v1.24 snapshot (phases/113/VERIFICATION.md).
+Status: Matrix written (`docs/roadmap/task-matrix.md`, from `bun run matrix`). Verification gaps_found on 2026-11-18: the generator classified every Backlog bullet as blocked, the header misstated the gitignore state, and some rows copied stale statuses. Gap closure in progress.
 
 **Goal:** a source-grounded task matrix for every remaining phase and Backlog item.
 **Requirements:** DEC-01, DEC-02, DEC-03.

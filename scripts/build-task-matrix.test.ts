@@ -143,6 +143,16 @@ describe("buildTaskMatrix", () => {
 		);
 	});
 
+	test("a backlog bullet beginning 'Superseded by' classifies as closed with no missing input", () => {
+		const roadmap = `${ROADMAP}- **OLD-77:** Superseded by PR #77\n`;
+		const out = buildTaskMatrix({ ...FIXTURE, roadmap });
+		expect(rowsFor(out, "BACKLOG-OLD-77")).toEqual([
+			"| BACKLOG-OLD-77 | backlog | Superseded by PR #77 | backlog | closed | - | - | none | - | - | not in sources | not in sources | R:28 | - |",
+		]);
+		expect(section(out, "Closed")).toContain("- BACKLOG-OLD-77");
+		expect(section(out, "Blocked")).not.toContain("BACKLOG-OLD-77");
+	});
+
 	test("the conflict section names both sources with their line numbers", () => {
 		const roadmap = doc(
 			"### Phase 1: Alpha lifecycle", // 1
