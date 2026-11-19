@@ -96,7 +96,7 @@ describe("recall card with information panels", () => {
 
 		const card = renderRecall(
 			{ content: "recall", details: { moments } },
-			{ expanded: false },
+			{ expanded: true },
 			theme,
 		);
 		if (card === undefined) throw new Error("recall renderer declined the view");
@@ -104,5 +104,73 @@ describe("recall card with information panels", () => {
 
 		expect(text).toContain("Teachable moments");
 		expect(text).toContain("Check the owner before retrying");
+	});
+});
+
+describe("recall card expanded and collapsed (options.expanded)", () => {
+	const moments: PanelEnvelope = {
+		status: "success",
+		items: [
+			{
+				id: "moment-1",
+				title: "Check the owner before retrying",
+				preview: "Look at the owner and mode of the path first.",
+				source: { kind: "lesson", ref: "moment-1" },
+				timestamp: null,
+				matchReason: "error signature match",
+				itemStatus: "returned",
+			},
+		],
+		excluded: [],
+		missing: [],
+		stages: [],
+	};
+	const renderRecall = renderers[RECALL_TYPE] as Renderer;
+	const summary = "Recall: moments success";
+
+	function recallText(expanded: boolean, content: unknown = summary): string {
+		const card = renderRecall({ content, details: { moments } }, { expanded }, theme);
+		if (card === undefined) throw new Error("recall renderer declined the view");
+		return [...card.render(100)].join("\n");
+	}
+
+	test("expanded shows the full panel rows with their text status labels; collapsed shows only the one-line summary", () => {
+		const expanded = recallText(true);
+		const collapsed = recallText(false);
+		expect(expanded).toContain("✓ [SUCCESS] Teachable moments");
+		expect(expanded).toContain("counts: requested 1 · returned 1 · excluded 0 · missing 0");
+		expect(expanded).toContain("Check the owner before retrying");
+		expect(collapsed).toContain(summary);
+		expect(collapsed).not.toContain("Check the owner before retrying");
+		expect(collapsed).not.toContain("counts:");
+		expect(collapsed.length).toBeLessThan(expanded.length);
+	});
+
+	test("collapsed derives its one-line summary from the panel statuses when the content line is absent", () => {
+		expect(recallText(false, "")).toContain("Recall: Teachable moments: success");
+		expect(recallText(false, "Recall:  moments\nsuccess")).toContain("Recall: moments success");
+	});
+
+	test("both states paint through theme tokens and carry no raw hex or rgb colours", () => {
+		for (const text of [recallText(true), recallText(false)]) {
+			expect(text).toContain("<customMessageLabel>");
+			expect(text).toContain("<borderMuted>");
+			expect(text).toContain("<bg:customMessageBg>");
+			expect(text).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+			expect(text).not.toMatch(/rgba?\(/);
+		}
+	});
+
+	test("the recall renderer is static under reduced motion: repeated renders are identical and animation-free", () => {
+		// The host passes no motion input to this renderer, so the card must not depend on the clock either.
+		expect(recallText(true)).toEqual(recallText(true));
+		expect(recallText(false)).toEqual(recallText(false));
+		const card = renderRecall(
+			{ content: summary, details: { moments } },
+			{ expanded: true },
+			theme,
+		);
+		if (card === undefined) throw new Error("recall renderer declined the view");
+		expect([...card.render(100)]).toEqual([...card.render(100)]);
 	});
 });

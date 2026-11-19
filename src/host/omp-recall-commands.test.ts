@@ -229,7 +229,7 @@ describe("/ultrathink-recall and /ultrathink-skills", () => {
 		const renderFn = harness.renderFns.get(RECALL_TYPE);
 		const details = (entry?.message as { details?: unknown } | undefined)?.details;
 		return (width: number) =>
-			renderFn?.({ content: "", details }, { expanded: false }, PLAIN_THEME)?.render(width) ?? [];
+			renderFn?.({ content: "", details }, { expanded: true }, PLAIN_THEME)?.render(width) ?? [];
 	}
 
 	test("the recall card keeps every row within 60 columns and shows the gate_off and knowledge labels", async () => {
