@@ -246,30 +246,76 @@ describe("CompletionGate", () => {
 		expect(gate.complete({ text: plan() }).state).toBe("ready");
 	});
 
-	test("a partial plan blocks release until it is confirmed or partial sync is allowed", () => {
-		const blocked = new CompletionGate({ inactivityMs: 0 });
-		blocked.complete({ text: plan({ nodes: 1 }), expected: FULL });
-		expect(blocked.state).toBe("partial_failure");
-		const refused = blocked.release();
-		expect(refused).toMatchObject({ ok: false, reason: "needs_confirmation" });
-		expect(blocked.released).toBe(false);
-		expect(blocked.release({ confirmPartial: true })).toMatchObject({
-			ok: true,
-			state: "partial_failure",
-		});
-
-		const allowed = new CompletionGate({ inactivityMs: 0, allowPartialSync: true });
-		allowed.complete({ text: plan({ nodes: 1 }), expected: FULL });
-		expect(allowed.release()).toMatchObject({ ok: true, state: "partial_failure" });
+	test("a partial plan never releases, whatever the options", () => {
+		const short = { text: plan({ nodes: 1 }), expected: FULL };
+		for (const options of [
+			{ inactivityMs: 0 },
+			{ inactivityMs: 1_000, timers: fakeClock().timers },
+		]) {
+			const gate = new CompletionGate(options);
+			expect(gate.complete(short).state).toBe("partial_failure");
+			expect(gate.verdict?.problems.map((problem) => problem.code)).toContain("nodes_short");
+			expect(gate.release()).toMatchObject({
+				ok: false,
+				reason: "not_ready",
+				detail: expect.stringContaining("1 of 2 nodes"),
+			});
+			expect(gate.release()).toMatchObject({ ok: false, reason: "not_ready" });
+			expect(gate.released).toBe(false);
+		}
 	});
 
-	test("truncated XML settles failed_or_cancelled and can never be released, even when confirmed", async () => {
-		const gate = new CompletionGate({ inactivityMs: 0, allowPartialSync: true });
+	test("a pending row, a failed PRD or a degraded node never releases, whatever the options", () => {
+		const failedPrd: TotManifest = {
+			total: 1,
+			generated: 0,
+			failed: 1,
+			fallbacks: 0,
+			records: [
+				{
+					key: "n1.1",
+					hash: "h",
+					markdown: "m",
+					status: "failed",
+					model: "m",
+					fallback: false,
+					attempts: 1,
+				},
+			],
+		};
+		const cases = [
+			{ artifacts: { text: plan({ pending: true }), expected: FULL }, code: "rows_pending" },
+			{ artifacts: { text: plan(), expected: FULL, prd: failedPrd }, code: "prds_failed" },
+			{
+				artifacts: {
+					text: plan().replace('<NODE id="n1"', '<NODE degraded="true" id="n1"'),
+					expected: FULL,
+				},
+				code: "nodes_degraded",
+			},
+		];
+		for (const options of [
+			{ inactivityMs: 0 },
+			{ inactivityMs: 1_000, timers: fakeClock().timers },
+		]) {
+			for (const { artifacts, code } of cases) {
+				const gate = new CompletionGate(options);
+				expect(gate.complete(artifacts).state).toBe("partial_failure");
+				expect(gate.verdict?.problems.map((problem) => problem.code)).toContain(code);
+				expect(gate.release()).toMatchObject({ ok: false, reason: "not_ready" });
+				expect(gate.release()).toMatchObject({ ok: false, reason: "not_ready" });
+				expect(gate.released).toBe(false);
+			}
+		}
+	});
+
+	test("truncated XML settles failed_or_cancelled and can never be released", async () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
 		const cut = plan().slice(0, plan().indexOf("</BUILD_PROMPT>"));
 		const outcome = gate.complete({ text: cut, expected: FULL });
 		expect(outcome.state).toBe("failed_or_cancelled");
 		expect(await gate.settled).toMatchObject({ state: "failed_or_cancelled" });
-		expect(gate.release({ confirmPartial: true })).toMatchObject({ ok: false, reason: "failed" });
+		expect(gate.release()).toMatchObject({ ok: false, reason: "failed" });
 		expect(gate.reason).toContain("never closed");
 	});
 
