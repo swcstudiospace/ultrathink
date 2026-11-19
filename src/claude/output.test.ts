@@ -25,6 +25,7 @@ import {
 	formatPromptContext,
 	formatSummary,
 	SKILL_CONTEXT_HEADER,
+	SUB_ISSUE_WORK_ORDER,
 	SUBSTRATE_CONTEXT_HEADER,
 	TRACKING_OFF_NOTE,
 	truncateXml,
@@ -862,6 +863,26 @@ describe("tracking", () => {
 			"stateFile=/s/x.json only to resolve any blocking clarifications and set the Task to Implementing; it must not create rows",
 		);
 		expect(out).not.toContain("/r/bin/ultrathink-mcp");
+	});
+
+	test("the Sub Issue work order sits in the tracked addendum only when tracking rows exist", () => {
+		for (const tracking of [complete, partial]) {
+			const out = formatPromptContext({ result, plan, tracking, statePath: "/s/x.json" });
+			expect(out).toContain(SUB_ISSUE_WORK_ORDER);
+			expect(out).toMatch(/step order/i);
+			expect(out).toMatch(/one at a time/i);
+			expect(out).toMatch(/PRD/);
+			expect(out).toMatch(/clos/i);
+			expect(out).toContain("ultrathink-sync");
+		}
+		const noPlan = formatPromptContext({ result, statePath: "/s/x.json" });
+		expect(noPlan).toContain("## Ultrathink tracking");
+		expect(noPlan).not.toContain(SUB_ISSUE_WORK_ORDER);
+		expect(noPlan).not.toMatch(/step order/i);
+		expect(noPlan).not.toContain("ultrathink-sync");
+		const off = formatPromptContext({ result, plan, trackingOff: true, statePath: "/s/x.json" });
+		expect(off).not.toContain(SUB_ISSUE_WORK_ORDER);
+		expect(formatPromptContext({ result })).not.toContain(SUB_ISSUE_WORK_ORDER);
 	});
 
 	test("partial or absent tracking: kickoff runs the track command first when known", () => {

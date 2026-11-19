@@ -104,6 +104,10 @@ const BOTH_PROVIDERS: TrackerProviders = { linear: true, notion: true };
 export const TRACKING_OFF_NOTE =
 	"Issue tracking is off for this prompt (/ultrathink-track on or configure notion/linear to enable).";
 
+/** Work order for the plan's Sub Issues in the tracked addendum: step order, one at a time, each closed before the next. */
+export const SUB_ISSUE_WORK_ORDER =
+	"Work the plan's Sub Issues in step order, one at a time. Each Sub Issue's PRD in the specification is its specification. Finish one Sub Issue (its change done and its tests passing) before starting the next. When a Sub Issue is finished, close its Notion step row and its Linear sub-issue as the ultrathink-sync skill describes, then move on. Do not start coding before kickoff returns.";
+
 /** Display markers of an unsafe provider or model id (the record's own convention, §9); an unsafe label shows the model one. */
 export const OPAQUE_PROVIDER = "<opaque-provider>";
 export const OPAQUE_MODEL = "<opaque-model>";
@@ -599,7 +603,7 @@ export function formatPromptContext(input: PromptContextInput): string {
 		const body = complete
 			? `The Task, its Graph-of-Thought Issues, and one Sub-Issue per Chain-of-Thought step already exist in ${where} (see Linked issues). Before starting work, invoke ${kickoff} with stateFile=${input.statePath} only to resolve any blocking clarifications and set the Task to Implementing; it must not create rows. Do not start coding before it returns.`
 			: `Tracker rows are incomplete. Before starting work, invoke ${kickoff} with stateFile=${input.statePath}${finish}, then resolves any blocking clarifications and returns the final prompt to execute. Do not start coding before it returns.`;
-		tail.push(["## Ultrathink tracking", "", body].join("\n"));
+		tail.push(["## Ultrathink tracking", "", body, "", SUB_ISSUE_WORK_ORDER].join("\n"));
 	}
 	if (input.ship && input.statePath) {
 		const flow =

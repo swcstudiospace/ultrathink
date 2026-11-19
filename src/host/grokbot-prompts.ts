@@ -7,6 +7,7 @@
  * the synthesize node's WORKFLOW, the clarifications (answers or stated defaults), the verify commands, the mandatory
  * desk rules and at most ten of the unit's own. `validateCloudPrompt` checks well-formedness and content before anything is shown or launched.
  */
+import { SUB_ISSUE_WORK_ORDER } from "../claude/output.ts";
 import type { SessionRecord } from "../claude/state.ts";
 import { nodeStepTitles, splitRationaleSteps } from "../track/plan.ts";
 import type { TrackingRefs } from "../track/types.ts";
@@ -118,6 +119,7 @@ export function buildCloudPrompt(record: SessionRecord, dispatch: UnitDispatch):
 	out.push(`    <QUESTION>${esc(node.question)}</QUESTION>`);
 	out.push(`    <NODE_CONCLUSION>${esc(node.conclusion ?? "")}</NODE_CONCLUSION>`);
 	out.push("    <SUBISSUES>");
+	out.push(`      <WORK_ORDER>${esc(SUB_ISSUE_WORK_ORDER)}</WORK_ORDER>`);
 	steps.forEach((title, index) => {
 		const key = `${node.id}.${index + 1}`;
 		const ref = tracking?.linear.steps[key];

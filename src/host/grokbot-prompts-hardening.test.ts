@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
+import { SUB_ISSUE_WORK_ORDER } from "../claude/output.ts";
 import type { SessionRecord } from "../claude/state.ts";
 import { buildCloudPrompt, type UnitDispatch, validateCloudPrompt } from "./grokbot-prompts.ts";
 
@@ -75,5 +76,14 @@ describe("secret-like text is rejected through the shared redaction shapes", () 
 	test("a prompt without secret shapes raises no secret-like error", () => {
 		const xml = buildCloudPrompt(record(), base);
 		expect(validateCloudPrompt(xml, base, ORIGINAL).errors.join()).not.toMatch(/secret-like/);
+	});
+});
+
+describe("the unit's Sub Issues carry the shared work order", () => {
+	test("the work order sits verbatim in the UNIT SUBISSUES block, once", () => {
+		const xml = buildCloudPrompt(record(), base);
+		const block = xml.slice(xml.indexOf("<SUBISSUES>"), xml.indexOf("</SUBISSUES>"));
+		expect(block).toContain(`<WORK_ORDER>${SUB_ISSUE_WORK_ORDER}</WORK_ORDER>`);
+		expect(xml.split(SUB_ISSUE_WORK_ORDER).length - 1).toBe(1);
 	});
 });
