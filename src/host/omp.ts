@@ -3162,6 +3162,9 @@ export function createOmpExtension(
 				flight.gateWaiting = true;
 				// A quarantine revoked the prior release: a revised Plan may be delivered again.
 				flight.gateAsideDelivered = false;
+				flight.releasedText = undefined;
+				flight.releasedPlan = undefined;
+				flight.deliveredInline = false;
 				return { kind: "hold", text: gate.blocked ? gateWaitingBlocked(gate.blockReason) : GATE_WAITING };
 			}
 			if (gate.state === "plan_validated") {
@@ -3272,6 +3275,10 @@ export function createOmpExtension(
 			if (flight.deliveredInline || flight.gateAsideDelivered) return;
 			if (!current(flight)) return;
 			const delivery = gateDelivery(flight, gate);
+			if (delivery.kind === "notice") {
+				await sendAside(flight, planMessage(delivery.text, flight.view));
+				return;
+			}
 			if (delivery.kind !== "plan") return;
 			if (flight.deliveredInline || flight.gateAsideDelivered) return;
 			flight.gateAsideDelivered = true;
@@ -3451,6 +3458,9 @@ export function createOmpExtension(
 						flight.gateWaiting = true;
 						// A quarantine revoked the prior release: a revised Plan may be delivered again.
 						flight.gateAsideDelivered = false;
+						flight.releasedText = undefined;
+						flight.releasedPlan = undefined;
+						flight.deliveredInline = false;
 						return;
 					}
 					if (progress.state !== "ready" || !flight.gateWaiting) return;
