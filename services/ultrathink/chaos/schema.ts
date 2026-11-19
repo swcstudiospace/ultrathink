@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type FaultPlan, parseFaultPlan } from "./faults.ts";
+import { parseJsonFile } from "./json-file.ts";
 
 /** Closed set. Each mode is covered by exactly one template in `experiments/`. */
 export const FAILURE_MODES = [
@@ -392,15 +393,6 @@ export function parseTemplate(json: unknown, source: string): ExperimentTemplate
 			error.message = `${source}: ${error.message}`;
 		}
 		throw error;
-	}
-}
-
-function parseJsonFile(source: string): unknown {
-	const text = readFileSync(source, "utf8");
-	try {
-		return JSON.parse(text);
-	} catch {
-		throw new SyntaxError(`${source}: not valid JSON`);
 	}
 }
 
