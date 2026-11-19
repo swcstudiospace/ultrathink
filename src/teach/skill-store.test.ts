@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { type AutoSkill, contentHashOf } from "./skill-author.ts";
 import {
 	listGenerated,
+	mergeGeneratedSkillSources,
+	promoteGeneratedSkill,
 	removeGeneratedSkill,
 	setGeneratedStatus,
 	writeGeneratedSkill,
@@ -456,5 +458,113 @@ describe("generated skill store", () => {
 			ok: true,
 			entries: [{ name: SKILL, version: 1 }],
 		});
+	});
+});
+
+describe("mergeGeneratedSkillSources", () => {
+	test("adds each new source once, bumps the version and keeps the content, status and generated_at", async () => {
+		const skill = skillFixture();
+		await writeGeneratedSkill(storeDir, skill, NOW);
+
+		const result = await mergeGeneratedSkillSources(
+			storeDir,
+			SKILL,
+			["moment-2", "moment-2", "moment-1"],
+			LATER,
+		);
+
+		expect(result).toMatchObject({
+			ok: true,
+			changed: true,
+			entry: {
+				version: 2,
+				source_ids: ["moment-1", "moment-2"],
+				status: "draft",
+				generated_at: NOW,
+			},
+			audit: { ok: true },
+		});
+		expect(await manifestSkills()).toMatchObject([
+			{ version: 2, source_ids: ["moment-1", "moment-2"], content_hash: skill.content_hash },
+		]);
+		const text = await skillMd(SKILL);
+		expect(text).toContain("version: 2\n");
+		expect(text).toContain("## Sources\n\n- moment-1\n- moment-2\n");
+		expect(text).toContain(
+			"1. Change the import to import type for symbols that are only types.\n",
+		);
+	});
+
+	test("the rewritten SKILL.md is the file writeGeneratedSkill writes for the merged sources", async () => {
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+		await mergeGeneratedSkillSources(storeDir, SKILL, ["moment-2"], LATER);
+
+		const fresh = join(root, "fresh");
+		await writeGeneratedSkill(
+			fresh,
+			skillFixture({ source_ids: ["moment-1", "moment-2"], version: 2 }),
+			NOW,
+		);
+		expect(await skillMd(SKILL)).toBe(await readFile(join(fresh, SKILL, "SKILL.md"), "utf8"));
+	});
+
+	test("an active skill stays active", async () => {
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+		expect(await promoteGeneratedSkill(storeDir, SKILL, "reviewer")).toMatchObject({
+			ok: true,
+			changed: true,
+		});
+
+		expect(await mergeGeneratedSkillSources(storeDir, SKILL, ["moment-2"], LATER)).toMatchObject({
+			ok: true,
+			changed: true,
+			entry: { status: "active", version: 2 },
+		});
+		expect(await skillMd(SKILL)).toContain("status: active\n");
+	});
+
+	test("a disabled skill stays disabled", async () => {
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+		await setGeneratedStatus(storeDir, SKILL, "disabled");
+
+		await mergeGeneratedSkillSources(storeDir, SKILL, ["moment-2"], LATER);
+
+		expect(await manifestSkills()).toMatchObject([{ status: "disabled", version: 2 }]);
+		expect(await skillMd(SKILL)).toContain("status: disabled\n");
+	});
+
+	test("ids the skill already lists write nothing", async () => {
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+		const manifest = await readFile(join(storeDir, "manifest.json"), "utf8");
+		const audit = await readFile(join(storeDir, "audit.ndjson"), "utf8");
+
+		expect(await mergeGeneratedSkillSources(storeDir, SKILL, ["moment-1"], LATER)).toMatchObject({
+			ok: true,
+			changed: false,
+			entry: { version: 1, source_ids: ["moment-1"] },
+		});
+		expect(await readFile(join(storeDir, "manifest.json"), "utf8")).toBe(manifest);
+		expect(await readFile(join(storeDir, "audit.ndjson"), "utf8")).toBe(audit);
+	});
+
+	test("refuses a missing skill, a user-authored directory and a SKILL.md that no longer matches the manifest", async () => {
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+		expect(
+			await mergeGeneratedSkillSources(storeDir, "missing-skill", ["moment-2"], LATER),
+		).toMatchObject({ ok: false, reason: "not_found" });
+
+		await mkdir(join(storeDir, "hand-written"), { recursive: true });
+		await writeFile(join(storeDir, "hand-written", "SKILL.md"), "# hand-written\n");
+		expect(
+			await mergeGeneratedSkillSources(storeDir, "hand-written", ["moment-2"], LATER),
+		).toMatchObject({ ok: false, reason: "user_authored" });
+
+		const text = await skillMd(SKILL);
+		await writeFile(join(storeDir, SKILL, "SKILL.md"), text.replace("1. Change", "1. Edit"));
+		expect(await mergeGeneratedSkillSources(storeDir, SKILL, ["moment-2"], LATER)).toMatchObject({
+			ok: false,
+			reason: "skill_corrupt",
+		});
+		expect(await manifestSkills()).toMatchObject([{ version: 1, source_ids: ["moment-1"] }]);
 	});
 });

@@ -1350,13 +1350,14 @@ describe("promoteDue authors draft generated skills", () => {
 
 		const dir = join(f.stateDir, "generated-skills");
 		const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
-			skills: Array<{ name: string; status: string; source_ids: string[] }>;
+			skills: Array<{ name: string; status: string; version: number; source_ids: string[] }>;
 		};
 		expect(manifest.skills).toHaveLength(1);
 		const [skill] = manifest.skills;
 		expect(skill?.name).toBe("import-types-with-import-type");
 		expect(skill?.status).toBe("draft");
-		expect([first.id, second.id] as (string | undefined)[]).toContain(skill?.source_ids[0]);
+		expect(skill?.version).toBe(2);
+		expect([...(skill?.source_ids ?? [])].sort()).toEqual([first.id, second.id].sort());
 		expect(readdirSync(dir).sort()).toEqual([
 			"audit.ndjson",
 			"import-types-with-import-type",
@@ -1366,7 +1367,7 @@ describe("promoteDue authors draft generated skills", () => {
 			"status: draft",
 		);
 		const audit = readFileSync(join(dir, "audit.ndjson"), "utf8").trim().split("\n");
-		expect(audit.map((line) => JSON.parse(line).action)).toEqual(["create"]);
+		expect(audit.map((line) => JSON.parse(line).action)).toEqual(["create", "update"]);
 	});
 
 	test("a candidate that fails validation writes no skill and records its reason", async () => {
@@ -1467,5 +1468,157 @@ describe("promoteDue authors draft generated skills", () => {
 		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
 
 		expect(existsSync(join(f.stateDir, "generated-skills"))).toBe(false);
+	});
+
+	/** The audit records the generated store wrote, in order. */
+	function auditOf(f: Fixture): Array<Record<string, unknown>> {
+		return readFileSync(join(f.stateDir, "generated-skills", "audit.ndjson"), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+	}
+
+	/** A draft left on disk by an earlier session: a task type and a scope, and a signature hash no lesson here produces. */
+	function seeded(overrides: Partial<AutoSkill> = {}): AutoSkill {
+		const draft: AutoSkill = {
+			name: "alpha-beta-gamma-epsilon",
+			description: 'Use for pitfall tasks that hit "alpha beta gamma epsilon".',
+			applies_when: {
+				task_types: ["pitfall"],
+				scope_globs: ["src/**"],
+				error_signatures: ["alpha beta gamma epsilon"],
+			},
+			steps: ["Check the config before running the command."],
+			source_ids: ["tm-seeded"],
+			generated_by: "auto",
+			generated_at: RECENT,
+			content_hash: "",
+			version: 1,
+			status: "draft",
+			signature_hash: "1".repeat(32),
+			stale: false,
+			warnings: [],
+			...overrides,
+		};
+		return { ...draft, content_hash: contentHashOf(draft) };
+	}
+
+	test("a second confirmed moment with the same signature updates the existing skill", async () => {
+		const f = fixture();
+		const store = openStore(storeDir(f.stateDir));
+		const ctx = f.ctx({ teach: { autoPromote: true } });
+		const first = moment({ name: "Import types with import type", createdAt: RECENT });
+		store.put(first);
+		await promoteDue(ctx);
+
+		const second = moment({ name: "Import types with import type", createdAt: RECENT });
+		store.put(second);
+		await promoteDue(ctx);
+
+		expect(await listGenerated(join(f.stateDir, "generated-skills"))).toMatchObject({
+			ok: true,
+			entries: [
+				{
+					name: "import-types-with-import-type",
+					status: "draft",
+					version: 2,
+					source_ids: [first.id, second.id],
+				},
+			],
+		});
+		expect(auditOf(f).map((record) => [record.action, record.match_by])).toEqual([
+			["create", undefined],
+			["update", "signature-hash"],
+		]);
+	});
+
+	test("a lesson with another signature, the same task type and a description at 0.6 similarity or more updates the existing skill", async () => {
+		const f = fixture();
+		const dir = join(f.stateDir, "generated-skills");
+		await writeGeneratedSkill(dir, seeded(), RECENT);
+		const lesson = moment({ name: "Alpha beta gamma delta", createdAt: RECENT });
+		openStore(storeDir(f.stateDir)).put(lesson);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		expect(await listGenerated(dir)).toMatchObject({
+			ok: true,
+			entries: [
+				{
+					name: "alpha-beta-gamma-epsilon",
+					version: 2,
+					source_ids: ["tm-seeded", lesson.id],
+				},
+			],
+		});
+		expect(auditOf(f).map((record) => [record.action, record.match_by])).toEqual([
+			["create", undefined],
+			["update", "similarity"],
+		]);
+	});
+
+	test("a dissimilar lesson with the same task type creates a second skill", async () => {
+		const f = fixture();
+		const dir = join(f.stateDir, "generated-skills");
+		await writeGeneratedSkill(dir, seeded(), RECENT);
+		openStore(storeDir(f.stateDir)).put(
+			moment({ name: "Release notes wording", createdAt: RECENT }),
+		);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		const listed = await listGenerated(dir);
+		if (!listed.ok) throw new Error(listed.reason);
+		expect(listed.entries.map((entry) => [entry.name, entry.version])).toEqual([
+			["alpha-beta-gamma-epsilon", 1],
+			["release-notes-wording", 1],
+		]);
+	});
+
+	test("two same-kind lessons with no scope and dissimilar names author two drafts, not one", async () => {
+		const f = fixture();
+		const store = openStore(storeDir(f.stateDir));
+		store.put(moment({ name: "Import types with import type", createdAt: RECENT }));
+		store.put(moment({ name: "Release notes wording", createdAt: RECENT }));
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		const listed = await listGenerated(join(f.stateDir, "generated-skills"));
+		if (!listed.ok) throw new Error(listed.reason);
+		expect(listed.entries.map((entry) => entry.name).sort()).toEqual([
+			"import-types-with-import-type",
+			"release-notes-wording",
+		]);
+		expect(auditOf(f).map((record) => record.action)).toEqual(["create", "create"]);
+	});
+
+	test("a disabled skill stays disabled when a new lesson merges into it", async () => {
+		const f = fixture();
+		const store = openStore(storeDir(f.stateDir));
+		const ctx = f.ctx({ teach: { autoPromote: true } });
+		const dir = join(f.stateDir, "generated-skills");
+		const first = moment({ name: "Import types with import type", createdAt: RECENT });
+		store.put(first);
+		await promoteDue(ctx);
+		await setGeneratedStatus(dir, "import-types-with-import-type", "disabled");
+		const second = moment({ name: "Import types with import type", createdAt: RECENT });
+		store.put(second);
+
+		await promoteDue(ctx);
+
+		expect(await listGenerated(dir)).toMatchObject({
+			ok: true,
+			entries: [
+				{
+					name: "import-types-with-import-type",
+					status: "disabled",
+					version: 2,
+					source_ids: [first.id, second.id],
+				},
+			],
+		});
+		expect(readFileSync(join(dir, "import-types-with-import-type", "SKILL.md"), "utf8")).toContain(
+			"status: disabled\n",
+		);
 	});
 });

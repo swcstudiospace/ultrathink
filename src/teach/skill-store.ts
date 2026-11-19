@@ -29,7 +29,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { withFileLock } from "../claude/atomic.ts";
-import { isRecord } from "../shared.ts";
+import { isRecord, unique } from "../shared.ts";
 import {
 	appendAudit,
 	type AuditOutcome,
@@ -57,19 +57,19 @@ export function generatedStoreDir(stateDir: string): string {
 	return join(stateDir, GENERATED_DIR);
 }
 
-export type GeneratedStatus = AutoSkill["status"];
+export type GeneratedStatus = Exclude<AutoSkill["status"], "active">;
 
 /** Every status a manifest entry may hold. Only the promotion path sets `active`; the general setter refuses it. */
 type ManifestStatus = GeneratedStatus | "active";
 
 /** One generated skill as the manifest records it. */
-interface GeneratedEntry {
+export interface GeneratedEntry {
 	name: string;
 	status: ManifestStatus;
 	generated_by: "auto";
 	version: number;
 	content_hash: string;
-	/** ISO 8601 UTC: the time the store wrote this version. */
+	/** ISO 8601 UTC: the time the store wrote the skill's content. A source merge leaves it as it was. */
 	generated_at: string;
 	source_ids: string[];
 	stale: boolean;
@@ -152,6 +152,43 @@ export async function writeGeneratedSkill(
 			...provenance,
 		});
 		return { ok: true, action, entry, audit };
+	} catch (error) {
+		return failureOf(error);
+	}
+}
+
+/** The outcome of a source merge: a changed entry with its audit record, or no new id to add. */
+type MergeResult =
+	| { ok: true; changed: false; entry: GeneratedEntry }
+	| { ok: true; changed: true; entry: GeneratedEntry; audit: AuditOutcome }
+	| StoreFailure;
+
+/**
+ * Adds `newIds` to the sources of the generated skill `name` and bumps its version. The content, status and
+ * `generated_at` stay as they are: a draft stays a draft, an active skill stays active, a disabled one stays disabled.
+ * An id the skill already lists is not repeated, and when none is new nothing is written. The manifest entry and the
+ * SKILL.md are rewritten through `renderSkill`, the path `writeGeneratedSkill` takes. `nowIso` is the audit time.
+ */
+export async function mergeGeneratedSkillSources(
+	storeDir: string,
+	name: string,
+	newIds: string[],
+	nowIso: string,
+	provenance: WriteProvenance = {},
+): Promise<MergeResult> {
+	try {
+		requireSlug(name);
+		if (!ISO_UTC_RE.test(nowIso)) throw new StoreError("invalid_input", "nowIso is invalid");
+		if (!isSingleLineList(newIds)) throw new StoreError("invalid_input", "source_ids is invalid");
+		const outcome = underManifestLock(storeDir, false, () => mergeSources(storeDir, name, newIds));
+		if (!outcome.changed) return { ok: true, changed: false, entry: outcome.entry };
+		const audit = appendAudit(storeDir, {
+			ts: nowIso,
+			action: "update",
+			...auditFieldsOf(outcome.entry),
+			...provenance,
+		});
+		return { ok: true, changed: true, entry: outcome.entry, audit };
 	} catch (error) {
 		return failureOf(error);
 	}
@@ -302,9 +339,59 @@ function writeSkill(
 
 /** The status a generation writes. A changed skill needs a fresh confirmation before it is active, so a disabled one
  * stays disabled and any other returns to draft. */
-function statusOnWrite(prior: GeneratedEntry | undefined, skill: AutoSkill): GeneratedStatus {
+function statusOnWrite(prior: GeneratedEntry | undefined, skill: AutoSkill): ManifestStatus {
 	if (prior === undefined) return skill.status;
 	return prior.status === "disabled" ? "disabled" : "draft";
+}
+
+/** Adds the ids the skill does not list yet and rewrites its manifest entry and SKILL.md. Nothing is written when none is new. */
+function mergeSources(
+	storeDir: string,
+	name: string,
+	ids: readonly string[],
+): { changed: boolean; entry: GeneratedEntry } {
+	const { entries, prior } = priorEntry(storeDir, name);
+	const source_ids = unique([...prior.source_ids, ...ids]);
+	if (source_ids.length === prior.source_ids.length) return { changed: false, entry: prior };
+	const file = join(storeDir, name, SKILL_FILE);
+	assertRegularFile(file);
+	const content = authoredIn(readFileSync(file, "utf8"), prior);
+	const entry: GeneratedEntry = { ...prior, source_ids, version: prior.version + 1 };
+	writeManifest(storeDir, [...entries.filter((other) => other.name !== name), entry]);
+	writeAtomic(file, renderSkill({ ...content, source_ids }, entry));
+	return { changed: true, entry };
+}
+
+/**
+ * The authored content of a generated skill, read back from its SKILL.md: the steps are the one part the manifest does
+ * not keep. Throws `skill_corrupt` when that content no longer hashes to the manifest's `content_hash`.
+ */
+function authoredIn(
+	text: string,
+	prior: GeneratedEntry,
+): Pick<AutoSkill, "name" | "description" | "applies_when" | "steps"> {
+	const content = {
+		name: prior.name,
+		description: prior.description,
+		applies_when: prior.applies_when,
+		steps: stepsIn(text),
+	};
+	if (contentHashOf(content) !== prior.content_hash) {
+		throw new StoreError("skill_corrupt", "SKILL.md does not match the manifest");
+	}
+	return content;
+}
+
+/** The step lines under `## Steps`, numbers removed: `renderSkill` writes each step as one `N. ` line. */
+function stepsIn(text: string): string[] {
+	const lines = text.split("\n");
+	const start = lines.indexOf("## Steps");
+	if (start === -1) return [];
+	const end = lines.indexOf("## Sources", start + 1);
+	return lines.slice(start + 1, end === -1 ? undefined : end).flatMap((line) => {
+		const step = /^\d+\. (.*)$/.exec(line);
+		return step === null ? [] : [step[1] ?? ""];
+	});
 }
 
 /** The named manifest entry and the manifest it came from. Throws when the name is user-authored or absent. */
@@ -546,7 +633,10 @@ function inputProblem(skill: AutoSkill, nowIso: string): string | undefined {
 	return undefined;
 }
 
-function renderSkill(skill: AutoSkill, entry: GeneratedEntry): string {
+function renderSkill(
+	skill: Pick<AutoSkill, "name" | "description" | "applies_when" | "steps" | "source_ids">,
+	entry: GeneratedEntry,
+): string {
 	const description =
 		PLAIN_SCALAR_RE.test(skill.description) && !/\s$/.test(skill.description)
 			? skill.description
