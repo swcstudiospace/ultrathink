@@ -460,6 +460,13 @@ export const GATE_HOLD =
 export const gateHoldPartial = (detail: string, usable: boolean): string =>
 	`STOP. Ultrathink finished planning but the plan is ${usable ? "incomplete" : "unusable"}: ${detail}. Nothing from it was released, so the session did not start on it. Do not call any tool, edit any file or run any command, and do not act on the request. Tell the user what is missing from the plan and ask them to resend the prompt to plan again, or to run /ultrathink-quick <message> to continue without a plan.`;
 
+/** Gate hold while waiting_for_plan: Ultrathink waits; a late valid Plan auto-resumes and is used automatically. */
+export const GATE_WAITING =
+	"STOP. Ultrathink is waiting for the phase Plan: it is missing, stale, unparseable or failing the checklist (objective, scope, named surfaces, acceptance, out-of-scope, dependencies, ordering, referenced Linear issues, ROADMAP). Do not act yet. Bounded polling is running; when a valid Plan lands it is hashed and used automatically as execution context (no manual restart).";
+/** Gate hold once bounded polling is exhausted (`gate.blocked`): names the block reason; polling has stopped and a valid Plan no longer auto-resumes until reset/manual action. */
+export const gateWaitingBlocked = (blockReason: string): string =>
+	`STOP. Ultrathink is waiting for the phase Plan: it is missing, stale, unparseable or failing the checklist (objective, scope, named surfaces, acceptance, out-of-scope, dependencies, ordering, referenced Linear issues, ROADMAP). Do not act yet. Polling has stopped (blocked): ${blockReason}. A late valid Plan will not be hashed and used automatically; valid Plan auto-resume is unavailable until the gate is reset or you act manually (for example re-send the prompt to plan again).`;
+
 /** The inactivity watchdog ended planning: shown loudly, and the request continues as written. */
 export const gateStalled = (reason: string): string =>
 	`Ultrathink stopped planning: ${reason}. Continue with the user's request as written.`;
@@ -1725,6 +1732,12 @@ export function createOmpExtension(
 			earlyDelivered?: boolean;
 			/** The completion gate guarding this flight; absent when the gate is off, which keeps the old race. */
 			gate?: CompletionGate;
+			/** This flight's gate was seen in `waiting_for_plan`: a later `ready` auto-resumes and delivers the Plan. */
+			gateWaiting?: boolean;
+			/** The gate-released Plan already went (or is going) out as the flight's one aside: the duplicate guard. */
+			gateAsideDelivered?: boolean;
+			/** A late-plan failure notice for this gate cycle was already surfaced. */
+			gateNoticeDelivered?: boolean;
 			/** Tracker rows are expected in the plan (tracking on and a tracker configured when the flight launched). */
 			tracked?: boolean;
 			/** The no-plan or stalled note, or a recovered stored plan, was already delivered for this flight. */
@@ -1745,6 +1758,11 @@ export function createOmpExtension(
 			prd?: PrdOutcome;
 			/** What the gate released for this flight; kept so a host re-run of the same submission gets the same plan. */
 			releasedText?: string;
+			/** Validated identity of the gate-released plan text; kept with `releasedText` for re-delivery. */
+			releasedPlan?: { planId: string; planHash: string };
+			/** Last gate-released plan already delivered to the model/inline, for duplicate suppression after quarantine. */
+			lastDeliveredPlanText?: string;
+			lastDeliveredPlanHash?: string;
 			/** Start order; only the latest flight writes to the bar store. */
 			generation: number;
 			settled: boolean;
@@ -3125,12 +3143,18 @@ export function createOmpExtension(
 		 * `none`: a cancelled flight, which stays silent.
 		 */
 		type GateDelivery =
-			| { kind: "plan"; text: string }
+			| { kind: "plan"; text: string; planId?: string; planHash?: string }
 			| { kind: "hold"; text: string }
 			| { kind: "notice"; text: string }
 			| { kind: "none" };
 		const gateDelivery = (flight: Flight, gate: CompletionGate): GateDelivery => {
-			if (flight.releasedText !== undefined) return { kind: "plan", text: flight.releasedText };
+			if (flight.releasedText !== undefined) {
+				if (flight.releasedPlan && flight.lastDeliveredPlanHash === flight.releasedPlan.planHash)
+					return { kind: "none" };
+				if (!flight.releasedPlan && flight.lastDeliveredPlanText === flight.releasedText)
+					return { kind: "none" };
+				return { kind: "plan", text: flight.releasedText, ...flight.releasedPlan };
+			}
 			if (gate.state === "failed_or_cancelled") {
 				// A plan was produced but is unusable (for example cut off): it is never injected or released.
 				if (gate.verdict) return { kind: "hold", text: gateHoldPartial(gate.reason, false) };
@@ -3144,13 +3168,57 @@ export function createOmpExtension(
 				const missing = (gate.verdict?.problems ?? []).map((problem) => problem.detail).join("; ");
 				return { kind: "hold", text: gateHoldPartial(missing, true) };
 			}
+			if (gate.state === "waiting_for_plan") {
+				// The one-time hold: arm the late auto-resume, so a later `ready` delivers through the aside.
+				flight.gateWaiting = true;
+				// A quarantine revoked the prior release: a revised Plan may be delivered again.
+				flight.gateAsideDelivered = false;
+				flight.gateNoticeDelivered = false;
+				if (flight.releasedText !== undefined) flight.lastDeliveredPlanText = flight.releasedText;
+				if (flight.releasedPlan) flight.lastDeliveredPlanHash = flight.releasedPlan.planHash;
+				flight.releasedText = undefined;
+				flight.releasedPlan = undefined;
+				flight.deliveredInline = false;
+				markPlanDelivered(flight);
+				return {
+					kind: "hold",
+					text: gate.blocked ? gateWaitingBlocked(gate.blockReason) : GATE_WAITING,
+				};
+			}
+			if (gate.state === "plan_validated") {
+				const transitioned = gate.tryTransition("ready", "omp", "auto-use validated plan");
+				if (!transitioned) {
+					const rejected = gate.transitions.at(-1);
+					const detail = rejected
+						? `the plan transition ${rejected.from} -> ${rejected.to} was rejected: ${rejected.reason} (the plan is still ${gate.state})`
+						: `the plan is still ${gate.state}`;
+					return { kind: "notice", text: planFailedNotice(detail) };
+				}
+			}
 			if (gate.state !== "ready")
 				return { kind: "notice", text: planFailedNotice(`the plan is still ${gate.state}`) };
 			const released = gate.release();
 			if (!released.ok) return { kind: "notice", text: planFailedNotice(released.detail) };
-			flight.releasedText = released.text;
-			saveReleased(flight, released.text);
-			return { kind: "plan", text: released.text };
+			// Delivered/saved text is exactly `released.text`: workers re-hash it and
+			// must get `planHash`. The validated identity (`planId`/`planHash`, the
+			// `planRecord()` equivalent) travels alongside the body only: it is
+			// persisted with the stored record and carried on the delivery, never
+			// appended into the plan body, so re-hashing the body still verifies.
+			const text = released.text;
+			const identity = gate.getExecutionContext();
+			if (identity && flight.lastDeliveredPlanHash === identity.planHash) {
+				flight.releasedText = text;
+				flight.releasedPlan = { planId: identity.planId, planHash: identity.planHash };
+				return { kind: "none" };
+			}
+			if (!identity && text === flight.lastDeliveredPlanText) {
+				flight.releasedText = text;
+				return { kind: "none" };
+			}
+			flight.releasedText = text;
+			if (identity) flight.releasedPlan = { planId: identity.planId, planHash: identity.planHash };
+			saveReleased(flight, text, identity ?? undefined);
+			return { kind: "plan", text, ...flight.releasedPlan };
 		};
 
 		/** An aside, or a notice as one: a refused send is warned and shown display-only, so the model and the user both learn of it. */
@@ -3219,6 +3287,36 @@ export function createOmpExtension(
 						: view,
 				() => view,
 			);
+		};
+		/**
+		 * Late valid Plan auto-resume: the gate was held in `waiting_for_plan` and has since reached `ready`.
+		 * Runs the same `gateDelivery` release as `settle` and sends the released text as the one aside.
+		 * `gateAsideDelivered` is set synchronously before the first await, so a repeated `ready` (or a
+		 * `settle`/`gatedMessage` delivery racing this one) cannot send a second aside; `deliveredInline`
+		 * covers a plan that already reached the model inline.
+		 */
+		const deliverLateGatePlan = async (flight: Flight): Promise<void> => {
+			const gate = flight.gate;
+			if (!gate || gate.state !== "ready" || !flight.gateWaiting) return;
+			if (!flight.settled || flight.cancelled || deliberateSkip(flight.skipped)) return;
+			if (flight.deliveredInline || flight.gateAsideDelivered) return;
+			if (!current(flight)) return;
+			const delivery = gateDelivery(flight, gate);
+			if (delivery.kind === "notice") {
+				if (flight.gateNoticeDelivered) return;
+				flight.gateNoticeDelivered = true;
+				await sendAside(flight, planMessage(delivery.text, flight.view));
+				return;
+			}
+			if (delivery.kind !== "plan") return;
+			if (flight.deliveredInline || flight.gateAsideDelivered) return;
+			flight.gateAsideDelivered = true;
+			if (!(await sendAside(flight, planMessage(delivery.text, flight.view)))) {
+				flight.gateAsideDelivered = false;
+				return;
+			}
+			barWrite(flight.generation, () => store.delivered("aside", flight.view, now()));
+			markPlanDelivered(flight);
 		};
 		/** Delivery once the plan settles: only a still-current flight on an unchanged live model shows or sends anything. */
 		const settle = async (flight: Flight, result: OmpPlan): Promise<void> => {
@@ -3304,10 +3402,14 @@ export function createOmpExtension(
 			}
 			// A non-gated plan released to the model is kept durably; the gate saved its own release.
 			if (!gate && flight.content) saveReleased(flight, flight.content);
+			// A late auto-resume already sent this plan as the aside: one aside per flight, never two.
+			if (flight.gateAsideDelivered) return;
+			if (gate && flight.releasedText !== undefined) flight.gateAsideDelivered = true;
 			// The aside is the only delivery of a deferred plan: it reads delivered only once the host took it. A refused
 			// send keeps `flight.content`, so the plan is not lost, and the same submission's next run delivers it inline.
 			if (!(await sendAside(flight, planMessage(body, flight.view)))) {
 				flight.deferred = false;
+				flight.gateAsideDelivered = false;
 				if (flight.content) barWrite(flight.generation, () => store.skipped("aside failed", now()));
 				return;
 			}
@@ -3376,6 +3478,31 @@ export function createOmpExtension(
 							),
 						);
 					},
+				});
+				// Late Plan auto-resume: `onProgress` is the gate's only later effect. A `waiting_for_plan`
+				// arms the flight; a later `ready` delivers the released Plan as the one aside. Deferred to
+				// a microtask so the `ready` emit inside `gateDelivery`'s own transition cannot reenter it.
+				flight.gate.onProgress((progress) => {
+					if (progress.state === "waiting_for_plan") {
+						flight.gateWaiting = true;
+						// A quarantine revoked the prior release: a revised Plan may be delivered again.
+						markPlanDelivered(flight);
+						flight.gateAsideDelivered = false;
+						flight.gateNoticeDelivered = false;
+						if (flight.releasedText !== undefined)
+							flight.lastDeliveredPlanText = flight.releasedText;
+						if (flight.releasedPlan) flight.lastDeliveredPlanHash = flight.releasedPlan.planHash;
+						flight.releasedText = undefined;
+						flight.releasedPlan = undefined;
+						flight.deliveredInline = false;
+						return;
+					}
+					if (progress.state !== "ready" || !flight.gateWaiting) return;
+					void Promise.resolve()
+						.then(() => deliverLateGatePlan(flight))
+						.catch(() => {
+							// reason: a failing late delivery must never break the host; the gate itself already reported the transition
+						});
 				});
 			}
 			// Subscribed before the callback boundary below: cancelling the previous flight runs its abort
@@ -3754,7 +3881,11 @@ export function createOmpExtension(
 						cwd: flight.cwd,
 					});
 		/** Durable copy of a released plan. A store failure never blocks the turn; it is reported as a warning. */
-		const saveReleased = (flight: Flight, text: string): void => {
+		const saveReleased = (
+			flight: Flight,
+			text: string,
+			identity?: { planId: string; planHash: string },
+		): void => {
 			const key = planRecordKey(flight);
 			if (key === undefined) return;
 			try {
@@ -3764,6 +3895,8 @@ export function createOmpExtension(
 					// A record without a `view` key is unreadable and JSON drops undefined, so an absent view is stored as null.
 					view: flight.view ?? null,
 					createdAt: new Date(now()).toISOString(),
+					// The validated identity rides alongside the body; the body itself is never altered.
+					...(identity ? { planId: identity.planId, planHash: identity.planHash } : {}),
 				});
 			} catch (error) {
 				guard(() =>
@@ -3786,7 +3919,13 @@ export function createOmpExtension(
 		type Recovery =
 			| { kind: "none" }
 			| { kind: "warn"; text: string }
-			| { kind: "recovered"; text: string; view: PlanView | undefined };
+			| {
+					kind: "recovered";
+					text: string;
+					view: PlanView | undefined;
+					planId?: string;
+					planHash?: string;
+			  };
 		/**
 		 * The stored copy of a flight's plan, when this session has not delivered it yet. A key this session already
 		 * delivered is refused before any store read; a record written before this instance started is ignored; only a
@@ -3808,6 +3947,8 @@ export function createOmpExtension(
 				kind: "recovered",
 				text: loaded.text,
 				view: isPlanView(loaded.view) ? loaded.view : undefined,
+				...(loaded.planId ? { planId: loaded.planId } : {}),
+				...(loaded.planHash ? { planHash: loaded.planHash } : {}),
 			};
 		};
 		/** One loud note per flight. A stored plan that never reached the model replaces the note, delivered once; a store warning is appended. */
@@ -3816,6 +3957,8 @@ export function createOmpExtension(
 			flight.noticed = true;
 			const recovery = recoverPlan(flight);
 			if (recovery.kind === "recovered") {
+				if (recovery.planId && recovery.planHash)
+					flight.releasedPlan = { planId: recovery.planId, planHash: recovery.planHash };
 				flight.deliveredInline = true;
 				barWrite(flight.generation, () => store.delivered("inline", recovery.view, now()));
 				return { message: planMessage(recovery.text, recovery.view) };
@@ -3833,6 +3976,8 @@ export function createOmpExtension(
 			switch (delivery.kind) {
 				case "plan":
 					flight.deliveredInline = true;
+					// The late auto-resume already sent this plan as the one aside: never repeat it inline.
+					if (flight.gateAsideDelivered) return undefined;
 					barWrite(flight.generation, () => store.delivered("inline", flight.view, now()));
 					markPlanDelivered(flight);
 					return { message: planMessage(delivery.text, flight.view) };

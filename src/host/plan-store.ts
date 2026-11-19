@@ -19,12 +19,16 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { errorCode } from "../claude/atomic.ts";
+import { planGateHash } from "./completion-gate.ts";
 
 export interface StoredPlan {
 	key: string;
 	text: string;
 	view: unknown;
 	createdAt: string;
+	/** Validated identity of the gate-released plan (the gate's `planId`/`planHash`); absent on non-gated or legacy records. */
+	planId?: string;
+	planHash?: string;
 }
 
 // Keys become file names, so only url-safe characters are accepted. planKey output always matches.
@@ -53,6 +57,13 @@ export function planKey(input: {
 
 export function savePlan(stateDir: string, plan: StoredPlan): void {
 	if (!KEY_PATTERN.test(plan.key)) throw new Error("plan key must be url-safe");
+	if ((plan.planId === undefined) !== (plan.planHash === undefined))
+		throw new Error("planId and planHash must be provided together");
+	if (plan.planId !== undefined && plan.planHash !== undefined) {
+		const expectedHash = planGateHash(plan.text);
+		if (plan.planHash !== expectedHash || plan.planId !== `plan-${expectedHash.slice(0, 12)}`)
+			throw new Error("planId and planHash do not match the plan text");
+	}
 	const dir = join(stateDir, "plans");
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	pruneExpired(stateDir, dir, Date.now());
@@ -67,6 +78,8 @@ export function savePlan(stateDir: string, plan: StoredPlan): void {
 		text: plan.text,
 		view: plan.view,
 		createdAt: plan.createdAt,
+		...(plan.planId !== undefined ? { planId: plan.planId } : {}),
+		...(plan.planHash !== undefined ? { planHash: plan.planHash } : {}),
 	});
 	try {
 		writeFileSync(tmpPath, record, { mode: 0o600, flag: "wx" });
@@ -177,5 +190,27 @@ function parseRecord(value: unknown, expectedKey: string): StoredPlan | undefine
 	if (typeof key !== "string" || typeof text !== "string" || typeof createdAt !== "string")
 		return undefined;
 	if (key !== expectedKey || !("view" in value)) return undefined;
-	return { key, text, view: value.view, createdAt };
+	const planId = "planId" in value ? value.planId : undefined;
+	const planHash = "planHash" in value ? value.planHash : undefined;
+	if (
+		(planId !== undefined && typeof planId !== "string") ||
+		(planHash !== undefined && typeof planHash !== "string")
+	)
+		return undefined;
+	// The gate always stores both fields together, so a lone field is not a valid identity.
+	if ((planId !== undefined) !== (planHash !== undefined)) return undefined;
+	if (planId !== undefined && planHash !== undefined) {
+		// Records are untrusted on read: never let a stored identity claim the text is gate-released unless it
+		// actually hashes to that text and the id is derived from the hash.
+		const hash = planGateHash(text);
+		if (planHash !== hash || planId !== `plan-${hash.slice(0, 12)}`) return undefined;
+	}
+	return {
+		key,
+		text,
+		view: value.view,
+		createdAt,
+		...(planId !== undefined ? { planId } : {}),
+		...(planHash !== undefined ? { planHash } : {}),
+	};
 }
