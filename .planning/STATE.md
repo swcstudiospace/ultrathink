@@ -596,10 +596,3 @@ Phases 109 to 113 are approved. Verification by read-only GSD verifiers on 2026-
 
 Correction (2026-11-17, later the same day): the statement "v1.24 has no phases" above is superseded. Phases 109 to 113 were approved; see the active milestone v1.24 block.
 
-## Run record 2026-11-19 (n7 synthesis; no phase status changed)
-
-- Wave 5 n7 synthesized the wave-ordered execution plan in a workspace-only working copy (not reviewable from this PR); roadmap got a one-line active-milestone note. No phase was marked complete and no history was rewritten.
-- Reconciled status (read from archived VERIFICATION.md, not re-verified here): v1.24 109 complete and 113 gaps_found/gap closure; 110-112 human_needed/deferred; phase 114 6/7 with criterion 7 blocked on Notion payment (403); v1.15 68-76 human/external; v1.22 108 closed as accepted tech debt. STATE frontmatter counts unchanged (2 of 5).
-- Wave-ordered execution changes, if present in a workspace, are workspace-only and not reviewable from this PR; no targeted-test existence or result claim is made or proved by this PR. No phase status changed.
-- Any local PRD template, density note, or sync queue in git-ignored `.planning/` is workspace-only and not reviewable from this PR (density stated here: 0/48 = 0.0). Live Linear/Notion writes remain blocked-on-integration per q3; density claim and any "complete" marking await the integration lane.
-- Next: human `/gsd:verify-work 110`, `111`, `112` and the phase-114 criterion-7 check; then commit/ship via `ultrathink-ship` (not run); then live Linear PRD write + Notion round-trip once MCP is approved.

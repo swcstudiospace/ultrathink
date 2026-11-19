@@ -243,11 +243,12 @@ export async function runTot(options: RunTotOptions): Promise<TotManifest> {
 		}
 	};
 
-	// Wave order: group indexes by wave ascending, keeping input order inside each wave. A wave's pool drains fully
-	// before the next wave starts; results stay indexed by input position, so `records` follows the input order.
+	// Wave order only applies when callers use explicit waves. Legacy callers with no
+	// explicit wave keep one shared pool across all step values.
 	const waves = new Map<number, number[]>();
+	const useWaves = requests.some((request) => request.wave !== undefined);
 	for (const [index, request] of requests.entries()) {
-		const wave = waveOf(request);
+		const wave = useWaves ? waveOf(request) : 0;
 		const group = waves.get(wave);
 		if (group === undefined) waves.set(wave, [index]);
 		else group.push(index);

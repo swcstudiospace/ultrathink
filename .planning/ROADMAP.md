@@ -59,7 +59,6 @@ Phases 101–108 (107 verified; 108 closed as accepted tech debt), 30 requiremen
 ## Active Milestone: v1.24 Phase lifecycle design and remaining-work decomposition
 
 Approved 2026-11-17; phase 109 complete; phases 110, 111 and 112 deferred for owner verification (verification_deferred_human); phase 113 in gap closure (PR #171). Requirements: `.planning/REQUIREMENTS.md`. Drafts: `.planning/v1.24-REQUIREMENTS-DRAFT.md`, `.planning/v1.24-ROADMAP-DRAFT.md`.
-- Wave 5 n7 synthesis (workspace-only working copy, not reviewable from this PR): no phase status changed; phase 114 is 6/7 criteria verified with criterion 7 blocked on Notion payment (403); live Linear/Notion writes stay blocked-on-integration (q3). No targeted-test existence or result claim is made or proved by this PR.
 
 ### Phase 109: Design the phase lifecycle
 
