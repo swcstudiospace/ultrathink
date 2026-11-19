@@ -75,9 +75,13 @@ export function userPrompt(
 	limits: PrdLimits,
 	feedback: readonly string[],
 ): string {
+	const edge = (name: "blocked-by" | "blocks", keys: readonly string[] | undefined): string =>
+		keys !== undefined && keys.length > 0
+			? ` ${name}="${escapeText([...new Set(keys)].sort().join(","))}"`
+			: "";
 	const wave = request.wave !== undefined ? ` wave="${escapeText(String(request.wave))}"` : "";
 	const lines = [
-		`<SUB_ISSUE key="${escapeText(request.key)}" graph="${escapeText(request.graphId)}" node="${escapeText(request.nodeId)}" step="${escapeText(String(request.step))}"${wave}>`,
+		`<SUB_ISSUE key="${escapeText(request.key)}" graph="${escapeText(request.graphId)}" node="${escapeText(request.nodeId)}" step="${escapeText(String(request.step))}"${wave}${edge("blocked-by", request.blockedBy)}${edge("blocks", request.blocks)}>`,
 		`<TITLE>${escapeText(request.title)}</TITLE>`,
 		`<THOUGHT>${escapeText(clip(request.thought, MAX_THOUGHT_CHARS).text)}</THOUGHT>`,
 		"</SUB_ISSUE>",

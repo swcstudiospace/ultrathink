@@ -188,6 +188,80 @@ describe("totRequests", () => {
 	});
 });
 
+describe("dependency-ready PRD requests", () => {
+	function dependentPlan(): TrackPlan {
+		const base = plan(2);
+		const n2 = {
+			graphId: "ut-g1",
+			nodeId: "n2",
+			item: "[n2] Step 1: do 1",
+			step: 1,
+			thought: "Second node",
+		};
+		return {
+			...base,
+			issues: [
+				...base.issues,
+				{ graphId: "ut-g1", nodeId: "n2", item: "[n2] Other", thought: "t" },
+			],
+			subIssues: [...base.subIssues, n2],
+			linearIssues: [...base.linearIssues, { nodeId: "n2", title: "Other", description: "d" }],
+			linearSubIssues: [
+				...base.linearSubIssues,
+				{ nodeId: "n2", step: 1, title: "Other — Step 1", description: "Second node" },
+			],
+			dependencies: { n2: ["n1"] },
+		};
+	}
+
+	test("one PRD per Sub Issue, with wave and dependency edges from the plan", () => {
+		const requests = totRequests(dependentPlan());
+		expect(requests.map((r) => r.key)).toEqual(["n1.1", "n1.2", "n2.1"]);
+		const first = requests[0];
+		expect(first).toMatchObject({ wave: 0, blocks: ["n2.1"] });
+		expect(first?.blockedBy).toBeUndefined();
+		expect(requests[2]).toMatchObject({ wave: 1, blockedBy: ["n1.1", "n1.2"] });
+		expect(requests[2]?.blocks).toBeUndefined();
+	});
+
+	test("a failed dependency holds the release: the dependent PRD is never written and the outcome says partial", async () => {
+		const dir = makeDir("ut-tot-stage-");
+		const linear = fakeLinear();
+		const prompts: string[] = [];
+		const dependentRefs: TrackingRefs = {
+			...refs(2),
+			linear: {
+				nodes: {},
+				steps: {
+					...refs(2).linear.steps,
+					"n2.1": {
+						id: "uuid-n2",
+						identifier: "ENG-9",
+						url: "https://linear.app/t/issue/ENG-9",
+						title: "Other",
+					},
+				},
+			},
+		};
+		const outcome = await runTotStage(
+			input(0, seams(linear), dir, {
+				plan: dependentPlan(),
+				tracking: dependentRefs,
+				complete: async (_system: string, user: string) => {
+					prompts.push(user.match(/key="([^"]+)"/)?.[1] ?? "?");
+					if (user.includes('key="n1.1"')) throw new Error("simulated generation failure");
+					return draft();
+				},
+			}),
+		);
+		expect(prompts).not.toContain("n2.1");
+		expect(outcome.manifest).toMatchObject({ total: 3, generated: 1, failed: 1 });
+		expect(outcome.error).toContain("PRD_PARTIAL");
+		expect(outcome.sync.failed).toBeGreaterThan(0);
+		expect(linear.descriptions.has("ENG-9")).toBe(false);
+	});
+});
+
 describe("totEnabled", () => {
 	test("on unless think.tot.enabled is explicitly false", () => {
 		const base = defaultConfig();

@@ -217,13 +217,24 @@ function overrideComplete(override: OverrideDecision): boolean {
 }
 
 /**
- * LIFE-02: the record a close is recorded against: a passing audit whose id the call cites, or a
- * complete owner override. Undefined when neither holds.
+ * LIFE-02: the record a close is recorded against: a passing audit whose id the call cites AND that
+ * was previously recorded in the loop's audit ledger (recordAudit), exactly as recorded, or a complete
+ * owner override. An audit that was never recorded, that was re-recorded as a fail, or whose presented
+ * snapshot differs from the recorded one (kind/recordedAt) is missing or stale and never closes.
+ * Undefined when neither holds.
  */
-function closeRecord(input: ShipConfirmationInput): ClosedBy | undefined {
+function closeRecord(row: PhaseLoopState, input: ShipConfirmationInput): ClosedBy | undefined {
 	const { audit, auditId, override } = input;
 	if (audit !== undefined && audit.result === "pass" && audit.id === auditId) {
-		return { kind: audit.kind, recordId: audit.id, recordedAt: audit.recordedAt };
+		const stored = row.audits?.find((item) => item.id === audit.id);
+		if (
+			stored !== undefined &&
+			stored.result === "pass" &&
+			stored.kind === audit.kind &&
+			stored.recordedAt === audit.recordedAt
+		) {
+			return { kind: stored.kind, recordId: stored.id, recordedAt: stored.recordedAt };
+		}
 	}
 	if (override !== undefined && overrideComplete(override)) {
 		return { kind: "override", recordId: override.decisionId, recordedAt: override.decidedAt };
@@ -232,13 +243,22 @@ function closeRecord(input: ShipConfirmationInput): ClosedBy | undefined {
 }
 
 /** The reasons a close with no record is refused. Call only when closeRecord is undefined. */
-function closeRefusals(input: ShipConfirmationInput): string[] {
+function closeRefusals(row: PhaseLoopState, input: ShipConfirmationInput): string[] {
 	const { audit, auditId, override } = input;
 	const refusals = ["no passing audit or override"];
 	if (audit !== undefined && audit.id !== auditId) {
 		refusals.push(`audit ${audit.id} does not match cited ${auditId ?? "(none)"}`);
 	} else if (audit !== undefined && audit.result !== "pass") {
 		refusals.push(`audit ${audit.id} did not pass`);
+	} else if (audit !== undefined) {
+		const stored = row.audits?.find((item) => item.id === audit.id);
+		if (stored === undefined) {
+			refusals.push(`audit ${audit.id} is not recorded`);
+		} else if (stored.result !== "pass") {
+			refusals.push(`audit ${audit.id} did not pass`);
+		} else if (stored.kind !== audit.kind || stored.recordedAt !== audit.recordedAt) {
+			refusals.push(`audit ${audit.id} is stale; it does not match the recorded audit`);
+		}
 	}
 	if (override !== undefined) refusals.push("override is missing an owner decision field");
 	return refusals;
@@ -260,8 +280,8 @@ function applyShipConfirmation(
 		refusals.push("Verify is not the last recorded phase");
 	}
 	if (!isConnected(runtimeId)) refusals.push("runtime is not connected");
-	const closedBy = closeRecord(input);
-	if (closedBy === undefined) refusals.push(...closeRefusals(input));
+	const closedBy = closeRecord(row, input);
+	if (closedBy === undefined) refusals.push(...closeRefusals(row, input));
 	for (const item of row.humanItems) {
 		if (item.state === "open") refusals.push(`open HTIL entry ${item.id}`);
 	}
@@ -328,7 +348,9 @@ export function attemptPhase(
 
 /**
  * Record the one operator confirmation, which closes the phase. Ship starts only when that
- * confirmation follows a recorded Verify on a connected runtime, cites a passing audit by id or
+ * confirmation follows a recorded Verify (the current phase) on a connected runtime, cites by id an
+ * audit that was previously recorded in the loop's ledger and still passes exactly as recorded
+ * (a missing, re-recorded-fail, or snapshot-mismatched audit is refused as missing/stale), or
  * carries a complete owner override (LIFE-02), and leaves no HTIL entry open (LIFE-05). An
  * accepted close records that audit or override in `closedBy` in the same save. An accepted
  * override is also kept in `overrides` with its reason. A refused

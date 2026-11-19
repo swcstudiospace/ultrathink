@@ -28,6 +28,7 @@ import type { Clarification } from "../hitl/types.ts";
 import { FlightThrottle } from "../resilience/throttle.ts";
 import { injectGraphXml, isFallbackGraph } from "../think/graph.ts";
 import { type RunThinkOptions, runThink, type ThinkResult } from "../think/pipeline.ts";
+import { totHoldReason } from "./hook-tot.ts";
 import {
 	injectPrdXml,
 	type PrdOutcome,
@@ -2007,11 +2008,12 @@ export async function runPromptSubmit(
 				throwIfCancelled(cancellation);
 				const placed = injectPrdXml(result.xml, prd);
 				result = { ...result, xml: placed.xml };
-				if (placed.unplaced.length > 0) {
+				const hold = totHoldReason(prd, placed.unplaced);
+				if (hold !== undefined) {
 					prd = {
 						...prd,
 						sync: { ...prd.sync, failed: prd.sync.failed + placed.unplaced.length },
-						error: `no Sub Issue in the specification for ${placed.unplaced.join(", ")}`,
+						error: prd.error ?? hold,
 					};
 				}
 				const settled =

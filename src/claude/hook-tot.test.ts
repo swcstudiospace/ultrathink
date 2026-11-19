@@ -14,6 +14,7 @@ import { graphJson, UPLIFT } from "../test.helpers.ts";
 import type { PrdOutcome, TotSeams } from "../think/tot/stage.ts";
 import type { ToolCaller } from "../track/create.ts";
 import type { Tracker } from "../track/gateway.ts";
+import { totHoldReason } from "./hook-tot.ts";
 import type { IssueRef, TrackingRefs, TrackPlan } from "../track/types.ts";
 import type { ClaudeCompleter } from "./complete.ts";
 import {
@@ -48,6 +49,10 @@ function planner(): (system: string, user: string) => Promise<string> {
 			const steps = Array.from({ length: stepsOf(id) }, (_, i) => `${i + 1}. ${id} step ${i + 1}`);
 			return `<node><rationale>${steps.join(" ")}</rationale><conclusion>c ${id}</conclusion></node>`;
 		}
+		// An edge-free plan cannot be made from the graph this returns: normalizeGraph re-adds the
+		// synthesis fan-in (the last node ends up depending on every leaf) after the graph is built,
+		// so the strip this scenario needs lands on the stage-facing plan in the tracker below
+		// instead. Here the graph only has to parse to eight nodes with distinct ids.
 		return graphJson(NODES);
 	};
 }
@@ -145,6 +150,12 @@ function world(
 		healed: false,
 	};
 	const tracker: Tracker = async ({ plan }) => {
+		// This scenario needs one isolated failure with the other 49 PRDs placed, so the plan the
+		// stage reads is edge-free. The planner's strip cannot deliver that: normalizeGraph re-adds
+		// the synthesis fan-in after the graph is built, and the tracker's plan is the object the
+		// hook later hands to the ToT stage, so the strip lands here. Without it the last node's
+		// PRDs are held behind the failed 37th instead of the failure staying isolated.
+		delete plan.dependencies;
 		// The 37th Sub Issue is the one whose PRD fails to generate.
 		state.failKey ??= (() => {
 			const sub = plan.subIssues[36];
@@ -280,4 +291,32 @@ describe("Tree-of-Thought stage through the hook and the gate", () => {
 		expect(result.prd).toBeUndefined();
 		expect(w.asked).toEqual([]);
 	}, 60_000);
+});
+
+describe("totHoldReason: unmatched keys and partial plans hold the release", () => {
+	function outcome(total: number, generated: number, error?: string): PrdOutcome {
+		return {
+			manifest: { total, generated, failed: total - generated, fallbacks: 0, records: [] },
+			sync: { total, synced: generated, pending: 0, failed: total - generated },
+			model: { modelId: "m-1", provider: "x", source: "selected", reason: "r" },
+			...(error ? { error } : {}),
+		};
+	}
+
+	test("a fully placed plan has no hold", () => {
+		expect(totHoldReason(outcome(3, 3), [])).toBeUndefined();
+	});
+
+	test("an unmatched PRD key holds the release", () => {
+		expect(totHoldReason(outcome(3, 3), ["n9.1"])).toBe(
+			"no Sub Issue in the specification for n9.1",
+		);
+	});
+
+	test("a missing PRD holds the release, keeping the stage error when it names the gap", () => {
+		expect(totHoldReason(outcome(3, 2), [])).toBe("PRD_PARTIAL: 2 of 3 PRDs generated");
+		expect(totHoldReason(outcome(3, 2, "PRD_PARTIAL: 2 of 3 PRDs generated"), [])).toBe(
+			"PRD_PARTIAL: 2 of 3 PRDs generated",
+		);
+	});
 });

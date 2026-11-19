@@ -248,6 +248,29 @@ describe("omp phase record", () => {
 		expect(restored).toContain("Discuss, Plan, Execute");
 	});
 
+	test("after a restore, the host resumes at the next phase instead of re-recording the restored one", async () => {
+		const root = newRoot();
+		const first = setup(planner(), 1_000, { stateDir: root });
+		await discussAndPlan(first.run);
+		await first.run(EXECUTE);
+		await flush();
+		first.emit("session_shutdown");
+		expect(readRecord(root).checkpoint?.reason).toBe("pause");
+
+		const second = setup(planner(), 1_000, { stateDir: root });
+		second.emit("session_start");
+		// The restored loop's next phase is Verify: a repeated Execute is refused without a write,
+		// and the Verify prompt records Verify on the same stored record.
+		await second.run(EXECUTE);
+		await flush();
+		expect(readRecord(root).phaseOrder).toEqual(["Discuss", "Plan", "Execute"]);
+		await second.run("/gsd-verify-work");
+		await flush();
+		const record = readRecord(root);
+		expect(record.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify"]);
+		expect(record.checkpoint).toBeUndefined();
+	});
+
 	test("a bare VERIFICATION.md opens one HTIL entry, for the human_needed phase and not the passed one", async () => {
 		const root = newRoot();
 		const project = newRoot();

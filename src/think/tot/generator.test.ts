@@ -257,4 +257,15 @@ describe("userPrompt", () => {
 		expect(prompt).toContain('wave="1&quot;&gt;&lt;TITLE&gt;injected"');
 		expect(prompt).not.toContain('wave="1"><TITLE>');
 	});
+	test("emits sorted dependency edges as escaped attributes", () => {
+		const prompt = userPrompt(
+			{ ...request, blockedBy: ["n0.2", "n0.1"], blocks: ["n2.1"] },
+			DEFAULT_PRD_LIMITS,
+			[],
+		);
+		expect(prompt).toContain('blocked-by="n0.1,n0.2"');
+		expect(prompt).toContain('blocks="n2.1"');
+		const none = userPrompt({ ...request, blockedBy: [], blocks: [] }, DEFAULT_PRD_LIMITS, []);
+		expect(none).not.toContain("blocked-by");
+	});
 });

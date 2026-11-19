@@ -118,6 +118,22 @@ describe("buildTrackPlan", () => {
 			},
 		]);
 	});
+	test("GoT dependsOn edges are published as plan dependencies; unknown ids never become edges", () => {
+		const plan = buildTrackPlan({ uplift, graph, clarifications: [], graphId: "ut-fixed" });
+		expect(plan.dependencies).toEqual({ n2: ["n1"] });
+		const dangling = buildTrackPlan({
+			uplift,
+			graph: {
+				goal: "g",
+				nodes: [
+					{ id: "n1", title: "T", kind: "understand", question: "Q", dependsOn: ["ghost", "n1"] },
+				],
+			},
+			clarifications: [],
+			graphId: "ut-fixed",
+		});
+		expect(dangling.dependencies).toBeUndefined();
+	});
 
 	test("no graph: Task only, empty Issue/Sub-Issue/Linear arrays", () => {
 		const plan = buildTrackPlan({ uplift, clarifications: [], graphId: "ut-fixed" });

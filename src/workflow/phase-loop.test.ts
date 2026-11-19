@@ -39,6 +39,10 @@ const OWNER_OVERRIDE: OverrideDecision = {
 function passing(): ShipConfirmationInput {
 	return { afterVerify: true, audit: PASSING_AUDIT, auditId: PASSING_AUDIT.id };
 }
+/** Records the passing audit in the loop's ledger, so a close citing it is not missing. */
+function recordPassing(runtimeId: string, store?: PhaseLoopStore): void {
+	recordAudit(runtimeId, PASSING_AUDIT, store);
+}
 
 /** Returns values[index]; throws when it is missing, so an indexed read stays a string. */
 function nth(values: readonly string[], index: number): string {
@@ -108,6 +112,7 @@ describe("phase loop", () => {
 
 	test("AC-20 one confirmation after Verify with a passing audit => shipStarts 1", () => {
 		const runtimeId = "hermes";
+		recordPassing(runtimeId);
 		expect(confirmShip(runtimeId, passing(), CONNECTED).state.shipStarts).toBe(0);
 		through(runtimeId, "Discuss");
 		through(runtimeId, "Plan");
@@ -271,6 +276,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		expect(restored.state.executeStarts).toBe(1);
 		expect(restored.state.shipStarts).toBe(0);
 		expect(restored.state.operatorConfirmations).toBe(0);
+		recordPassing("claude", fileStore(dir));
 		const shipped = confirmShip("claude", passing(), CONNECTED, fileStore(dir)).state;
 		expect(shipped.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify", "Ship"]);
 		expect(shipped.shipStarts).toBe(1);
@@ -414,6 +420,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 	test("a passing audit with a matching id accepts the close, and a second close is refused", () => {
 		const { store, saves } = countingStore(dir);
 		reachVerify("claude", store);
+		recordPassing("claude", store);
 		const closed = confirmShip("claude", passing(), CONNECTED, store);
 		expect(closed.accepted).toBe(true);
 		expect(closed.refusals).toEqual([]);
@@ -443,6 +450,48 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		]);
 	});
 
+	test("a passing audit that was never recorded refuses the close and writes nothing", () => {
+		const { store, saves } = countingStore(dir);
+		reachVerify("claude", store);
+		const before = saves();
+		const refused = confirmShip("claude", passing(), CONNECTED, store);
+		expect(refused.accepted).toBe(false);
+		expect(refused.refusals).toEqual([
+			"no passing audit or override",
+			"audit audit-1 is not recorded",
+		]);
+		expect(refused.state.phaseOrder).not.toContain("Ship");
+		expect(saves()).toBe(before);
+		expect(storedRecord(dir, "claude")?.audits).toBeUndefined();
+	});
+
+	test("a recorded audit re-recorded as a fail is stale and refuses a close citing the old pass", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		recordPassing("claude", store);
+		recordAudit("claude", { ...PASSING_AUDIT, result: "fail" }, store);
+		const refused = confirmShip("claude", passing(), CONNECTED, store);
+		expect(refused.accepted).toBe(false);
+		expect(refused.refusals).toEqual([
+			"no passing audit or override",
+			"audit audit-1 did not pass",
+		]);
+		expect(refused.state.phaseOrder).not.toContain("Ship");
+	});
+
+	test("a presented audit that differs from the recorded one is stale and refuses the close", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		recordAudit("claude", { ...PASSING_AUDIT, recordedAt: "2026-11-18T10:00:00.000Z" }, store);
+		const refused = confirmShip("claude", passing(), CONNECTED, store);
+		expect(refused.accepted).toBe(false);
+		expect(refused.refusals).toEqual([
+			"no passing audit or override",
+			"audit audit-1 is stale; it does not match the recorded audit",
+		]);
+		expect(refused.state.phaseOrder).not.toContain("Ship");
+	});
+
 	test("an override needs a complete owner decision; a complete one closes without an audit", () => {
 		const { store } = countingStore(dir);
 		reachVerify("claude", store);
@@ -470,6 +519,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 	test("an open HTIL entry blocks the close and the refusal names its id", () => {
 		const { store } = countingStore(dir);
 		reachVerify("claude", store);
+		recordPassing("claude", store);
 		expect(open("claude", { id: "h1", owner: "alice" }, store).accepted).toBe(true);
 		const blocked = confirmShip("claude", passing(), CONNECTED, store);
 		expect(blocked.accepted).toBe(false);
@@ -497,6 +547,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 	test("a deferred entry with a decisionId lets the close pass", () => {
 		const { store } = countingStore(dir);
 		reachVerify("claude", store);
+		recordPassing("claude", store);
 		open("claude", { id: "h1", owner: "alice" }, store);
 		const deferred = resolve(
 			"claude",
@@ -516,6 +567,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 	test("a deferred entry without a decisionId is refused and stays open", () => {
 		const { store } = countingStore(dir);
 		reachVerify("claude", store);
+		recordPassing("claude", store);
 		open("claude", { id: "h1", owner: "alice" }, store);
 		const refused = resolve("claude", "h1", { state: "deferred", decisionId: "" }, store);
 		expect(refused.accepted).toBe(false);
@@ -529,6 +581,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 	test("a done entry needs evidenceId, is resolved only once, and then closes", () => {
 		const { store } = countingStore(dir);
 		reachVerify("claude", store);
+		recordPassing("claude", store);
 		open("claude", { id: "h1", owner: "alice" }, store);
 		expect(resolve("claude", "h1", { state: "done", evidenceId: " " }, store).refusals).toEqual([
 			"done HTIL entry h1 needs evidenceId",
@@ -557,6 +610,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		expect(restored.state.humanItems).toEqual([
 			{ id: "h1", owner: "alice", state: "done", evidenceId: "e1" },
 		]);
+		recordPassing("claude", fileStore(dir));
 		expect(confirmShip("claude", passing(), CONNECTED, fileStore(dir)).accepted).toBe(true);
 	});
 
@@ -596,6 +650,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 	test("an accepted audit close sets closedBy with kind audit and the audit's id", () => {
 		const { store } = countingStore(dir);
 		reachVerify("claude", store);
+		recordPassing("claude", store);
 		const closed = confirmShip("claude", passing(), CONNECTED, store);
 		expect(closed.accepted).toBe(true);
 		expect(closed.state.closedBy).toEqual({ kind: "audit", recordId: "audit-1", recordedAt: AT });
@@ -631,6 +686,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 	test("closedBy survives a restart", () => {
 		const { store } = countingStore(dir);
 		reachVerify("claude", store);
+		recordPassing("claude", store);
 		confirmShip("claude", passing(), CONNECTED, store);
 		resetPhaseLoopStateForTests();
 		const restored = restorePhaseLoop(fileStore(dir), "claude");
@@ -718,6 +774,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 	test("after Ship is recorded, open is refused unless it is the merge gate's reconcile, resolve is refused unless the entry has that origin, and recordAudit is refused and writes nothing", () => {
 		const { store, saves } = countingStore(dir);
 		reachVerify("claude", store);
+		recordPassing("claude", store);
 		expect(confirmShip("claude", passing(), CONNECTED, store).accepted).toBe(true);
 		expect(open("claude", { id: "h2", owner: "alice" }, store).refusals).toEqual([
 			"loop is closed by Ship; HTIL entry h2 is not recorded",
@@ -735,7 +792,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		expect(storedRecord(dir, "claude")?.humanItems).toEqual([
 			{ id: "h2", owner: "alice", state: "open", afterShip: true },
 		]);
-		expect(storedRecord(dir, "claude")?.audits).toBeUndefined();
+		expect(storedRecord(dir, "claude")?.audits).toEqual([PASSING_AUDIT]);
 		const cleared = resolve("claude", "h2", { state: "done", evidenceId: "e2" }, store);
 		expect(cleared.accepted).toBe(true);
 		expect(storedRecord(dir, "claude")?.humanItems).toEqual([

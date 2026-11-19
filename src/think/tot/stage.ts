@@ -95,18 +95,67 @@ interface TotStageInput {
 	readonly onProgress?: (event: TotProgress) => void;
 }
 
-/** One PRD request per CoT Sub Issue of the plan; the key is the tracker's step key (`nodeId.step`). */
+/**
+ * One PRD request per CoT Sub Issue of the plan; the key is the tracker's step key (`nodeId.step`).
+ *
+ * When the plan carries GoT dependency edges (`plan.dependencies`, from the published Linear PRDs), each
+ * request names its `blockedBy` PRD keys (every Sub Issue of every dependency node) and the `blocks` keys it
+ * releases, and runs in the dependency-level wave of its node: a step is generated only once its `blockedBy`
+ * PRDs are generated, while sibling steps with no dependency edge run in parallel. Edge-free plans keep the
+ * legacy queue (no wave, no edges), so their checkpoints keep matching.
+ */
 export function totRequests(plan: TrackPlan): PrdRequest[] {
 	const titles = new Map(
 		plan.linearSubIssues.map((sub) => [stepKey(sub.nodeId, sub.step), sub.title] as const),
 	);
+	const dependencies = plan.dependencies ?? {};
+	const keysByNode = new Map<string, string[]>();
+	const consumersByNode = new Map<string, string[]>();
+	for (const sub of plan.subIssues) {
+		const key = stepKey(sub.nodeId, sub.step);
+		const owned = keysByNode.get(sub.nodeId);
+		if (owned === undefined) keysByNode.set(sub.nodeId, [key]);
+		else owned.push(key);
+	}
+	for (const [nodeId, dependencyIds] of Object.entries(dependencies)) {
+		for (const dependencyId of dependencyIds) {
+			const consumers = consumersByNode.get(dependencyId);
+			if (consumers === undefined) consumersByNode.set(dependencyId, [nodeId]);
+			else consumers.push(nodeId);
+		}
+	}
+	const levels = new Map<string, number>();
+	const levelOf = (nodeId: string, visiting: Set<string> = new Set()): number => {
+		const known = levels.get(nodeId);
+		if (known !== undefined) return known;
+		if (visiting.has(nodeId)) return 0;
+		visiting.add(nodeId);
+		let level = 0;
+		for (const dependencyId of dependencies[nodeId] ?? []) {
+			if (keysByNode.has(dependencyId))
+				level = Math.max(level, levelOf(dependencyId, visiting) + 1);
+		}
+		visiting.delete(nodeId);
+		levels.set(nodeId, level);
+		return level;
+	};
+	const hasEdges = Object.keys(dependencies).length > 0;
 	return plan.subIssues.map((sub) => {
 		const key = stepKey(sub.nodeId, sub.step);
+		const blockedBy = hasEdges
+			? (dependencies[sub.nodeId] ?? []).flatMap((id) => keysByNode.get(id) ?? [])
+			: [];
+		const blocks = hasEdges
+			? (consumersByNode.get(sub.nodeId) ?? []).flatMap((id) => keysByNode.get(id) ?? [])
+			: [];
 		return {
 			key,
 			graphId: plan.graphId,
 			nodeId: sub.nodeId,
 			step: sub.step,
+			...(hasEdges ? { wave: levelOf(sub.nodeId) } : {}),
+			...(blockedBy.length > 0 ? { blockedBy } : {}),
+			...(blocks.length > 0 ? { blocks } : {}),
 			title: titles.get(key) ?? sub.item,
 			thought: sub.thought,
 		};
@@ -140,6 +189,44 @@ function summaryOf(manifest: TotManifest | undefined, total: number): SyncSummar
 }
 
 /**
+ * Holds the release when the manifest does not account for every Sub Issue: any PRD that is not `generated`
+ * (failed, held by an unsatisfied dependency, or skipped on abort) is counted as sync-failed — a nonexistent
+ * PRD is not "synced" — and named in the outcome `error`, so the CompletionGate never releases a partial plan.
+ * Records with keys outside the plan's Sub Issues are unmatched and hold the release the same way.
+ */
+function holdPartial(
+	manifest: TotManifest,
+	sync: SyncSummary,
+	expectedKeys: readonly string[],
+	error?: string,
+): { sync: SyncSummary; error?: string } {
+	const seen = new Set(manifest.records.map((record) => record.key));
+	const unmatched = manifest.records.filter((record) => !expectedKeys.includes(record.key));
+	const missing = expectedKeys.filter((key) => !seen.has(key));
+	const partial =
+		manifest.generated !== manifest.total || unmatched.length > 0 || missing.length > 0;
+	if (!partial) return error === undefined ? { sync } : { sync, error };
+	// A skipped PRD was never written, so it is not "synced" either: syncPrds counts one as synced
+	// (nothing is owed to the tracker for it), so move those out of synced into failed, then count the
+	// rest of the gap; the summary then still adds up to the manifest total.
+	const skipped = manifest.records.filter((record) => record.status === "skipped").length;
+	const gap = Math.max(0, manifest.total - manifest.generated - sync.failed - skipped);
+	const reason =
+		error ??
+		(unmatched.length > 0
+			? `PRD_PARTIAL: ${unmatched.length} PRD records match no Sub Issue`
+			: `PRD_PARTIAL: ${manifest.generated} of ${manifest.total} PRDs generated`);
+	return {
+		sync: {
+			...sync,
+			synced: Math.max(0, sync.synced - skipped),
+			failed: sync.failed + skipped + gap,
+		},
+		error: reason,
+	};
+}
+
+/**
  * Writes and syncs the PRDs of one plan. A provider abort is rethrown; every other failure, an aborted `signal` included
  * (PRDs not started are `skipped`, rows not reached stay `pending`), is part of the returned outcome, so a caller that
  * gates on it never sees a half-written result as complete.
@@ -156,12 +243,16 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 		source: "selected",
 		reason: SELECTED_REASON,
 	};
-	const failedOutcome = (error: string, manifest?: TotManifest): PrdOutcome => ({
-		manifest: manifest ?? { total, generated: 0, failed: total, fallbacks: 0, records: [] },
-		sync: summaryOf(manifest, total),
-		model,
-		error,
-	});
+	const failedOutcome = (error: string, manifest?: TotManifest): PrdOutcome => {
+		const full = manifest ?? { total, generated: 0, failed: total, fallbacks: 0, records: [] };
+		const held = holdPartial(
+			full,
+			summaryOf(manifest, total),
+			requests.map((request) => request.key),
+			error,
+		);
+		return { manifest: full, sync: held.sync, model, error: held.error ?? error };
+	};
 	if (input.selected.modelId.trim() === "") {
 		log(`tot refused: ${PRD_NO_SELECTED_MODEL}`);
 		return failedOutcome(PRD_NO_SELECTED_MODEL);
@@ -209,11 +300,17 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 		callers = await seams.open();
 		if (callers === undefined || (callers.linear === undefined && callers.notion === undefined)) {
 			log("tot: no tracker reachable, PRDs stay pending");
+			const held = holdPartial(
+				manifest,
+				summaryOf(manifest, total),
+				requests.map((request) => request.key),
+				"no tracker is reachable to receive the PRDs",
+			);
 			return {
 				manifest,
-				sync: summaryOf(manifest, total),
+				sync: held.sync,
 				model,
-				error: "no tracker is reachable to receive the PRDs",
+				error: held.error ?? "no tracker is reachable to receive the PRDs",
 			};
 		}
 		const report = await syncPrds(manifest.records, {
@@ -226,7 +323,12 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 			log,
 			...seams.sync,
 		});
-		return { manifest, sync: report.summary, model };
+		const held = holdPartial(
+			manifest,
+			report.summary,
+			requests.map((request) => request.key),
+		);
+		return { manifest, sync: held.sync, model, ...(held.error ? { error: held.error } : {}) };
 	} catch (error) {
 		if (isAbortError(error)) throw error;
 		const cause = causeOf(error);

@@ -179,6 +179,12 @@ export function buildTrackPlan(input: {
 		nonBlocking: input.clarifications.filter((c) => !c.blocking && c.answer === undefined),
 	};
 
+	const nodeIds = new Set(nodes.map((node) => node.id));
+	const dependencies: Record<string, readonly string[]> = {};
+	for (const node of nodes) {
+		const edges = [...new Set(node.dependsOn.filter((id) => nodeIds.has(id) && id !== node.id))];
+		if (edges.length > 0) dependencies[node.id] = edges;
+	}
 	return {
 		graphId,
 		task,
@@ -186,6 +192,7 @@ export function buildTrackPlan(input: {
 		subIssues: nodes.flatMap((node) => subIssueRows(graphId, node)),
 		linearIssues: nodes.map(linearIssue),
 		linearSubIssues: nodes.flatMap(linearSubIssues),
+		...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
 		hitl,
 	};
 }

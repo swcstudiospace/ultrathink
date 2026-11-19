@@ -9,6 +9,10 @@ export interface PrdRequest {
 	readonly step: number;
 	/** Execution wave: all PRDs of one wave finish before the next wave starts; parallel inside a wave. Defaults to `step`. */
 	readonly wave?: number;
+	/** PRD keys that must be generated before this step is released; empty means no dependency edge. */
+	readonly blockedBy?: readonly string[];
+	/** PRD keys this step releases once it is generated; empty means no dependency edge. */
+	readonly blocks?: readonly string[];
 	readonly title: string;
 	readonly thought: string;
 }
