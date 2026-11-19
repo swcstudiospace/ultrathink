@@ -3148,8 +3148,10 @@ export function createOmpExtension(
 			| { kind: "none" };
 		const gateDelivery = (flight: Flight, gate: CompletionGate): GateDelivery => {
 			if (flight.releasedText !== undefined) {
-				if (flight.releasedPlan && flight.lastDeliveredPlanHash === flight.releasedPlan.planHash) return { kind: "none" };
-				if (!flight.releasedPlan && flight.lastDeliveredPlanText === flight.releasedText) return { kind: "none" };
+				if (flight.releasedPlan && flight.lastDeliveredPlanHash === flight.releasedPlan.planHash)
+					return { kind: "none" };
+				if (!flight.releasedPlan && flight.lastDeliveredPlanText === flight.releasedText)
+					return { kind: "none" };
 				return { kind: "plan", text: flight.releasedText, ...flight.releasedPlan };
 			}
 			if (gate.state === "failed_or_cancelled") {
@@ -3177,7 +3179,10 @@ export function createOmpExtension(
 				flight.releasedPlan = undefined;
 				flight.deliveredInline = false;
 				markPlanDelivered(flight);
-				return { kind: "hold", text: gate.blocked ? gateWaitingBlocked(gate.blockReason) : GATE_WAITING };
+				return {
+					kind: "hold",
+					text: gate.blocked ? gateWaitingBlocked(gate.blockReason) : GATE_WAITING,
+				};
 			}
 			if (gate.state === "plan_validated") {
 				const transitioned = gate.tryTransition("ready", "omp", "auto-use validated plan");
@@ -3483,7 +3488,8 @@ export function createOmpExtension(
 						markPlanDelivered(flight);
 						flight.gateAsideDelivered = false;
 						flight.gateNoticeDelivered = false;
-						if (flight.releasedText !== undefined) flight.lastDeliveredPlanText = flight.releasedText;
+						if (flight.releasedText !== undefined)
+							flight.lastDeliveredPlanText = flight.releasedText;
 						if (flight.releasedPlan) flight.lastDeliveredPlanHash = flight.releasedPlan.planHash;
 						flight.releasedText = undefined;
 						flight.releasedPlan = undefined;
@@ -3912,7 +3918,13 @@ export function createOmpExtension(
 		type Recovery =
 			| { kind: "none" }
 			| { kind: "warn"; text: string }
-			| { kind: "recovered"; text: string; view: PlanView | undefined; planId?: string; planHash?: string };
+			| {
+					kind: "recovered";
+					text: string;
+					view: PlanView | undefined;
+					planId?: string;
+					planHash?: string;
+			  };
 		/**
 		 * The stored copy of a flight's plan, when this session has not delivered it yet. A key this session already
 		 * delivered is refused before any store read; a record written before this instance started is ignored; only a
@@ -3944,7 +3956,8 @@ export function createOmpExtension(
 			flight.noticed = true;
 			const recovery = recoverPlan(flight);
 			if (recovery.kind === "recovered") {
-				if (recovery.planId && recovery.planHash) flight.releasedPlan = { planId: recovery.planId, planHash: recovery.planHash };
+				if (recovery.planId && recovery.planHash)
+					flight.releasedPlan = { planId: recovery.planId, planHash: recovery.planHash };
 				flight.deliveredInline = true;
 				barWrite(flight.generation, () => store.delivered("inline", recovery.view, now()));
 				return { message: planMessage(recovery.text, recovery.view) };

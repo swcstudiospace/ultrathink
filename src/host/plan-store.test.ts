@@ -119,7 +119,7 @@ describe("savePlan and loadPlan", () => {
 		);
 		expect(loadPlan(dir, plan.key)).toBe("unreadable");
 	});
- 
+
 	test("reads a record whose planHash does not match the text as unreadable", () => {
 		const plan = samplePlan();
 		const planHash = planGateHash(plan.text);
