@@ -24,6 +24,7 @@ import { type ToolCaller, stepKey } from "../../track/create.ts";
 import { syncPrds } from "../../track/prd-sync.ts";
 import type { SyncDeps, SyncSummary } from "../../track/prd-types.ts";
 import type { TrackingRefs, TrackPlan } from "../../track/types.ts";
+import { escapeXml, escapeXmlText } from "../../uplift/xml.ts";
 import { escapeText } from "./escape.ts";
 import {
 	generatePrd,
@@ -34,6 +35,7 @@ import {
 	type TotManifest,
 	type TotProgress,
 } from "./index.ts";
+import type { PrdRecord } from "./types.ts";
 
 /** The `error` of a stage asked to write PRDs with no selected model id: nothing is written. */
 const PRD_NO_SELECTED_MODEL = "PRD_NO_SELECTED_MODEL";
@@ -239,17 +241,60 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 	}
 }
 
+const ISSUES_OPEN = "<ISSUES ";
 const ISSUES_CLOSE = "</ISSUES>";
+const ISSUE_CLOSE = "</ISSUE>";
+const SUBISSUE_CLOSE = "</SUBISSUE>";
+
+/** The `<PRD>` element of one generated record: key and model as escaped attributes, the markdown as escaped element text. */
+function prdElement(record: PrdRecord): string {
+	return `<PRD key="${escapeXml(record.key)}" model="${escapeXml(record.model)}">${escapeXmlText(record.markdown)}</PRD>`;
+}
 
 /**
- * Adds one `<PRDS .../>` element to the ISSUES block of `xml`: counts and the model id, every value escaped. The PRD text
- * itself never enters the XML (it sits in the tracker rows the ISSUES block links). An XML with no ISSUES block is returned as is.
+ * The block with the record's PRD placed just before the `</SUBISSUE>` of its step. The key is `<nodeId>.<step>`, split at
+ * its last dot; the step is searched inside the ISSUE of its node only. Undefined when the block has no such Sub Issue.
  */
-export function injectPrdXml(xml: string, outcome: PrdOutcome): string {
+function placePrd(block: string, record: PrdRecord): string | undefined {
+	const dot = record.key.lastIndexOf(".");
+	if (dot < 0) return undefined;
+	const issueAt = block.indexOf(`<ISSUE node="${escapeXml(record.key.slice(0, dot))}"`);
+	if (issueAt < 0) return undefined;
+	const issueEnd = block.indexOf(ISSUE_CLOSE, issueAt);
+	const subAt = block.indexOf(`<SUBISSUE step="${escapeXml(record.key.slice(dot + 1))}"`, issueAt);
+	if (issueEnd < 0 || subAt < 0 || subAt > issueEnd) return undefined;
+	const subEnd = block.indexOf(SUBISSUE_CLOSE, subAt);
+	if (subEnd < 0 || subEnd > issueEnd) return undefined;
+	return `${block.slice(0, subEnd)}${prdElement(record)}${block.slice(subEnd)}`;
+}
+
+/**
+ * Writes the PRDs of `outcome` into the ISSUES block of `xml`. Each generated PRD becomes a `<PRD key model>` child of the
+ * `<SUBISSUE>` of its step, after the Sub Issue text and beside its links. One `<PRDS .../>` element with the counts and the
+ * model id closes the block. Every value is escaped. An XML with no ISSUES block is returned as is.
+ *
+ * Returns `xml`, the injected XML, and `unplaced`: the keys (`<nodeId>.<step>`, in record order) of the generated PRDs that
+ * matched no Sub Issue element, so they were written nowhere. A non-empty `unplaced` means the plan is missing PRDs: the
+ * caller holds it. Failed records are skipped.
+ */
+export function injectPrdXml(
+	xml: string,
+	outcome: PrdOutcome,
+): { readonly xml: string; readonly unplaced: readonly string[] } {
+	const generated = outcome.manifest.records.filter((record) => record.status === "generated");
 	const at = xml.lastIndexOf(ISSUES_CLOSE);
-	if (at < 0) return xml;
+	const open = at < 0 ? -1 : xml.lastIndexOf(ISSUES_OPEN, at);
+	if (open < 0)
+		return { xml, unplaced: generated.map((record) => record.key.replace(/\s+/g, " ")) };
+	let block = xml.slice(open, at);
+	const unplaced: string[] = [];
+	for (const record of generated) {
+		const placed = placePrd(block, record);
+		if (placed === undefined) unplaced.push(record.key.replace(/\s+/g, " "));
+		else block = placed;
+	}
 	const { manifest, sync } = outcome;
-	const attrs = [
+	const counts: [string, string | number][] = [
 		["total", manifest.total],
 		["generated", manifest.generated],
 		["failed", manifest.failed],
@@ -257,10 +302,12 @@ export function injectPrdXml(xml: string, outcome: PrdOutcome): string {
 		["synced", sync.synced],
 		["pending", sync.pending],
 		["model", outcome.model.modelId],
-	]
-		.map(([name, value]) => `${name}="${escapeText(String(value))}"`)
-		.join(" ");
-	return `${xml.slice(0, at).replace(/[ \t]*$/, "")}  <PRDS ${attrs}/>\n${xml.slice(at)}`;
+	];
+	const attrs = counts.map(([name, value]) => `${name}="${escapeText(String(value))}"`).join(" ");
+	return {
+		xml: `${xml.slice(0, open)}${block.replace(/[ \t]*$/, "")}  <PRDS ${attrs}/>\n${xml.slice(at)}`,
+		unplaced,
+	};
 }
 
 /** The credentialed tracker callers for `config`, opened lazily and closed by the stage. A tracker with no credential is left out. */
