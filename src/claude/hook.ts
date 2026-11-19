@@ -1951,6 +1951,15 @@ export async function runPromptSubmit(
 					};
 				}
 				throwIfCancelled(cancellation);
+				const placed = injectPrdXml(result.xml, prd);
+				result = { ...result, xml: placed.xml };
+				if (placed.unplaced.length > 0) {
+					prd = {
+						...prd,
+						sync: { ...prd.sync, failed: prd.sync.failed + placed.unplaced.length },
+						error: `no Sub Issue in the specification for ${placed.unplaced.join(", ")}`,
+					};
+				}
 				const settled =
 					prd.sync.failed === 0 && prd.sync.pending === 0 && prd.manifest.failed === 0;
 				stage(
@@ -1961,7 +1970,6 @@ export async function runPromptSubmit(
 						prd.manifest.failed > 0 ? ` · ${prd.manifest.failed} failed` : ""
 					}${prd.sync.pending > 0 ? ` · ${prd.sync.pending} pending` : ""}`,
 				);
-				result = { ...result, xml: injectPrdXml(result.xml, prd) };
 				record = buildRecord(result, tracking);
 			}
 		}

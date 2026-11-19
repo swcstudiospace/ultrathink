@@ -219,12 +219,12 @@ describe("Tree-of-Thought stage through the hook and the gate", () => {
 		for (const id of order.slice(0, 36)) expect(w.linear.descriptions.get(id)).toContain("## PRD");
 		expect(w.linear.descriptions.has("ENG-n6-5")).toBe(false);
 
-		// The XML carries counts and the row links, never PRD text.
+		// The XML carries the counts, the row links and each generated PRD inside its own Sub Issue.
 		const context = contextOf(first);
 		expect(context).toContain('<PRDS total="50" generated="49" failed="1"');
 		expect(context).toContain('url="https://linear.app/o/issue/n6.5"');
-		expect(context).not.toContain("Test Skeleton");
-		expect(context).not.toContain("runApp");
+		expect(context.split('<PRD key="').length - 1).toBe(49);
+		expect(context).toContain("runApp");
 
 		const gate = gateFor(context, prd);
 		expect(gate.state).toBe("partial_failure");
