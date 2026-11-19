@@ -71,6 +71,17 @@
 					}
 				]
 			}
+		],
+		"PostCompact": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "\"${CLAUDE_PLUGIN_ROOT}/bin/run-bun\" \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-reset.ts\"",
+						"timeout": 30
+					}
+				]
+			}
 		]
 	}
 }

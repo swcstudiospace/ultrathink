@@ -67,7 +67,7 @@ import {
 	type RecallRuntimeState,
 } from "../recall/engine.ts";
 import { recallMoments } from "../recall/moments.ts";
-import { createFailureState, recordFailure, resetTurn } from "../recall/gates.ts";
+import { createFailureState, recordFailure, resetDedupeEpoch, resetTurn } from "../recall/gates.ts";
 import type { RecallSettings } from "../recall/config.ts";
 import type { GroundOutcome, DocsLookup } from "../ragflow/types.ts";
 import { isHostId, type HostId } from "../host/types.ts";
@@ -2276,4 +2276,39 @@ export async function runToolResultRecall(
 			? { additionalContext: [RECALL_HEADER, ...pass.lines].join("\n") }
 			: {}),
 	};
+}
+
+/** What a PostCompact event carries: the session whose context the host compacted. */
+export interface CompactionInput {
+	session_id?: string;
+}
+
+/**
+ * The compaction trigger (SPE-34394). Compaction removes the context an injected item sat in, so a later recall may inject
+ * it again: the stored record starts a new dedupe epoch. With recall.enabled off, or no recall record yet, it touches no state.
+ */
+export function runCompactionReset(
+	input: CompactionInput,
+	deps: Pick<ToolResultDeps, "config" | "stateDir" | "log">,
+): void {
+	const sessionId = hostSessionId(input.session_id);
+	if (!deps.config.recallSettings.recall.enabled || sessionId === undefined) return;
+	const log = deps.log ?? (() => undefined);
+	try {
+		updateRecall(
+			deps.stateDir,
+			sessionId,
+			(current) => {
+				if (current === undefined) return undefined;
+				const state = restoreRecallState(current.state);
+				return {
+					...current,
+					state: serializeRecallState({ ...state, dedupe: resetDedupeEpoch(state.dedupe) }),
+				};
+			},
+			HOOK_LOCK,
+		);
+	} catch (cause) {
+		log(`recall compaction reset failed: ${cause instanceof Error ? cause.name : "error"}`);
+	}
 }
