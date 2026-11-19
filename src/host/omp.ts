@@ -3885,7 +3885,7 @@ export function createOmpExtension(
 		type Recovery =
 			| { kind: "none" }
 			| { kind: "warn"; text: string }
-			| { kind: "recovered"; text: string; view: PlanView | undefined };
+			| { kind: "recovered"; text: string; view: PlanView | undefined; planId?: string; planHash?: string };
 		/**
 		 * The stored copy of a flight's plan, when this session has not delivered it yet. A key this session already
 		 * delivered is refused before any store read; a record written before this instance started is ignored; only a
@@ -3907,6 +3907,8 @@ export function createOmpExtension(
 				kind: "recovered",
 				text: loaded.text,
 				view: isPlanView(loaded.view) ? loaded.view : undefined,
+				...(loaded.planId ? { planId: loaded.planId } : {}),
+				...(loaded.planHash ? { planHash: loaded.planHash } : {}),
 			};
 		};
 		/** One loud note per flight. A stored plan that never reached the model replaces the note, delivered once; a store warning is appended. */
@@ -3915,6 +3917,8 @@ export function createOmpExtension(
 			flight.noticed = true;
 			const recovery = recoverPlan(flight);
 			if (recovery.kind === "recovered") {
+				flight.releasedText = recovery.text;
+				if (recovery.planId && recovery.planHash) flight.releasedPlan = { planId: recovery.planId, planHash: recovery.planHash };
 				flight.deliveredInline = true;
 				barWrite(flight.generation, () => store.delivered("inline", recovery.view, now()));
 				return { message: planMessage(recovery.text, recovery.view) };
