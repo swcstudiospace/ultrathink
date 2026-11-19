@@ -113,3 +113,4 @@ Status: Verified 2026-11-18: passed 3/3 success criteria on origin/main a95752c 
 ### Phase 114: Tree-of-Thought PRDs on the selected model, in the uplifted XML
 
 Status: Implemented on origin/main `99780d6` through PRs #232, #233, #235, #236 and #237; 6 of 7 success criteria verified by merged code and tests. Criterion 7 (a finished Sub Issue closes its Linear issue and its Notion step row) is not verified: no end-to-end run, Notion returned `403 restricted_resource`. Evidence: `milestones/v1.24-phases/114-tree-of-thought-prds-on-the-selected-model-placed-inside-the/114-VERIFICATION.md`. Human verification pending: run one Sub Issue through to closure once Notion is restored. Forty-eight Codeblocked PRDs are published on Linear SPE-35034–SPE-35081 and linked to the tracked Notion Uplifted Prompts (see `docs/ultrathink-prd-density.md`); publishing does not close criterion 7.
+**Depends on:** none.
