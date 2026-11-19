@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 /**
- * ultrathink-ship: assess | pr | review | merge | run | resolve <phase> | status --state <sessions/<id>.json> [--cwd <dir>] | phase repair-runtime --phase <phase> --session <id> --reason <text> [--cwd <dir>].
+ * ultrathink-ship: assess | pr | review | merge | run | resolve <phase> | status --state <sessions/<id>.json> [--cwd <dir>] | phase repair-runtime --phase <phase> --session <id> --reason <text> --owner <name> [--cwd <dir>].
  * Prints one JSON object; always exits 0 except usage errors (2). Fails open; the merge gate on the phase record fails closed.
  */
 import { readFileSync } from "node:fs";
@@ -81,9 +81,10 @@ type ShipRecord = SessionRecord & { ship?: ShipState };
  * `merge` and `run` take `--owner-override <reason>` with `--owner <name>`: the owner decision closes the phase without a
  * passing audit, and the reason is kept in the phase record. `resolve <phase>` closes the phase's open HTIL entry
  * (`verification:<phase directory>`) with `--owner <name>` and `--evidence <text>` as the owner's evidence.
+ * `phase repair-runtime` takes `--owner <name>` too, checked against `ship.owners` the same way before any write.
  */
 const USAGE =
-	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd] [--approve] [--owner <name> --owner-override <reason>] | ultrathink-ship resolve <phase> --state <sessions/<id>.json> --owner <name> --evidence <text> [--cwd <dir>] | ultrathink-ship phase repair-runtime --phase <phase> --session <sessionId> --reason <text> [--cwd <dir>]";
+	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd] [--approve] [--owner <name> --owner-override <reason>] | ultrathink-ship resolve <phase> --state <sessions/<id>.json> --owner <name> --evidence <text> [--cwd <dir>] | ultrathink-ship phase repair-runtime --phase <phase> --session <sessionId> --reason <text> --owner <name> [--cwd <dir>]";
 const NEXT_FIX =
 	"fix the listed findings, commit only the files you edited, push, then run review again";
 const NEXT_PENDING =
@@ -1378,8 +1379,11 @@ export async function runShip(
 			return usageError("phase repair-runtime needs --session <sessionId>");
 		if (!present(repairReason))
 			return usageError("phase repair-runtime needs a non-empty --reason <text>");
-		if (owner !== undefined || evidence !== undefined || overrideReason !== undefined)
-			return usageError("phase repair-runtime takes --phase, --session and --reason only");
+		if (!present(owner)) return usageError("phase repair-runtime needs --owner <name>");
+		if (evidence !== undefined || overrideReason !== undefined)
+			return usageError("phase repair-runtime takes --phase, --session, --reason and --owner only");
+		const refusal = ownerRefusal(deps.config.owners, owner);
+		if (refusal !== undefined) return { code: 0, output: { ok: false, error: refusal } };
 		const output = stepRepairRuntime({
 			deps,
 			cwd: resolve(cwd),

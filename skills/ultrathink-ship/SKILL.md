@@ -70,7 +70,7 @@ Always `git push` before `review`: it refuses when the local HEAD differs from t
 
 Only when `ship.autoMerge` is on. Otherwise `merge` refuses with `autoMerge disabled` (and `run` reports `autoMerge disabled: merge manually`): do not merge at all, tell the user the PR is ready for them to merge, and continue with steps 5 and 6.
 
-The owner may close a merge without a recorded audit: `bin/ultrathink-ship merge --state <stateFile> --owner <name> --owner-override <reason>` (an empty reason is refused). Never add `--owner-override` yourself. Only the owner runs `bin/ultrathink-ship resolve <phase> --state <stateFile> --owner <name> --evidence <text>` to close an open HTIL entry. Only the owner runs `bin/ultrathink-ship phase repair-runtime --phase <phase> --session <session-id> --reason <text>` to set the runtime marker on a Verify record written before it existed.
+The owner may close a merge without a recorded audit: `bin/ultrathink-ship merge --state <stateFile> --owner <name> --owner-override <reason>` (an empty reason is refused). Never add `--owner-override` yourself. Only the owner runs `bin/ultrathink-ship resolve <phase> --state <stateFile> --owner <name> --evidence <text>` to close an open HTIL entry. Only the owner runs `bin/ultrathink-ship phase repair-runtime --phase <phase> --session <session-id> --reason <text> --owner <name>` to set the runtime marker on a Verify record written before it existed.
 
 The owner must be listed in `ship.owners` in the user config; the CLI refuses any other name, and an empty list refuses every owner decision.
 
