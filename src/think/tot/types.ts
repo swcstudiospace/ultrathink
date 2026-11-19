@@ -48,53 +48,21 @@ export type CompleteFn = (input: {
 
 // ---- Internal types of the ToT stage -------------------------------------------------------------------------------
 
-/** Whether a reference was found in the repository (`verified`) or is a proposal the repository does not show (`assumption`). */
-type RefTag = "verified" | "assumption";
-
-/** What the project inspector learned. Names and paths only: file contents are never kept. */
-export interface ProjectFacts {
-	/** Absolute root the facts describe. */
-	readonly root: string;
-	/** Repository-relative POSIX paths of every inspected file. */
-	readonly files: ReadonlySet<string>;
-	/** Repository-relative POSIX paths of every directory that holds an inspected file ("" is the root and is not listed). */
-	readonly dirs: ReadonlySet<string>;
-	/** Declared symbol name -> files declaring it (at most `MAX_FILES_PER_SYMBOL`). */
-	readonly symbols: ReadonlyMap<string, readonly string[]>;
-	/** True when a depth, file-count or symbol-count limit cut the walk short. */
-	readonly truncated: boolean;
-	/** Entries skipped by the deny-list (never listed, never read). */
-	readonly denied: number;
-}
-
-export interface InspectLimits {
-	readonly maxDepth: number;
-	readonly maxFiles: number;
-	readonly maxFileBytes: number;
-	readonly maxSymbols: number;
-}
-
 export interface PrdLimits {
 	readonly maxLines: number;
 	readonly maxChars: number;
 }
 
+/** One file the PRD names for the Sub Issue. The repository is not inspected, so this is a proposal. */
 export interface PrdFileRef {
 	readonly path: string;
-	readonly tag: RefTag;
 	readonly note?: string;
 }
 
-export interface PrdInterfaceRef {
-	readonly signature: string;
-	readonly tag: RefTag;
-}
-
+/** One code block of the PRD. Code is always illustrative: nothing checks it against the repository. */
 export interface PrdCodeBlock {
 	readonly language: string;
 	readonly code: string;
-	/** True only when every repository reference the block relies on was found in the project facts. */
-	readonly verified: boolean;
 }
 
 /** The typed content of one PRD; `renderPrd` is the only way it becomes markdown. */
@@ -102,7 +70,7 @@ export interface PrdDocument {
 	readonly objective: string;
 	readonly acceptanceCriteria: readonly string[];
 	readonly affectedFiles: readonly PrdFileRef[];
-	readonly interfaces: readonly PrdInterfaceRef[];
+	readonly interfaces: readonly string[];
 	readonly implementation: readonly PrdCodeBlock[];
 	readonly testSkeleton: PrdCodeBlock;
 	readonly assumptions: readonly string[];
