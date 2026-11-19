@@ -1397,6 +1397,45 @@ describe("promoteDue authors draft generated skills", () => {
 		expect(audit[0]).not.toContain("long-gone");
 	});
 
+	test("a resolved lesson with a root cause is authored as a draft without recurring", async () => {
+		const f = fixture();
+		openStore(storeDir(f.stateDir)).put(
+			moment({
+				name: "Import types with import type",
+				origin: "observe",
+				createdAt: RECENT,
+				resolvedAt: RECENT,
+				rootCause: "value imports of type-only symbols",
+			}),
+		);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		const dir = join(f.stateDir, "generated-skills");
+		const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
+			skills: Array<{ name: string; status: string }>;
+		};
+		expect(manifest.skills.map((skill) => skill.name)).toEqual(["import-types-with-import-type"]);
+		const audit = readFileSync(join(dir, "audit.ndjson"), "utf8").trim().split("\n");
+		expect(audit.map((line) => JSON.parse(line).action)).toEqual(["create"]);
+	});
+
+	test("an unresolved lesson with a root cause is not authored by that path", async () => {
+		const f = fixture();
+		openStore(storeDir(f.stateDir)).put(
+			moment({
+				name: "Import types with import type",
+				origin: "observe",
+				createdAt: RECENT,
+				rootCause: "value imports of type-only symbols",
+			}),
+		);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		expect(existsSync(join(f.stateDir, "generated-skills"))).toBe(false);
+	});
+
 	test("a user-authored skill with the same name is never touched", async () => {
 		const f = fixture();
 		const dir = join(f.stateDir, "generated-skills");

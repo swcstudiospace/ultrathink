@@ -1214,6 +1214,28 @@ describe("resolveMoment and recurrences", () => {
 		expect(store.get(first.moment.id)?.recurredAt).toBeUndefined();
 	});
 
+	test("resolveMoment stores the root cause with the resolution time", async () => {
+		const { ctx, store, clock } = setup();
+		const start = clock.now;
+		const first = await captureMoment(lesson(), ctx);
+		clock.now = start + DAY_MS;
+		resolveMoment(first.moment.id, ctx, "a stale tsconfig path");
+
+		expect(store.get(first.moment.id)).toMatchObject({
+			resolvedAt: new Date(start + DAY_MS).toISOString(),
+			rootCause: "a stale tsconfig path",
+		});
+	});
+
+	test("a resolution without a root cause clears the one recorded earlier", async () => {
+		const { ctx, store } = setup();
+		const first = await captureMoment(lesson(), ctx);
+		resolveMoment(first.moment.id, ctx, "a stale tsconfig path");
+		resolveMoment(first.moment.id, ctx);
+
+		expect(store.get(first.moment.id)?.rootCause).toBeUndefined();
+	});
+
 	test("resolveMoment is undefined for an unknown lesson", () => {
 		const { ctx } = setup();
 		expect(resolveMoment("tm-missing", ctx)).toBeUndefined();

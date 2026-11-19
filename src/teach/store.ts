@@ -124,6 +124,7 @@ function parseMoment(raw: unknown, id: string): TeachableMoment | undefined {
 	if (typeof raw.recurredAt === "string" && !Number.isNaN(Date.parse(raw.recurredAt))) {
 		moment.recurredAt = raw.recurredAt;
 	}
+	if (typeof raw.rootCause === "string") moment.rootCause = raw.rootCause;
 	return moment;
 }
 

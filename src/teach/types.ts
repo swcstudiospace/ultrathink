@@ -77,6 +77,8 @@ export interface TeachableMoment {
 	promoted?: { at: string; skill: string; target: SkillTarget; path?: string };
 	/** ISO 8601 UTC: when `resolveMoment` recorded that the problem this lesson describes was fixed. Latest only. */
 	resolvedAt?: string;
+	/** The root cause recorded with the latest resolution, as the caller stated it. */
+	rootCause?: string;
 	/**
 	 * ISO 8601 UTC: the first capture of the same signature inside the 14 days after `resolvedAt`, from this lesson or
 	 * another one. `capture` records it, and a resolution that has one never counts toward an automatic promotion.
@@ -305,6 +307,8 @@ export interface SkillRow {
 	target: SkillTarget;
 	/** Injection status: true for a promotion or an active generated skill. `target` names the install state, not this. */
 	injected: boolean;
+	/** The manifest status of an excluded generated skill (draft, disabled, ...). Absent on a row that is not excluded. */
+	status?: string;
 }
 
 export const DIGEST_MAX_TURNS = 60;

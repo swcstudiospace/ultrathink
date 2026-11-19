@@ -508,10 +508,15 @@ export async function confirmMoment(
 
 /**
  * Records now as the moment the problem a lesson describes was fixed. A lesson keeps only its latest resolution, and a new
- * one clears any recurrence recorded against the earlier one. Local only: nothing is retained or sent. undefined for an
- * unknown lesson, when Teachable Moments is off, or when the store cannot be written.
+ * one clears any recurrence recorded against the earlier one. `rootCause`, when given, is stored with it; a resolution
+ * without one clears the earlier root cause. Local only: nothing is retained or sent. undefined for an unknown lesson,
+ * when Teachable Moments is off, or when the store cannot be written.
  */
-export function resolveMoment(id: string, ctx: TeachContext): TeachableMoment | undefined {
+export function resolveMoment(
+	id: string,
+	ctx: TeachContext,
+	rootCause?: string,
+): TeachableMoment | undefined {
 	const store = tryStore(ctx);
 	const moment = store?.get(id);
 	if (!store || !moment || !teachEnabled(ctx)) return undefined;
@@ -519,6 +524,7 @@ export function resolveMoment(id: string, ctx: TeachContext): TeachableMoment | 
 		...moment,
 		resolvedAt: new Date(nowOf(ctx)).toISOString(),
 		recurredAt: undefined,
+		rootCause,
 	};
 	try {
 		store.put(resolved);
