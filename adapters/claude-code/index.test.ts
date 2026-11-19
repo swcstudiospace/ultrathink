@@ -47,6 +47,7 @@ describe("createClaudeCodeAdapter", () => {
 			"ultrathink-on",
 			"ultrathink-track",
 			"ultrathink-status",
+			"ultrathink-skills",
 		]);
 		for (const definition of adapter.list()) {
 			expect(definition.idempotency).toBe("side-effecting");

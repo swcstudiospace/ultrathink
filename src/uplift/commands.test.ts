@@ -803,9 +803,23 @@ describe("runControl", () => {
 			}
 		});
 
-		test("the six commands keep their names (COMPAT-02)", () => {
-			expect(ULTRATHINK_VERBS).toEqual(["quick", "skip", "off", "on", "track", "status"]);
+		test("the seven commands keep their names (COMPAT-02)", () => {
+			expect(ULTRATHINK_VERBS).toEqual(["quick", "skip", "off", "on", "track", "status", "skills"]);
 		});
+	});
+
+	test("/ultrathink-skills parses as a verb and answers through runSkillsPrompt on Claude", async () => {
+		expect(parseUltrathinkCommand("/ultrathink-skills disable eacces")).toEqual({
+			verb: "skills",
+			args: "disable eacces",
+		});
+		// Recall is off by default; only runSkillsPrompt says so, so this reply proves the route.
+		expect(await runControl(["skills", "list"], { ...io, host: "claude-code" })).toBe(
+			"Recall is off: set recall.enabled to use /ultrathink-skills.",
+		);
+		expect(await runControl(["skills", "list"], { ...io, host: "omp" })).toBe(
+			"/ultrathink-skills runs on Claude Code only.",
+		);
 	});
 
 	test("bad arguments answer with usage; failures become a message, never a throw", async () => {

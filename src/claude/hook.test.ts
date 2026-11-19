@@ -26,7 +26,7 @@ import { JEV, moment, recordingFetch, UPLIFT } from "../test.helpers.ts";
 import { projectOf } from "../teach/mapping.ts";
 import { openStore, storeDir } from "../teach/store.ts";
 import { type AutoSkill, contentHashOf } from "../teach/skill-author.ts";
-import { writeGeneratedSkill } from "../teach/skill-store.ts";
+import { generatedStoreDir, writeGeneratedSkill } from "../teach/skill-store.ts";
 import type { Clarification } from "../hitl/types.ts";
 import type { KnowledgeReader, KnowledgeResult } from "../greptile/knowledge.ts";
 import type { RunClarifyOptions } from "../hitl/pipeline.ts";
@@ -37,6 +37,7 @@ import { TRACKING_OFF_NOTE, UPLIFT_CONTEXT_HEADER } from "./output.ts";
 import {
 	runCompactionReset,
 	runPromptSubmit,
+	runSkillsPrompt,
 	runToolResultRecall,
 	savePlanRecord,
 	type HookDeps,
@@ -5093,6 +5094,40 @@ describe("turn panels and retry resolution", () => {
 				resolvedAt: expect.any(String),
 				rootCause: "resolved by a successful retry of the same failure signature",
 			});
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("/ultrathink-skills on the Claude host", () => {
+	test("reports no generated skills, then lists a generated one with its auto marker", async () => {
+		const { deps, cleanup } = baseDeps();
+		deps.config.recallSettings = recallConfig({}, {});
+		try {
+			expect(await runSkillsPrompt("/ultrathink-skills", deps)).toBe("No generated skills.");
+			const at = "2026-11-01T00:00:00.000Z";
+			const draft: AutoSkill = {
+				name: "eacces-permission-denied",
+				description: "Check the owner and mode of the path before retrying the write.",
+				applies_when: { task_types: ["bash-run"], scope_globs: [], error_signatures: ["EACCES"] },
+				steps: ["Check the owner and mode of the path before retrying the write."],
+				source_ids: ["moment-1"],
+				generated_by: "auto",
+				generated_at: at,
+				content_hash: "",
+				version: 1,
+				status: "draft",
+				signature_hash: "0123456789abcdef0123456789abcdef",
+				stale: false,
+				warnings: [],
+			};
+			const skill: AutoSkill = { ...draft, content_hash: contentHashOf(draft) };
+			const store = generatedStoreDir(deps.stateDir);
+			expect(await writeGeneratedSkill(store, skill, at)).toMatchObject({ ok: true });
+			expect(await runSkillsPrompt("/ultrathink-skills list", deps)).toBe(
+				`${skill.name} · draft · v1 · auto`,
+			);
 		} finally {
 			cleanup();
 		}

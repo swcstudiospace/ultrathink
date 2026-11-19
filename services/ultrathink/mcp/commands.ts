@@ -220,6 +220,13 @@ export const COMMAND_OVERLAY: Readonly<Record<string, OverlayEntry>> = {
 		reason: "it is a Cursor host command, and the connector has no Cursor session to run it in",
 		instead: "run it in Cursor with the ultrathink plugin installed",
 	},
+	"ultrathink-skills": {
+		state: "unsupported",
+		tools: [],
+		reason: "it manages skills generated on the local host, and the connector has no skill store",
+		instead: HOSTS_WITH_PLUGIN,
+		description: "Manage generated skills: list, disable or delete",
+	},
 };
 
 /** The overlay entry of a name, own properties only: a name such as "constructor" is not a command. */
