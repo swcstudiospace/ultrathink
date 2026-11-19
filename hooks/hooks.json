@@ -40,6 +40,16 @@
 				]
 			},
 			{
+				"matcher": "^(TodoWrite|todo_write)$",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "\"${CLAUDE_PLUGIN_ROOT}/bin/run-bun\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pr-sync.ts\"",
+						"timeout": 30
+					}
+				]
+			},
+			{
 				"matcher": "^(Skill|skill)$",
 				"hooks": [
 					{

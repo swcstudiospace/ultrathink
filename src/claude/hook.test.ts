@@ -38,6 +38,7 @@ import {
 	runCompactionReset,
 	runPromptSubmit,
 	runSkillsPrompt,
+	runTodoWriteRecall,
 	runToolResultRecall,
 	savePlanRecord,
 	type HookDeps,
@@ -5034,6 +5035,164 @@ describe("mid-session recall (SPE-34394)", () => {
 			await runPromptSubmit(input, deps);
 			runCompactionReset({ session_id: "s1" }, deps);
 			expect(readSession(deps.stateDir, "s1")?.recall).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("TodoWrite phase-boundary recall", () => {
+	const DOCS_SKILL: SkillRecallOutcome = {
+		status: "used",
+		skills: [
+			{
+				name: "general-docs",
+				description: "Write the doc before the deploy",
+				path: "/state/teach/skill-drafts/general-docs/SKILL.md",
+				target: "drafts",
+				sourceIds: ["m1"],
+				occurrences: 1,
+				injected: true,
+			} as unknown as SkillRecallOutcome["skills"][number],
+		],
+		chars: 120,
+		ms: 3,
+	};
+	const todoWrite = (todos: { content: string; status: string; activeForm?: string }[]) => ({
+		session_id: "s1",
+		cwd: "/repo",
+		hook_event_name: "PostToolUse",
+		tool_name: "TodoWrite",
+		tool_input: { todos },
+	});
+
+	/**
+	 * Recall on for phase-boundary skills with a seam that records each lookup's query and task type. The prompt
+	 * runs first (recall off) so the session record the snapshot is kept on exists; its own skills lookup is reset
+	 * away so the assertions count only the boundary lookups.
+	 */
+	async function todoDeps(): Promise<{ deps: HookDeps; cleanup: () => void; queries: unknown[] }> {
+		const queries: unknown[] = [];
+		const { deps, cleanup } = recallDeps({
+			skills: async ({ query, key }) => {
+				queries.push({ query, taskType: key?.taskType });
+				return DOCS_SKILL;
+			},
+		});
+		await runPromptSubmit(input, deps);
+		queries.length = 0;
+		deps.config.recallSettings = recallConfig({ phaseBoundary: true }, { skills: true });
+		return { deps, cleanup, queries };
+	}
+
+	test("a pending to in_progress TodoWrite transition fires the phaseBoundary skills recall", async () => {
+		const { deps, cleanup, queries } = await todoDeps();
+		try {
+			const first = await runTodoWriteRecall(
+				todoWrite([{ content: "Write docs", status: "pending", activeForm: "Writing docs" }]),
+				deps,
+			);
+			expect(first).toEqual({ audit: [], reasons: [] });
+			expect(readSession(deps.stateDir, "s1")?.recall?.lastTodos).toEqual([
+				{ content: "Write docs", status: "pending", activeForm: "Writing docs" },
+			]);
+			const started = await runTodoWriteRecall(
+				todoWrite([{ content: "Write docs", status: "in_progress", activeForm: "Writing docs" }]),
+				deps,
+			);
+			expect(started.audit).toContainEqual({
+				source: "skills",
+				trigger: "phaseBoundary",
+				outcome: "fired",
+				injected: 1,
+				deduped: 0,
+			});
+			expect(started.additionalContext).toContain("general-docs");
+			expect(queries).toEqual([{ query: "Write docs", taskType: "general" }]);
+			expect(readSession(deps.stateDir, "s1")?.recall?.lastTodos).toEqual([
+				{ content: "Write docs", status: "in_progress", activeForm: "Writing docs" },
+			]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("an in_progress to completed TodoWrite transition fires the phaseBoundary skills recall", async () => {
+		const { deps, cleanup, queries } = await todoDeps();
+		try {
+			await runTodoWriteRecall(todoWrite([{ content: "Write docs", status: "in_progress" }]), deps);
+			const finished = await runTodoWriteRecall(
+				todoWrite([{ content: "Write docs", status: "completed" }]),
+				deps,
+			);
+			expect(finished.audit).toContainEqual({
+				source: "skills",
+				trigger: "phaseBoundary",
+				outcome: "fired",
+				injected: 1,
+				deduped: 0,
+			});
+			expect(finished.additionalContext).toContain("general-docs");
+			expect(queries).toEqual([{ query: "Write docs", taskType: "general" }]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("the same todo step does not refire in the same session", async () => {
+		const { deps, cleanup } = await todoDeps();
+		try {
+			await runTodoWriteRecall(todoWrite([{ content: "Write docs", status: "pending" }]), deps);
+			const started = await runTodoWriteRecall(
+				todoWrite([{ content: "Write docs", status: "in_progress" }]),
+				deps,
+			);
+			expect(started.audit.some((entry) => entry.outcome === "fired")).toBe(true);
+			const finished = await runTodoWriteRecall(
+				todoWrite([{ content: "Write docs", status: "completed" }]),
+				deps,
+			);
+			expect(finished.audit.some((entry) => entry.outcome === "fired")).toBe(false);
+			expect(finished.audit.some((entry) => entry.outcome === "skipped_cooldown")).toBe(true);
+			expect(finished.additionalContext).toBeUndefined();
+			expect(readSession(deps.stateDir, "s1")?.recall?.lastTodos).toEqual([
+				{ content: "Write docs", status: "completed" },
+			]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("status noise that is not a forward transition does not fire the phaseBoundary recall", async () => {
+		const { deps, cleanup, queries } = await todoDeps();
+		try {
+			await runTodoWriteRecall(
+				todoWrite([
+					{ content: "Write docs", status: "pending", activeForm: "Writing docs" },
+					{ content: "Ship it", status: "pending" },
+				]),
+				deps,
+			);
+			// pending -> completed skips the start, so it is not a boundary.
+			expect(
+				await runTodoWriteRecall(todoWrite([{ content: "Write docs", status: "completed" }]), deps),
+			).toEqual({ audit: [], reasons: [] });
+			// completed -> pending reopens the step: backward, not a boundary.
+			expect(
+				await runTodoWriteRecall(todoWrite([{ content: "Write docs", status: "pending" }]), deps),
+			).toEqual({ audit: [], reasons: [] });
+			// A repeat, an activeForm-only change, a reorder and a brand-new in_progress todo move nothing.
+			expect(
+				await runTodoWriteRecall(
+					todoWrite([
+						{ content: "Ship it", status: "pending" },
+						{ content: "Write docs", status: "pending", activeForm: "Drafting docs" },
+						{ content: "New step", status: "in_progress" },
+					]),
+					deps,
+				),
+			).toEqual({ audit: [], reasons: [] });
+			expect(queries).toEqual([]);
 		} finally {
 			cleanup();
 		}
