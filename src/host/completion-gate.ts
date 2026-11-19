@@ -861,7 +861,7 @@ function describe(problems: readonly GateProblem[]): string {
  * terminal failed_or_cancelled). No skip edges: discovering/discussing/
  * planning cannot jump to plan_validated, ready cannot jump to validating (it must pass through executing),
  * and validating cannot go back to ready. `waiting_for_plan` self-quarantine is idempotent. The sole
- * backward exceptions are quarantine: plan_validated/ready may fall back to waiting_for_plan so a rejected
+ * backward exceptions are quarantine: discovering/discussing, plan_validated/ready may fall back to waiting_for_plan so a rejected
  * Plan candidate clears the prior plan instead of executing on it; executing/validating have no such edge.
  * validating may also branch to partial_failure (validation found the plan incomplete), and partial_failure
  * may fall back to waiting_for_plan for a late valid Plan. Legacy `complete()` bypasses this table by direct
@@ -869,8 +869,8 @@ function describe(problems: readonly GateProblem[]): string {
  * pending/validated plan record for plan_validated and #plan for ready (see tryTransition). */
 export function planGateAllowed(from: GateState): ReadonlySet<GateState> {
 	const table: Record<string, readonly GateState[]> = {
-		discovering: ["discussing", "failed_or_cancelled"],
-		discussing: ["planning", "failed_or_cancelled"],
+		discovering: ["discussing", "waiting_for_plan", "failed_or_cancelled"],
+		discussing: ["planning", "waiting_for_plan", "failed_or_cancelled"],
 		planning: ["waiting_for_plan", "failed_or_cancelled"],
 		waiting_for_plan: ["waiting_for_plan", "plan_validated", "failed_or_cancelled"],
 		plan_validated: ["plan_validated", "ready", "waiting_for_plan", "failed_or_cancelled"],
