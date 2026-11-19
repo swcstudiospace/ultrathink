@@ -225,6 +225,16 @@ describe("CompletionGate", () => {
 		expect(gate.release()).toMatchObject({ ok: false, reason: "already_released" });
 	});
 
+	test("legacy staged-only ready cannot beginExecution without a validated Plan", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		gate.stage({ text: plan(), expected: FULL }, "graph");
+		expect(gate.complete().state).toBe("ready");
+		expect(gate.plan).toBeUndefined();
+		expect(gate.beginExecution()).toBe(false);
+		expect(gate.state).toBe("ready");
+		expect(gate.transitions.at(-1)).toMatchObject({ accepted: false, from: "ready", to: "executing" });
+	});
+
 	test("quarantine resets the one-shot release so a revived plan can release", () => {
 		const gate = new CompletionGate({ inactivityMs: 0 });
 		const first = gate.submitPlan(CHECKLIST_PLAN);

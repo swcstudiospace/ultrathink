@@ -461,6 +461,7 @@ export class CompletionGate {
 		// Executing only from ready (plan_validated must pass through ready);
 		// complete only with validation evidence recorded in validating.
 		if (to === "executing" && from !== "ready") ok = false;
+		if (to === "executing" && this.#plan === undefined) ok = false;
 		if (to === "complete" && this.#validationEvidence === undefined) ok = false;
 		// plan_validated requires a pending (submitPlan) or already validated (#plan) record:
 		// the public edge alone never proves a checklist-validated Plan exists.
