@@ -652,6 +652,8 @@ export interface RecallRecord {
 	lastScope?: string;
 	/** The last pass: one audit entry per source it considered, and the reasons a lookup failed or timed out. */
 	last?: { at: number; audit: RecallAuditEntry[]; reasons: string[] };
+	/** The last failed tool result: its normalized error signature and when it came. The next non-error tool result takes it. */
+	lastFailure?: { signature: string; at: number };
 }
 
 export function serializeRecallState(state: RecallRuntimeState): RecallStateRecord {

@@ -5038,3 +5038,63 @@ describe("mid-session recall (SPE-34394)", () => {
 		}
 	});
 });
+
+describe("turn panels and retry resolution", () => {
+	test("a prompt's panels are prompt_turn panels that start when its lookups start", async () => {
+		const { deps, cleanup } = recallDeps({ now: () => 4_242 });
+		deps.config.recallSettings.panels.informationPanels = true;
+		try {
+			const planned = await runPromptSubmit(input, deps);
+			expect(planned.panels?.substrate).toMatchObject({
+				trigger: "prompt_turn",
+				timing: { startedAt: 4_242 },
+			});
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("the substrate panel names the brief request: its query and filters are not empty", async () => {
+		const { deps, cleanup } = recallDeps({
+			brief: async () => briefOf("## Substrate brief: acme/widgets\n- earlier work"),
+		});
+		deps.config.recallSettings.panels.informationPanels = true;
+		try {
+			const planned = await runPromptSubmit(input, deps);
+			expect(planned.panels?.substrate?.request?.queryPreview).toStartWith("Substrate brief for");
+			expect(planned.panels?.substrate?.request?.filters).toContain("surface: claude-code");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a successful retry resolves this session's teachable moment whose signature the failure had", async () => {
+		const { deps, cleanup } = recallDeps();
+		try {
+			// The prompt writes the session record the failure marker is kept on; recall is off for it.
+			await runPromptSubmit(input, deps);
+			deps.config.recallSettings = recallConfig({ failure: true }, {});
+			deps.config.teach = { ...deps.config.teach, enabled: true, recall: true };
+			await runToolResultRecall(TOOL_ERROR, deps);
+			openStore(storeDir(deps.stateDir)).put(
+				moment("m1", { name: "EACCES: permission denied", sourcePhase: "session:s1" }),
+			);
+			await runToolResultRecall(
+				{
+					session_id: "s1",
+					cwd: "/repo",
+					hook_event_name: "PostToolUse",
+					tool_name: "Bash",
+					tool_response: { stdout: "ok" },
+				},
+				deps,
+			);
+			expect(openStore(storeDir(deps.stateDir)).get("m1")).toMatchObject({
+				resolvedAt: expect.any(String),
+				rootCause: "resolved by a successful retry of the same failure signature",
+			});
+		} finally {
+			cleanup();
+		}
+	});
+});
