@@ -3250,6 +3250,11 @@ export function createOmpExtension(
 			flight.view = settledView instanceof Promise ? await settledView : settledView;
 			flight.prd = result?.prd;
 			const gate = flight.gate;
+			const prdRefusal = flight.prd?.error;
+			if (prdRefusal)
+				guard(() =>
+					flight.ctx?.ui?.notify?.(`Tree-of-Thought PRDs did not run: ${prdRefusal}`, "warning"),
+				);
 			if (gate?.state === "generating") {
 				if (flight.content)
 					gate.complete({

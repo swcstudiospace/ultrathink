@@ -2061,6 +2061,26 @@ describe("completion gate (Omp before_agent_start)", () => {
 			expect(await run()).toEqual(planMsg(planXml(2), view));
 		});
 
+		test("a PRD refusal names its reason in a warning notice", async () => {
+			const view = viewOf(2);
+			const prd = { ...outcome(0, 3, { synced: 0, pending: 0, failed: 0 }), error: "PRD_NO_PRICE" };
+			const notices: string[] = [];
+			const ctx = { ui: { notify: (text: string) => void notices.push(text) } };
+			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000, {}, ctx);
+			await run();
+			expect(notices).toContain("Tree-of-Thought PRDs did not run: PRD_NO_PRICE");
+		});
+
+		test("a PRD outcome without an error raises no Tree-of-Thought notice", async () => {
+			const view = viewOf(2);
+			const prd = outcome(3, 0, { synced: 3, pending: 0, failed: 0 });
+			const notices: string[] = [];
+			const ctx = { ui: { notify: (text: string) => void notices.push(text) } };
+			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000, {}, ctx);
+			expect(await run()).toEqual(planMsg(planXml(2), view));
+			expect(notices).toEqual([]);
+		});
+
 		test("a PRD outcome that finishes after a no-dialog hold is shown, never sent as a turn-starting aside", async () => {
 			const planner = slow();
 			const { run, sent } = setup(planner.plan, 1);
