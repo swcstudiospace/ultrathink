@@ -15,7 +15,6 @@ import { formatElapsed, type Paint, paint, truncateToWidth, visibleWidth } from 
 import { type PlanView, projectResolution } from "./view.ts";
 import { isRecord } from "../shared.ts";
 import { renderPanel } from "../recall/panel-render.ts";
-import type { PanelEnvelope } from "../recall/panel-model.ts";
 import type { TurnPanels } from "../recall/turn-panels.ts";
 
 export const PLAN_TYPE = "ultrathink-plan";
@@ -1176,19 +1175,20 @@ const PANEL_LABELS: Record<keyof TurnPanels, string> = {
  * The information panels of a plan, drawn under the plan rows. `details` is untrusted session data: an entry without a
  * string status, or one that fails to render, is not drawn, so a malformed panel never throws into Omp's renderer.
  */
-function panelSectionRows(panels: unknown, recordRef: string | undefined, room: number): string[] {
-	if (!isRecord(panels)) return [];
+function panelSectionRows(
+	panels: TurnPanels | undefined,
+	recordRef: string | undefined,
+	room: number,
+): string[] {
+	if (!panels) return [];
 	const now = Date.now();
 	const rows: string[] = [];
 	for (const key of Object.keys(PANEL_LABELS) as Array<keyof TurnPanels>) {
 		const panel = panels[key];
-		if (!isRecord(panel) || typeof panel.status !== "string") continue;
+		if (!panel || typeof panel.status !== "string") continue;
 		try {
 			const label = PANEL_LABELS[key];
-			rows.push(
-				"",
-				...renderPanel(panel as unknown as PanelEnvelope, room, { label, now, recordRef }),
-			);
+			rows.push("", ...renderPanel(panel, room, { label, now, recordRef }));
 		} catch {
 			// not drawn: see the comment above
 		}
