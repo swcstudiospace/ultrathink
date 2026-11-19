@@ -15,7 +15,7 @@ blocked-evidence accounting (density 0.0, live sync blocked), **not success**.
 - SPE-35032 n5 aggregate state rules
 - SPE-35033 n7 Synthesize wave-ordered execution plan (steps SPE-35075..SPE-35081)
 
-Sub-issue census range: SPE-35053..SPE-35081+ (all Backlog, team Spectrum Web Co).
+Sub-issue census range: SPE-35034..SPE-35081 (all Backlog, team Spectrum Web Co).
 Graph fit: parents + steps named above; full per-issue enumeration requires
 `linear list_issues` with `parentId` per parent — **blocked** (see evidence).
 
@@ -89,8 +89,6 @@ never replace).
 - Shell (`bash` probe of repo state): BLOCKED — `swarm-assignment` lane rule
   (edit-only mid-flight); docs_bundle.py/docs_bundle.ts therefore recorded as
   skipped:tool-missing for this lane.
-- Wrong checkout: `.git/HEAD` = `refs/heads/swarm/T0175/plan-gate`, not
-  `swarm/T0175/linear-prd-density`; branch switch requires shell, blocked.
 - Headings sanity of the template fragment above: h1 1, skips 0 (SUCCESS).
 
 ## Omitted sub-issues
