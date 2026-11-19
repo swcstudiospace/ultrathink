@@ -14,14 +14,21 @@
  * `skill_manage` so its `skills.write_approval` gate applies, and ultrathink never writes `~/.hermes/skills`.
  * The marker is read again just before the rename, but a write landing between that read and the rename is still
  * replaced: POSIX rename has no compare-and-swap, so closing that window needs a lock held across check and rename.
+ *
+ * Authored drafts: a confirmed lesson that qualifies (its signature recurs, or the user captured it explicitly) and has no
+ * skill covering its signature yet is written by `authorDrafts` as a draft under `<stateDir>/generated-skills`. Nothing
+ * here activates it: only a user's `promoteGeneratedSkill` does. A user-authored skill in that store is never written.
  */
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
 	chmodSync,
 	closeSync,
+	existsSync,
 	lstatSync,
 	mkdirSync,
 	openSync,
+	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
@@ -29,13 +36,16 @@ import {
 } from "node:fs";
 import type { Stats } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { buildSkillworthyState } from "../decisions/questions.ts";
 import { SKILLWORTHY_AT } from "../decisions/types.ts";
 import { nowOf, unique } from "../shared.ts";
 import { askLesson, lessonDecisions } from "./context.ts";
 import { documentIdFor, tagsFor } from "./mapping.ts";
 import { redactText } from "./redact.ts";
+import { appendAudit } from "./skill-audit.ts";
+import { authorSkill, type SkillChecks, type SkillSource } from "./skill-author.ts";
+import { listGenerated, writeGeneratedSkill } from "./skill-store.ts";
 import { openStore, storeDir } from "./store.ts";
 import { TEACH_KILL_ENV } from "./types.ts";
 import type {
@@ -98,10 +108,12 @@ export function promotionCandidates(ctx: TeachContext): TeachableMoment[] {
 /**
  * Jev's veto over `promote --due` and `promoteDue`: a moment whose P(skillworthy) is below `decisions.skillworthyAt` is left out,
  * everything else (Jev off, no key, any failure) stays. An explicit `teach promote <id>` never goes through here: that is a human decision.
+ * Each answer is kept in `verdicts` for the sweep, so a moment is asked once however many passes consider it.
  */
 export async function filterSkillworthy(
 	moments: TeachableMoment[],
 	ctx: TeachContext,
+	verdicts = new Map<string, boolean>(),
 ): Promise<TeachableMoment[]> {
 	const jev = lessonDecisions(ctx);
 	if (!jev) return moments;
@@ -109,6 +121,11 @@ export async function filterSkillworthy(
 	const redact = { home: ctx.env.HOME ?? ctx.env.USERPROFILE, repoRoot: ctx.cwd };
 	const kept: TeachableMoment[] = [];
 	for (const moment of moments) {
+		const known = verdicts.get(moment.id);
+		if (known !== undefined) {
+			if (known) kept.push(moment);
+			continue;
+		}
 		const state = buildSkillworthyState({
 			name: redactText(moment.name, redact),
 			description: redactText(moment.description, redact),
@@ -120,8 +137,9 @@ export async function filterSkillworthy(
 			threshold: at,
 			action: (p) => (p < at ? "skip" : "keep"),
 		});
-		if (verdict.status === "ok" && verdict.p < at) continue;
-		kept.push(moment);
+		const keep = !(verdict.status === "ok" && verdict.p < at);
+		verdicts.set(moment.id, keep);
+		if (keep) kept.push(moment);
 	}
 	return kept;
 }
@@ -518,6 +536,119 @@ function freeName(draft: SkillDraft, taken: Set<string>): SkillDraft {
 	}
 }
 
+/** The window a signature must recur in, twice, to qualify a lesson that was not captured explicitly. */
+const SKILL_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+/** The generated-skill store under the state directory; `skills.ts` and `omp.ts` read it there. */
+const GENERATED_STORE = "generated-skills";
+
+/** The names on disk in the generated store, user-authored entries included. */
+function namesIn(dir: string): string[] {
+	try {
+		return readdirSync(dir);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+}
+
+/**
+ * Authors a draft generated skill for each confirmed lesson that qualifies, unless a skill already covers its signature.
+ * A new skill is written as a draft. A candidate the validator refuses writes nothing and is audited with its reason; the
+ * moment id names that record, since a refused candidate has no skill name. A manifest that cannot be read is left alone.
+ * Existing generated skills are not merged into: their manifest entries carry no steps to merge with, so a covered
+ * signature is skipped.
+ */
+async function authorDrafts(ctx: TeachContext, verdicts: Map<string, boolean>): Promise<void> {
+	const dir = join(ctx.stateDir, GENERATED_STORE);
+	const listed = await listGenerated(dir);
+	if (!listed.ok) return;
+	let records: Array<{ moment: TeachableMoment; source: SkillSource }>;
+	let names: string[];
+	try {
+		records = openStore(storeDir(ctx.stateDir))
+			.list()
+			.map((moment) => ({
+				moment,
+				source: {
+					id: moment.id,
+					name: moment.name,
+					description: moment.description,
+					body: moment.body,
+					createdAt: moment.createdAt,
+				},
+			}));
+		names = namesIn(dir);
+	} catch {
+		return;
+	}
+	let entries = listed.entries;
+	const taken = new Set([...entries.map((entry) => entry.name), ...names]);
+	const pool = records
+		.filter(({ moment }) => moment.status !== "superseded")
+		.map(({ source }) => source);
+	const nowIso = new Date(nowOf(ctx)).toISOString();
+	const checks: SkillChecks = {
+		exists: (path) =>
+			!isAbsolute(path) && !path.split(/[\\/]/).includes("..") && existsSync(join(ctx.cwd, path)),
+		symbolKnown: (symbol) =>
+			spawnSync("git", ["-C", ctx.cwd, "grep", "-q", "-F", "-w", "-e", symbol], {
+				stdio: "ignore",
+			}).status === 0,
+	};
+	for (const { moment, source } of records) {
+		if (moment.status !== "confirmed") continue;
+		try {
+			const outcome = authorSkill({
+				candidate: {
+					source,
+					facts: {
+						taskType: moment.kind,
+						scopeGlobs: [],
+						resolved: false,
+						userConfirmed: moment.origin === "explicit",
+					},
+				},
+				pool,
+				existing: [],
+				takenNames: taken,
+				now: nowIso,
+				windowMs: SKILL_WINDOW_MS,
+				checks,
+			});
+			if (outcome.status === "skipped") continue;
+			const by = outcome.qualification.qualified ? outcome.qualification.by : undefined;
+			if (outcome.status === "rejected") {
+				appendAudit(dir, {
+					ts: nowIso,
+					action: "reject",
+					name: moment.id,
+					source_ids: [moment.id],
+					reject_kind: outcome.reason.kind,
+					...("field" in outcome.reason ? { reject_field: outcome.reason.field } : {}),
+					...(by === undefined ? {} : { qualification_by: by }),
+				});
+				continue;
+			}
+			if (entries.some((entry) => entry.signature_hash === outcome.skill.signature_hash)) {
+				continue;
+			}
+			const [kept] = await filterSkillworthy([moment], ctx, verdicts);
+			if (kept === undefined || outcome.skill.status !== "draft") continue;
+			const written = await writeGeneratedSkill(
+				dir,
+				outcome.skill,
+				nowIso,
+				by === undefined ? {} : { qualification_by: by },
+			);
+			if (!written.ok) continue;
+			entries = [...entries.filter((entry) => entry.name !== written.entry.name), written.entry];
+			taken.add(written.entry.name);
+		} catch {
+			// reason: an unexpected failure stops this lesson only; the next sweep tries it again.
+		}
+	}
+}
+
 export async function promoteDue(
 	ctx: TeachContext,
 ): Promise<{ drafted: InstallOutcome[]; installed: InstallOutcome[] }> {
@@ -536,7 +667,8 @@ export async function promoteDue(
 	} catch {
 		return result;
 	}
-	for (const moment of await filterSkillworthy(promotionCandidates(ctx), ctx)) {
+	const verdicts = new Map<string, boolean>();
+	for (const moment of await filterSkillworthy(promotionCandidates(ctx), ctx, verdicts)) {
 		try {
 			const draft = freeName(renderSkillDraft([moment], ctx), taken);
 			taken.add(draft.name);
@@ -551,5 +683,6 @@ export async function promoteDue(
 			// reason: an unrenderable lesson is dropped with no signal, so the failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 		}
 	}
+	await authorDrafts(ctx, verdicts);
 	return result;
 }
