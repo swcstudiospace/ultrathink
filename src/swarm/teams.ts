@@ -30,7 +30,7 @@ import { promisify } from "node:util";
 import { buildBlock, type PstackInput } from "../cursor/pstack.ts";
 import { clip } from "../resilience/limits.ts";
 import { dropJevKeys } from "../route-defaults.ts";
-import { isRecord } from "../shared.ts";
+import { collapseWhitespace, isRecord } from "../shared.ts";
 import { type ClassifyVerdict, preflightClassify } from "./classify.ts";
 import {
 	briefDigest,
@@ -989,10 +989,7 @@ export async function stopLanes(
 
 /** Untrusted lane-written text rendered as data: control characters and runs of whitespace become one space. */
 function oneLine(text: string, max: number): string {
-	const flat = text
-		.replace(/\p{Cc}+/gu, " ")
-		.replace(/\s+/g, " ")
-		.trim();
+	const flat = collapseWhitespace(text.replace(/\p{Cc}+/gu, " "));
 	// reason: an empty marker keeps the output as it was, and clip never leaves a lone high surrogate at the cut
 	return clip(flat, max, "").text;
 }

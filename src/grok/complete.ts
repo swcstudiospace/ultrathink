@@ -40,7 +40,7 @@ import {
 	withRetry,
 } from "../resilience/retry.ts";
 import type { abortableSleep } from "../resilience/sleep.ts";
-import { isAbortError } from "../shared.ts";
+import { collapseWhitespace, isAbortError } from "../shared.ts";
 import { attachReport, readReport } from "../completion-report.ts";
 
 export type Completer = (system: string, user: string, signal?: AbortSignal) => Promise<string>;
@@ -201,11 +201,6 @@ function classifyAttempt(error: unknown, now?: number): FailureVerdict {
 	return isTransientFailure(error, now);
 }
 
-function oneLine(error: unknown): string {
-	const text = error instanceof Error ? error.message : String(error);
-	return redactSecrets(text).replace(/\s+/g, " ").trim().slice(0, 200);
-}
-
 /**
  * Runs one transport attempt through the retry kernel: same model, `Retry-After` honoured, abort ends the backoff.
  * The root error is rethrown (never the kernel wrapper) with the final report attached.
@@ -232,7 +227,12 @@ async function withGrokRetry<T>(attempt: () => Promise<T>, opts: GrokCompleteOpt
 				? { httpStatus: fields.status }
 				: {}),
 			...(typeof fields.retryAfterMs === "number" ? { retryAfterMs: fields.retryAfterMs } : {}),
-			cause: interim?.cause === TRUNCATED_REPLY ? TRUNCATED_REPLY : oneLine(root),
+			cause:
+				interim?.cause === TRUNCATED_REPLY
+					? TRUNCATED_REPLY
+					: collapseWhitespace(
+							redactSecrets(root instanceof Error ? root.message : String(root)),
+						).slice(0, 200),
 		});
 		throw root;
 	}

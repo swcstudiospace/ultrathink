@@ -7,6 +7,7 @@
  */
 import { USER_AGENT } from "../mcp/providers.ts";
 import { redactSecrets } from "../redact.ts";
+import { parseJson } from "../shared.ts";
 import { readBodyPrefix } from "./body.ts";
 
 /** Bytes buffered from a response before it is refused as too large; the rest of the stream is cancelled unread. */
@@ -42,15 +43,6 @@ export type HttpOutcome =
 	| { kind: "response"; status: number; json: unknown; text: string; ms: number }
 	| { kind: "timeout"; ms: number }
 	| { kind: "network"; message: string; ms: number };
-
-function parseJson(text: string): unknown {
-	if (text === "") return undefined;
-	try {
-		return JSON.parse(text);
-	} catch {
-		return undefined;
-	}
-}
 
 /** Rejects with the signal's reason as soon as it aborts, even when `work` ignores the signal. */
 function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {

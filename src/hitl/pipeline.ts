@@ -13,7 +13,7 @@ import { redactLine } from "../teach/redact.ts";
 import { extractJsonObject } from "../think/graph.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 import type { UpliftResult } from "../types.ts";
-import { isAbortError } from "../shared.ts";
+import { collapseWhitespace, isAbortError } from "../shared.ts";
 import { clarifySystemPrompt } from "./prompts.ts";
 import {
 	type Clarification,
@@ -56,11 +56,6 @@ const MAX_OPTION_DESCRIPTION_CHARS = 400;
 const MAX_FAILED_CHARS = 200;
 const ID_NUMBER = /^[qk](\d+)$/;
 
-/** Whitespace collapsed to single spaces, then capped at `max`: model text cannot open a new line or grow a prompt. */
-function oneLine(text: string, max: number): string {
-	return clip(text.replace(/\s+/g, " ").trim(), max).text;
-}
-
 function asString(value: unknown): string {
 	return typeof value === "string" ? value.trim() : "";
 }
@@ -75,17 +70,20 @@ export function normalizeQuestion(question: string): string {
 
 function normalizeOption(raw: unknown): ClarificationOption | undefined {
 	if (typeof raw === "string") {
-		const label = oneLine(raw, MAX_LABEL_CHARS);
+		const label = clip(collapseWhitespace(raw), MAX_LABEL_CHARS).text;
 		return label ? { label } : undefined;
 	}
 	if (!raw || typeof raw !== "object") return undefined;
 	const obj = raw as Record<string, unknown>;
-	const label = oneLine(
-		asString(obj.label) || asString(obj.name) || asString(obj.value),
+	const label = clip(
+		collapseWhitespace(asString(obj.label) || asString(obj.name) || asString(obj.value)),
 		MAX_LABEL_CHARS,
-	);
+	).text;
 	if (!label) return undefined;
-	const description = oneLine(asString(obj.description), MAX_OPTION_DESCRIPTION_CHARS);
+	const description = clip(
+		collapseWhitespace(asString(obj.description)),
+		MAX_OPTION_DESCRIPTION_CHARS,
+	).text;
 	return description ? { label, description } : { label };
 }
 
@@ -111,7 +109,7 @@ function normalizeHeader(raw: unknown, fallback: string): string {
 }
 
 function normalizeQuestionText(raw: unknown): string {
-	const question = oneLine(asString(raw), MAX_QUESTION_CHARS);
+	const question = clip(collapseWhitespace(asString(raw)), MAX_QUESTION_CHARS).text;
 	if (!question) return "";
 	return /[?]$/.test(question) ? question : `${question.replace(/[.!:;,]+$/, "")}?`;
 }
@@ -129,7 +127,7 @@ function claimedOptions(claimed: string): ClarificationOption[] {
 
 /** `why` text: single-lined and capped like a question. */
 function normalizeWhy(raw: unknown): string {
-	return oneLine(asString(raw), MAX_QUESTION_CHARS);
+	return clip(collapseWhitespace(asString(raw)), MAX_QUESTION_CHARS).text;
 }
 
 /**
@@ -144,7 +142,7 @@ function normalizeItem(raw: unknown, index: number, claimed?: string): Clarifica
 	if (!question) return undefined;
 
 	let options = normalizeOptions(obj.options);
-	let wanted = oneLine(asString(obj.default), MAX_LABEL_CHARS).toLowerCase();
+	let wanted = clip(collapseWhitespace(asString(obj.default)), MAX_LABEL_CHARS).text.toLowerCase();
 	if (options.length < MIN_OPTIONS) {
 		if (claimed === undefined) return undefined;
 		options = claimedOptions(claimed);
@@ -204,7 +202,10 @@ function normalizeSettledItem(
 	if (!question) return undefined;
 
 	const options = normalizeOptions(raw.options);
-	const wanted = oneLine(asString(raw.default), MAX_LABEL_CHARS).toLowerCase();
+	const wanted = clip(
+		collapseWhitespace(asString(raw.default)),
+		MAX_LABEL_CHARS,
+	).text.toLowerCase();
 	const match = wanted
 		? options.find((option) => option.label.toLowerCase() === wanted)
 		: undefined;
@@ -329,7 +330,7 @@ function graphConclusions(graph: ThoughtGraph): string {
 		.filter((node) => (node.conclusion ?? "").trim())
 		.map(
 			(node) =>
-				`[${node.id}] ${oneLine(node.title, FIELD_CAPS.title)}\n${
+				`[${node.id}] ${clip(collapseWhitespace(node.title), FIELD_CAPS.title).text}\n${
 					// Head and tail: the closing Open questions: list of a critique is what the clarifier needs most.
 					clipHeadTail(
 						(node.conclusion ?? "").trim(),
@@ -367,7 +368,7 @@ function clarifyUserPayload(opts: RunClarifyOptions, maxQuestions: number): stri
 			"<answered>",
 			...answered.map(
 				(item) =>
-					`${oneLine(item.question, MAX_QUESTION_CHARS)} → ${oneLine(item.answer ?? "", MAX_QUESTION_CHARS)}`,
+					`${clip(collapseWhitespace(item.question), MAX_QUESTION_CHARS).text} → ${clip(collapseWhitespace(item.answer ?? ""), MAX_QUESTION_CHARS).text}`,
 			),
 			"</answered>",
 		);

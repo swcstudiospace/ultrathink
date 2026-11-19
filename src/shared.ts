@@ -75,6 +75,16 @@ export function plural(count: number, noun: string): string {
 	return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
+/** `text` with each run of whitespace collapsed to one space and the ends trimmed. */
+export function collapseWhitespace(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
+}
+
+/** The message of an `Error`, or the string form of any other thrown value. */
+export function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 /** A file's identity on disk (size, mtime, inode), or `undefined` when it cannot be stat'ed. */
 export function diskFingerprint(
 	path: string,

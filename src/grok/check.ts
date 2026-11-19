@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 import { classifyFailure, type FailureClass } from "../failover/classify.ts";
 import { redactSecrets } from "../redact.ts";
+import { collapseWhitespace } from "../shared.ts";
 import { type GrokAuthStatus, grokAuthStatus } from "./auth.ts";
 import { type GrokCallInfo, grokComplete } from "./complete.ts";
 import type { GrokConfig } from "./types.ts";
@@ -49,11 +50,6 @@ function fixHint(failure: FailureClass, model: string): string | undefined {
 	}
 }
 
-function oneLine(error: unknown): string {
-	const message = error instanceof Error ? error.message : String(error);
-	return redactSecrets(message).replace(/\s+/g, " ").trim().slice(0, MAX_MESSAGE_CHARS);
-}
-
 /**
  * A one-word probe through the configured Grok route, reported as a line and a JSON mirror.
  * The cap of PROBE_MAX_TOKENS output tokens applies on the HTTP route only; the
@@ -88,7 +84,9 @@ export async function runGrokCheck(
 		});
 	} catch (error) {
 		const failure = classifyFailure(error);
-		const message = oneLine(error);
+		const message = collapseWhitespace(
+			redactSecrets(error instanceof Error ? error.message : String(error)),
+		).slice(0, MAX_MESSAGE_CHARS);
 		const fix = fixHint(failure, model);
 		const text = `Grok check: error (${failure}) · ${message}${fix ? ` · fix: ${fix}` : ""}`;
 		return {

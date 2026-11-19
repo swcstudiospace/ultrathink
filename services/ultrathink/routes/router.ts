@@ -31,7 +31,7 @@ import {
 } from "../mcp/mcp.ts";
 import { createToolHost } from "../mcp/tool-host.ts";
 import type { PlanningInfo } from "../mcp/tools-connector.ts";
-import { diskFingerprint } from "../../../src/shared.ts";
+import { diskFingerprint, errorMessage } from "../../../src/shared.ts";
 import {
 	DEFAULT_ALLOWED_ORIGINS,
 	originAllowed,
@@ -569,10 +569,6 @@ function waitUpTo(
 			},
 		);
 	});
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 /**
