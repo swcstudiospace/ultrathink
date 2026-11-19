@@ -1,0 +1,45 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`inline command: hitl last (formatHitlEcho) no clarifications recorded 1`] = `"No clarifications recorded"`;
+
+exports[`inline command: hitl last (formatHitlEcho) answered clarification shows its options, default and answer 1`] = `
+"q1 [blocking] Storage: Which store should hold the sessions table?
+   options: Postgres | SQLite (default: Postgres)
+   answer: SQLite"
+`;
+
+exports[`inline command: hitl last (formatHitlEcho) assumed and knowledge-settled answers carry their source suffix 1`] = `
+"q2 Compatibility: Keep the old login endpoint during the migration?
+   options: Yes, keep it | No, remove it
+   answer: Yes, keep it (assumed)
+q3 Provider: Which login provider should the flow use?
+   options: Greptile | Local
+   answer: Local (knowledge base: auth/login.md)"
+`;
+
+exports[`inline command: hitl last (formatHitlEcho) an unanswered blocking clarification shows its options and default only 1`] = `
+"q4 [blocking] Region: Which region should the deployment target?
+   options: eu | us (default: eu)"
+`;
+
+exports[`inline command: hitl last (formatHitlEcho) all clarifications print in list order, one block each 1`] = `
+"q1 [blocking] Storage: Which store should hold the sessions table?
+   options: Postgres | SQLite (default: Postgres)
+   answer: SQLite
+q2 Compatibility: Keep the old login endpoint during the migration?
+   options: Yes, keep it | No, remove it
+   answer: Yes, keep it (assumed)
+q3 Provider: Which login provider should the flow use?
+   options: Greptile | Local
+   answer: Local (knowledge base: auth/login.md)
+q4 [blocking] Region: Which region should the deployment target?
+   options: eu | us (default: eu)"
+`;
+
+exports[`inline command: think last (graphSketch) empty graph prints nothing 1`] = `""`;
+
+exports[`inline command: think last (graphSketch) nodes print their id, collapsed title, kind and dependencies 1`] = `
+"n1  Understand the current login path  understand
+n2  Decompose the rollout  decompose  deps=n1
+n3  Synthesize the plan  synthesize  deps=n1,n2"
+`;

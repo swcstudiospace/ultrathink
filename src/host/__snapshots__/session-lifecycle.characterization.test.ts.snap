@@ -1,0 +1,51 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`session start: restoreSessionPhases no phase-loop directory: nothing is restored or reported 1`] = `
+{
+  "kind": "none",
+}
+`;
+
+exports[`session start: restoreSessionPhases empty session id: nothing is restored even when a record exists 1`] = `
+{
+  "kind": "none",
+}
+`;
+
+exports[`session start: restoreSessionPhases stored record of this session: the restored phase order is reported 1`] = `
+{
+  "kind": "message",
+  "text": "Ultrathink restored this session's phase loop: Discuss.",
+}
+`;
+
+exports[`session start: restoreSessionPhases record of another session: this session restores nothing 1`] = `
+{
+  "kind": "none",
+}
+`;
+
+exports[`session start: restoreSessionPhases paused record: the report names the pause checkpoint and its time 1`] = `
+{
+  "kind": "message",
+  "text": "Ultrathink restored this session's phase loop: Discuss. The record holds a pause checkpoint from 2026-11-17T10:00:00.000Z.",
+}
+`;
+
+exports[`session end: pauseSessionPhases no phase-loop directory: nothing is paused and nothing is reported 1`] = `
+{
+  "kind": "none",
+}
+`;
+
+exports[`session end: pauseSessionPhases no record for this session: nothing is paused and nothing is reported 1`] = `
+{
+  "kind": "none",
+}
+`;
+
+exports[`session end: pauseSessionPhases stored record: the pause is written silently 1`] = `
+{
+  "kind": "none",
+}
+`;

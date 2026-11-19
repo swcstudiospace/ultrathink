@@ -1,0 +1,177 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`subagent block: spawn reply (formatLaneHandles) no lanes spawned 1`] = `"No swarm lanes spawned."`;
+
+exports[`subagent block: spawn reply (formatLaneHandles) started, log-noted and failed lanes 1`] = `
+"Swarm lanes: 2/3 spawned
+a1b2c3d4-0-x1: pid 4242 · /state/swarm/a1b2c3d4-0-x1
+    log /state/swarm/a1b2c3d4-0-x1/run.log
+e5f6a7b8-1-y2: pid 4343 · /state/swarm/e5f6a7b8-1-y2
+    log /state/swarm/e5f6a7b8-1-y2/run.log
+    note lane.json could not be written
+c9d0e1f2-2-z3: failed to start — spawn failed: ENOENT"
+`;
+
+exports[`subagent block: status reply (formatLaneStatusText) no lanes under the state directory 1`] = `"No swarm lanes found under this state directory yet."`;
+
+exports[`subagent block: status reply (formatLaneStatusText) running, done and probe-failed lanes 1`] = `
+"running · 3 of 5 tasks done
+    graph ut-1234567890-abcdef12
+    log /state/swarm/a1b2c3d4-0-x1/run.log
+done · 4 of 4 tasks done
+    log /state/swarm/e5f6a7b8-1-y2/run.log
+c9d0e1f2-2-z3: orch_status.py probe failed: timeout
+    log /state/swarm/c9d0e1f2-2-z3/run.log"
+`;
+
+exports[`subagent block: status reply (formatLaneStatusText) omitted older lanes add a single trailing notice 1`] = `
+"running · 3 of 5 tasks done
+    graph ut-1234567890-abcdef12
+    log /state/swarm/a1b2c3d4-0-x1/run.log
+1 older lane not shown — raise ULTRATHINK_SWARM_MAX_LANES-scoped discovery or prune <stateDir>/swarm"
+`;
+
+exports[`subagent block: status reply (formatLaneStatusText) several omitted lanes pluralise the notice 1`] = `
+"running · 3 of 5 tasks done
+    graph ut-1234567890-abcdef12
+    log /state/swarm/a1b2c3d4-0-x1/run.log
+3 older lanes not shown — raise ULTRATHINK_SWARM_MAX_LANES-scoped discovery or prune <stateDir>/swarm"
+`;
+
+exports[`subagent block: card snapshots spawn card projects each handle onto its planned brief 1`] = `
+{
+  "lanes": [
+    {
+      "brief": "Add rate limiting to the login endpoint",
+      "laneId": "a1b2c3d4-0-x1",
+      "logPath": "/state/swarm/a1b2c3d4-0-x1/run.log",
+      "pid": 4242,
+      "stateDir": "/state/swarm/a1b2c3d4-0-x1",
+    },
+    {
+      "brief": "Migrate the sessions table to the new store",
+      "laneId": "e5f6a7b8-1-y2",
+      "logPath": "/state/swarm/e5f6a7b8-1-y2/run.log",
+      "pid": 4343,
+      "stateDir": "/state/swarm/e5f6a7b8-1-y2",
+    },
+    {
+      "brief": "Document the swarm lane states",
+      "error": "spawn failed: ENOENT",
+      "laneId": "c9d0e1f2-2-z3",
+      "logPath": "/state/swarm/c9d0e1f2-2-z3/run.log",
+      "stateDir": "/state/swarm/c9d0e1f2-2-z3",
+    },
+  ],
+  "spawned": 2,
+  "total": 3,
+}
+`;
+
+exports[`subagent block: card snapshots status card keeps probe errors and the omitted count 1`] = `
+{
+  "lanes": [
+    {
+      "done": 3,
+      "graphId": "ut-1234567890-abcdef12",
+      "laneId": "a1b2c3d4-0-x1",
+      "logPath": "/state/swarm/a1b2c3d4-0-x1/run.log",
+      "state": "running",
+      "summary": "running · 3 of 5 tasks done",
+      "total": 5,
+    },
+    {
+      "done": 4,
+      "laneId": "e5f6a7b8-1-y2",
+      "logPath": "/state/swarm/e5f6a7b8-1-y2/run.log",
+      "state": "done",
+      "summary": "done · 4 of 4 tasks done",
+      "total": 4,
+    },
+    {
+      "error": "orch_status.py probe failed: timeout",
+      "laneId": "c9d0e1f2-2-z3",
+      "logPath": "/state/swarm/c9d0e1f2-2-z3/run.log",
+      "summary": "",
+    },
+  ],
+  "omitted": 2,
+}
+`;
+
+exports[`subagent block: swarm card rendering spawn card, compact 1`] = `
+[
+  "<borderMuted>╭──────────────────────────────────────────────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**ultrathink-swarm**</></><bg:customMessageBg>                          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> 2/3 lanes spawned</><bg:customMessageBg>                                                    </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> a1b2c3d4-0-x1 · Add rate limiting to the login endpoint · a1b2c3d4-…</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> e5f6a7b8-1-y2 · Migrate the sessions table to the new store · e5f6a…</><bg:customMessageBg> </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> c9d0e1f2-2-z3 · spawn failed: ENOENT · c9d0e1f2-2-z3</><bg:customMessageBg>                 </><borderMuted>│</>",
+  "<borderMuted>╰──────────────────────────────────────────────────────────────────────╯</>",
+]
+`;
+
+exports[`subagent block: swarm card rendering spawn card, expanded 1`] = `
+[
+  "<borderMuted>╭──────────────────────────────────────────────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg>                                                                      </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**ultrathink-swarm**</></><bg:customMessageBg>                          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> 2/3 lanes spawned</><bg:customMessageBg>                                                    </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> a1b2c3d4-0-x1 · pid 4242</><bg:customMessageBg>                                             </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Add rate limiting to the login endpoint</><bg:customMessageBg>                              </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> /state/swarm/a1b2c3d4-0-x1</><bg:customMessageBg>                                           </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> log /state/swarm/a1b2c3d4-0-x1/run.log</><bg:customMessageBg>                               </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> e5f6a7b8-1-y2 · pid 4343</><bg:customMessageBg>                                             </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> Migrate the sessions table to the new store</><bg:customMessageBg>                          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> /state/swarm/e5f6a7b8-1-y2</><bg:customMessageBg>                                           </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> log /state/swarm/e5f6a7b8-1-y2/run.log</><bg:customMessageBg>                               </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> c9d0e1f2-2-z3</><bg:customMessageBg>                                                        </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> spawn failed: ENOENT</><bg:customMessageBg>                                                 </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> /state/swarm/c9d0e1f2-2-z3</><bg:customMessageBg>                                           </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> log /state/swarm/c9d0e1f2-2-z3/run.log</><bg:customMessageBg>                               </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg>                                                                      </><borderMuted>│</>",
+  "<borderMuted>╰──────────────────────────────────────────────────────────────────────╯</>",
+]
+`;
+
+exports[`subagent block: swarm card rendering status card, compact 1`] = `
+[
+  "<borderMuted>╭──────────────────────────────────────────────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**ultrathink-swarm**</></><bg:customMessageBg>                          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> 1 done · 1 incomplete · 1 failed</><bg:customMessageBg>                                     </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> 2 older lanes not shown</><bg:customMessageBg>                                              </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> a1b2c3d4-0-x1 · 3/5 done · running · 3 of 5 tasks done</><bg:customMessageBg>               </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> e5f6a7b8-1-y2 · 4/4 done · done · 4 of 4 tasks done</><bg:customMessageBg>                  </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> c9d0e1f2-2-z3 · orch_status.py probe failed: timeout</><bg:customMessageBg>                 </><borderMuted>│</>",
+  "<borderMuted>╰──────────────────────────────────────────────────────────────────────╯</>",
+]
+`;
+
+exports[`subagent block: swarm card rendering status card, expanded 1`] = `
+[
+  "<borderMuted>╭──────────────────────────────────────────────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg>                                                                      </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> <customMessageLabel>**ultrathink-swarm**</></><bg:customMessageBg>                          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> 1 done · 1 incomplete · 1 failed</><bg:customMessageBg>                                     </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> 2 older lanes not shown</><bg:customMessageBg>                                              </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> a1b2c3d4-0-x1 · 3/5 done</><bg:customMessageBg>                                             </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> running · 3 of 5 tasks done</><bg:customMessageBg>                                          </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> log /state/swarm/a1b2c3d4-0-x1/run.log</><bg:customMessageBg>                               </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> e5f6a7b8-1-y2 · 4/4 done</><bg:customMessageBg>                                             </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> done · 4 of 4 tasks done</><bg:customMessageBg>                                             </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> log /state/swarm/e5f6a7b8-1-y2/run.log</><bg:customMessageBg>                               </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> c9d0e1f2-2-z3</><bg:customMessageBg>                                                        </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> orch_status.py probe failed: timeout</><bg:customMessageBg>                                 </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg> log /state/swarm/c9d0e1f2-2-z3/run.log</><bg:customMessageBg>                               </><borderMuted>│</>",
+  "<borderMuted>│</><bg:customMessageBg>                                                                      </><borderMuted>│</>",
+  "<borderMuted>╰──────────────────────────────────────────────────────────────────────╯</>",
+]
+`;
+
+exports[`subagent block: swarm card rendering zero-lane status card names the empty state 1`] = `
+[
+  "<borderMuted>╭──────────────────────────────────────────────────────────────────────╮</>",
+  "<borderMuted>│</><bg:customMessageBg> No swarm lanes</><bg:customMessageBg>                                                       </><borderMuted>│</>",
+  "<borderMuted>╰──────────────────────────────────────────────────────────────────────╯</>",
+]
+`;
