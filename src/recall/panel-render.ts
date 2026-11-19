@@ -7,6 +7,7 @@
  */
 import type { KnowledgeStage } from "../greptile/knowledge-probe.ts";
 import { formatElapsed, truncateToWidth } from "../host/omp-paint.ts";
+import { collapseWhitespace } from "../shared.ts";
 import { type PanelBody, type PanelEnvelope, type PanelItem, panelCounts } from "./panel-model.ts";
 
 export interface PanelRenderContext {
@@ -49,11 +50,6 @@ const PARTIAL_LABEL: Record<PartialReason, string> = {
 	truncated: "the output was cut short",
 };
 
-/** Make untrusted text one line: control and bidi characters become spaces, whitespace runs collapse. */
-function oneLine(text: string): string {
-	return text.replace(CONTROL_RUN, " ").replace(/\s+/g, " ").trim();
-}
-
 function formatTime(ms: number | null): string {
 	if (ms === null) return "no time";
 	const date = new Date(ms);
@@ -67,12 +63,12 @@ function row(kind: "item" | "excluded" | "missing" | "stage", text: string): str
 
 function itemText(item: PanelItem): string {
 	const fields = [
-		`[${item.itemStatus}] ${oneLine(item.id)}`,
-		oneLine(item.title),
-		oneLine(item.preview),
-		`${item.source.kind}:${oneLine(item.source.ref)}`,
+		`[${item.itemStatus}] ${collapseWhitespace(item.id.replace(CONTROL_RUN, " "))}`,
+		collapseWhitespace(item.title.replace(CONTROL_RUN, " ")),
+		collapseWhitespace(item.preview.replace(CONTROL_RUN, " ")),
+		`${item.source.kind}:${collapseWhitespace(item.source.ref.replace(CONTROL_RUN, " "))}`,
 		formatTime(item.timestamp),
-		`match: ${oneLine(item.matchReason)}`,
+		`match: ${collapseWhitespace(item.matchReason.replace(CONTROL_RUN, " "))}`,
 	];
 	if (item.score) {
 		fields.push(
@@ -96,10 +92,16 @@ function bodyRows(body: PanelBody): string[] {
 	return [
 		...body.items.map((item) => row("item", itemText(item))),
 		...body.excluded.map((entry) =>
-			row("excluded", `${oneLine(entry.ref)} · reason: ${entry.reason}`),
+			row(
+				"excluded",
+				`${collapseWhitespace(entry.ref.replace(CONTROL_RUN, " "))} · reason: ${entry.reason}`,
+			),
 		),
 		...body.missing.map((entry) =>
-			row("missing", `${oneLine(entry.ref)} · reason: ${entry.reason}`),
+			row(
+				"missing",
+				`${collapseWhitespace(entry.ref.replace(CONTROL_RUN, " "))} · reason: ${entry.reason}`,
+			),
 		),
 		...stageRows(body.stages),
 	];
@@ -117,7 +119,7 @@ function retryText(retry: ErrorEnvelope["retry"]): string {
 }
 
 function panelLines(panel: PanelEnvelope, context: PanelRenderContext): string[] {
-	const head = `[${STATUS_TAG[panel.status]}] ${oneLine(context.label)}`;
+	const head = `[${STATUS_TAG[panel.status]}] ${collapseWhitespace(context.label.replace(CONTROL_RUN, " "))}`;
 	switch (panel.status) {
 		case "loading": {
 			const elapsed =
@@ -149,9 +151,9 @@ function panelLines(panel: PanelEnvelope, context: PanelRenderContext): string[]
 			return [
 				head,
 				`  class: ${panel.errorClass}`,
-				`  message: ${oneLine(panel.message)}`,
+				`  message: ${collapseWhitespace(panel.message.replace(CONTROL_RUN, " "))}`,
 				`  retry: ${retryText(panel.retry)}`,
-				`  record: ${context.recordRef === undefined ? "not attached" : oneLine(context.recordRef)}`,
+				`  record: ${context.recordRef === undefined ? "not attached" : collapseWhitespace(context.recordRef.replace(CONTROL_RUN, " "))}`,
 				...stageRows(panel.stages),
 			];
 	}

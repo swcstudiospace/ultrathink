@@ -13,7 +13,7 @@ import type {
 	HindsightResult,
 	RetainOutcome,
 } from "../hindsight/types.ts";
-import { nowOf, unique } from "../shared.ts";
+import { collapseWhitespace, nowOf, unique } from "../shared.ts";
 import { hindsightFor, teachEnabled, tryStore } from "./context.ts";
 import {
 	contentFor,
@@ -61,10 +61,6 @@ const STATUS_RANK: Record<MomentStatus, number> = {
 
 type Failure = { ok: false; kind?: HindsightErrorKind; message: string };
 type Step = { ok: true } | Failure;
-
-function oneLine(text: string, max: number): string {
-	return text.replace(/\s+/g, " ").trim().slice(0, max).trimEnd();
-}
 
 /** True when Hindsight holds an up-to-date copy: a repeat capture bumps `lastSeenAt` past `retained.at`. */
 function isRetained(moment: TeachableMoment): boolean {
@@ -124,31 +120,35 @@ function buildMoment(
 		unique(
 			(Array.isArray(items) ? items : [])
 				.flatMap((item) =>
-					typeof item === "string" ? [oneLine(redactText(item, redact), max)] : [],
+					typeof item === "string"
+						? [collapseWhitespace(redactText(item, redact)).slice(0, max).trimEnd()]
+						: [],
 				)
 				.filter(Boolean),
 			{ max: MAX_LIST_ITEMS },
 		);
 
-	const name = oneLine(redactText(rawName, redact), MAX_NAME_CHARS);
+	const name = collapseWhitespace(redactText(rawName, redact)).slice(0, MAX_NAME_CHARS).trimEnd();
 	const project = projectOf(ctx.cwd);
 	const iso = new Date(now).toISOString();
 	const moment: TeachableMoment = {
 		id: randomUUID(),
 		name,
-		description: oneLine(
+		description: collapseWhitespace(
 			redactText(typeof input.description === "string" ? input.description : "", redact),
-			MAX_DESCRIPTION_CHARS,
-		),
+		)
+			.slice(0, MAX_DESCRIPTION_CHARS)
+			.trimEnd(),
 		body: redactText(rawBody, redact)
 			.replace(/\r\n?/g, "\n")
 			.trim()
 			.slice(0, MAX_BODY_CHARS)
 			.trimEnd(),
-		sourcePhase: oneLine(
+		sourcePhase: collapseWhitespace(
 			redactText(typeof input.sourcePhase === "string" ? input.sourcePhase : "", redact),
-			120,
-		),
+		)
+			.slice(0, 120)
+			.trimEnd(),
 		sourceArtifacts: list(input.sourceArtifacts, 300),
 		createdAt: iso,
 		tags: list(input.tags, 80).slice(0, MAX_TAGS),

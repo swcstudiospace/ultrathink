@@ -22,7 +22,7 @@ import {
 	withRetry,
 } from "../resilience/retry.ts";
 import { dropJevKeys } from "../route-defaults.ts";
-import { isAbortError } from "../shared.ts";
+import { collapseWhitespace, isAbortError } from "../shared.ts";
 import { attachReport, readReport } from "../completion-report.ts";
 
 export const CHILD_ENV = "ULTRATHINK_CHILD";
@@ -266,10 +266,6 @@ function classify(error: unknown, now?: number): ReturnType<typeof isTransientFa
 	return isTransientFailure(error, now);
 }
 
-function oneLine(text: string): string {
-	return redactSecrets(text).replace(/\s+/g, " ").trim().slice(0, 200);
-}
-
 /**
  * Runs one completion attempt through the kernel retry (3 attempts, same model). A failure leaves with a
  * `CompletionReport` attached to the ORIGINAL error (never the retry wrapper); an abort leaves bare.
@@ -294,7 +290,7 @@ export async function withCompletionReport<T>(
 				? { httpStatus: root.apiErrorStatus }
 				: {}),
 			...(retryAfterMs === undefined ? {} : { retryAfterMs }),
-			cause: truncated ? TRUNCATED_REPLY : oneLine(message),
+			cause: truncated ? TRUNCATED_REPLY : collapseWhitespace(redactSecrets(message)).slice(0, 200),
 		});
 		throw root;
 	}

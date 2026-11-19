@@ -28,6 +28,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { HostId } from "../host/types.ts";
+import { collapseWhitespace, parseJson } from "../shared.ts";
 import {
 	type StackConnection,
 	type StackProbe,
@@ -572,14 +573,6 @@ async function viaCli(
 		: presentFrom(status, "", "unknown", "cli", probedAt);
 }
 
-function parseJson(text: string): unknown {
-	try {
-		return JSON.parse(text);
-	} catch {
-		return undefined;
-	}
-}
-
 async function viaSocket(
 	stateDir: string,
 	opts: ProbeRealmRawOpts,
@@ -724,10 +717,7 @@ export function realmHint(probe: RealmProbe, host: HostId): RealmHint {
 
 /** One line, control characters collapsed, bounded: daemon text never breaks the one-line reason rule. */
 function oneLine(text: string): string {
-	const flat = text
-		.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
-		.replace(/\s+/g, " ")
-		.trim();
+	const flat = collapseWhitespace(text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " "));
 	return flat.length > 200 ? `${flat.slice(0, 200)}...` : flat;
 }
 

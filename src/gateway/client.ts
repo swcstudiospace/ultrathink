@@ -11,7 +11,7 @@ import { requestJson } from "../net/http.ts";
 import { createSseParser } from "../mcp/sse.ts";
 import { redactSecrets } from "../redact.ts";
 import type { GatewayCallResult, GatewayFailure } from "./types.ts";
-import { isRecord } from "../shared.ts";
+import { collapseWhitespace, isRecord } from "../shared.ts";
 
 const MAX_REASON = 200;
 
@@ -30,9 +30,9 @@ interface ToolPayload {
 	isError: boolean;
 }
 
-function oneLine(text: string, token: string): string {
-	const out = redactSecrets(text, token).replace(/\s+/g, " ").trim();
-	return out.length > MAX_REASON ? `${out.slice(0, MAX_REASON - 3)}...` : out;
+/** Caps a collapsed, redacted reason at MAX_REASON; the cut is marked with `...`. */
+function capReason(line: string): string {
+	return line.length > MAX_REASON ? `${line.slice(0, MAX_REASON - 3)}...` : line;
 }
 
 function jsonRecord(text: string): Record<string, unknown> | undefined {
@@ -65,7 +65,10 @@ function toolPayload(
 		const code =
 			typeof message.error.message === "string" ? message.error.message : "request failed";
 		const unknown = code.includes("unknown_tool");
-		return { kind: unknown ? "unready" : "degraded", reason: oneLine(code, token) };
+		return {
+			kind: unknown ? "unready" : "degraded",
+			reason: capReason(collapseWhitespace(redactSecrets(code, token))),
+		};
 	}
 	const result = isRecord(message.result) ? message.result : message;
 	const structured = isRecord(result.structuredContent) ? result.structuredContent : undefined;
@@ -93,14 +96,28 @@ function classify(
 	const error = typeof payload.error === "string" ? payload.error : "";
 	const reason = typeof payload.reason === "string" ? payload.reason : error;
 	if (error === "unknown_tool")
-		return { kind: "unready", reason: oneLine(`unready: unknown_tool: ${reason}`, token) };
+		return {
+			kind: "unready",
+			reason: capReason(
+				collapseWhitespace(redactSecrets(`unready: unknown_tool: ${reason}`, token)),
+			),
+		};
 	if (error === "not_configured" || payload.state === "not_configured") {
-		return { kind: "degraded", reason: oneLine(`degraded: not_configured: ${reason}`, token) };
+		return {
+			kind: "degraded",
+			reason: capReason(
+				collapseWhitespace(redactSecrets(`degraded: not_configured: ${reason}`, token)),
+			),
+		};
 	}
 	if (error || isError)
 		return {
 			kind: "degraded",
-			reason: oneLine(`degraded: ${error || "error"}: ${reason || "gateway tool error"}`, token),
+			reason: capReason(
+				collapseWhitespace(
+					redactSecrets(`degraded: ${error || "error"}: ${reason || "gateway tool error"}`, token),
+				),
+			),
 		};
 	return undefined;
 }
@@ -155,13 +172,19 @@ export function createGatewayClient(options: GatewayClientOptions): {
 				return {
 					ok: false,
 					kind: "network",
-					reason: oneLine(`degraded: ${outcome.message}`, options.token),
+					reason: capReason(
+						collapseWhitespace(redactSecrets(`degraded: ${outcome.message}`, options.token)),
+					),
 				};
 			if (outcome.status < 200 || outcome.status >= 300) {
 				return {
 					ok: false,
 					kind: "degraded",
-					reason: oneLine(`degraded: gateway HTTP ${outcome.status}`, options.token),
+					reason: capReason(
+						collapseWhitespace(
+							redactSecrets(`degraded: gateway HTTP ${outcome.status}`, options.token),
+						),
+					),
 				};
 			}
 			const message = rpcMessage(outcome.json, outcome.text);

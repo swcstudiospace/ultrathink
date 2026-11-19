@@ -32,7 +32,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, posix } from "node:path";
 import { installPlugin, type Registration } from "../../adapters/install.ts";
-import { isDirectory } from "../shared.ts";
+import { errorMessage, isDirectory } from "../shared.ts";
 import { convertArtifact, isManaged } from "./convert.ts";
 import { applyEdit, isEmptyConfig, type KeyedEdit, revertEdit } from "./edits.ts";
 import {
@@ -228,10 +228,6 @@ function report(
 /** A runtime that cannot be planned fails when it was asked for by id and is skipped under "all". */
 function unplannable(options: EngineOptions, id: string, error: string): RuntimeReport {
 	return report(id, options.runtime === "all" ? "skipped" : "failed", undefined, [], [error]);
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 async function installOne(

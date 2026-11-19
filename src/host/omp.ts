@@ -19,7 +19,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isAbortError, isDirectory } from "../shared.ts";
+import { collapseWhitespace, isAbortError, isDirectory } from "../shared.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -809,11 +809,6 @@ async function loadErrorFlags(): Promise<void> {
 	}
 }
 
-/** The redacted, single-line, at most 200 characters form of a provider's failure text, for the report and the private cause. */
-function oneLine(text: string): string {
-	return redactSecrets(text).replace(/\s+/g, " ").trim().slice(0, 200);
-}
-
 /** The redacted failure detail of each attempt's error; private to this module, never enumerable on the error. */
 const FAILURE_DETAIL = new WeakMap<object, string>();
 
@@ -861,13 +856,13 @@ function thrownFailure(error: unknown, retryAfterMs: number | undefined): Error 
 	return withFields(
 		nativeFailure("omp-native completion failed", error),
 		{ status: thrownStatus(error), retryAfterMs, errorId },
-		oneLine(text),
+		collapseWhitespace(redactSecrets(text)).slice(0, 200),
 	);
 }
 
 /** A resolved `stopReason: "error"` reply: safe public message, the redacted provider text as private cause. */
 function resultFailure(result: AssistantMessage, retryAfterMs: number | undefined): Error {
-	const detail = oneLine(result.errorMessage ?? "");
+	const detail = collapseWhitespace(redactSecrets(result.errorMessage ?? "")).slice(0, 200);
 	return withFields(
 		nativeFailure(
 			`omp-native completion failed (provider error${httpStatus(result)})`,
