@@ -2538,7 +2538,17 @@ describe("phase repair-runtime", () => {
 	const phaseLoopDir = () => join(dir, "phase-loop");
 	const CLOCK_AT = "1970-01-01T00:00:01.000Z";
 	const REASON = "checked the verification log";
-	const REPAIR = ["--phase", "01-core", "--session", "s", "--reason", REASON];
+	const repairAs = (owner: string, phase = "01-core") => [
+		"--phase",
+		phase,
+		"--session",
+		"s",
+		"--reason",
+		REASON,
+		"--owner",
+		owner,
+	];
+	const REPAIR = repairAs("alice");
 	const phaseRecord = () => {
 		const outcome = fileStore(phaseLoopDir()).load("s");
 		return outcome.status === "found" ? outcome.record : undefined;
@@ -2551,6 +2561,8 @@ describe("phase repair-runtime", () => {
 		const { runtimeSessionId: _marker, ...unmarked } = outcome.record;
 		store.save("s", unmarked);
 	};
+	/** Deps whose owner allowlist (ship.owners) lists alice. */
+	const listed = (o: FakeOpts = {}) => deps({ ...o, config: { owners: ["alice"], ...o.config } });
 	const repair = (d: ShipDeps, ...flags: string[]) =>
 		runShip(["phase", "repair-runtime", "--cwd", dir, ...flags], d);
 
@@ -2559,14 +2571,14 @@ describe("phase repair-runtime", () => {
 	});
 
 	test("refuses a missing record and writes nothing", async () => {
-		const out = await repair(deps({ phases: [] }), ...REPAIR);
+		const out = await repair(listed({ phases: [] }), ...REPAIR);
 		expect(out.output).toMatchObject({ ok: false });
 		expect(String(out.output.error)).toContain("no phase record for session s");
 		expect(phaseRecord()).toBeUndefined();
 	});
 
 	test("refuses a record that already has the runtime marker", async () => {
-		const current = deps();
+		const current = listed();
 		const before = phaseRecord();
 		const out = await repair(current, ...REPAIR);
 		expect(out.output).toMatchObject({ ok: false });
@@ -2576,7 +2588,7 @@ describe("phase repair-runtime", () => {
 	});
 
 	test("refuses a record that is not at Verify", async () => {
-		const current = deps({ phases: ["Discuss", "Plan", "Execute"] });
+		const current = listed({ phases: ["Discuss", "Plan", "Execute"] });
 		unmark();
 		const before = phaseRecord();
 		const out = await repair(current, ...REPAIR);
@@ -2585,8 +2597,36 @@ describe("phase repair-runtime", () => {
 		expect(phaseRecord()).toEqual(before);
 	});
 
+	test("a missing --owner is a usage error (exit 2) and the record is unchanged", async () => {
+		const current = listed();
+		unmark();
+		const before = JSON.stringify(phaseRecord());
+		const out = await repair(current, "--phase", "01-core", "--session", "s", "--reason", REASON);
+		expect(out.code).toBe(2);
+		expect(out.output).toMatchObject({
+			ok: false,
+			error: "phase repair-runtime needs --owner <name>",
+		});
+		expect(phaseRecord()?.runtimeSessionId).toBeUndefined();
+		expect(JSON.stringify(phaseRecord())).toBe(before);
+	});
+
+	test("an owner not listed in ship.owners is refused and the record is unchanged", async () => {
+		const current = listed();
+		unmark();
+		const before = JSON.stringify(phaseRecord());
+		const out = await repair(current, ...repairAs("bob"));
+		expect(out.code).toBe(0);
+		expect(out.output).toMatchObject({
+			ok: false,
+			error: 'owner "bob" is not in ship.owners in your user config',
+		});
+		expect(phaseRecord()?.runtimeSessionId).toBeUndefined();
+		expect(JSON.stringify(phaseRecord())).toBe(before);
+	});
+
 	test("a Verify record with no marker gets the marker and the reason, and no other field changes", async () => {
-		const current = deps();
+		const current = listed();
 		unmark();
 		const before = phaseRecord();
 		if (before === undefined) throw new Error("the Verify record is missing before the repair");
@@ -2608,10 +2648,10 @@ describe("phase repair-runtime", () => {
 	test("a record that names a different phase is refused and keeps no marker", async () => {
 		mkdirSync(join(dir, ".planning", "phases", "01-core"), { recursive: true });
 		mkdirSync(join(dir, ".planning", "phases", "02-next"), { recursive: true });
-		const current = deps();
+		const current = listed();
 		open("s", { id: "verification:01-core", owner: "human" }, fileStore(phaseLoopDir()));
 		unmark();
-		const out = await repair(current, "--phase", "02-next", "--session", "s", "--reason", REASON);
+		const out = await repair(current, ...repairAs("alice", "02-next"));
 		expect(out.output).toMatchObject({ ok: false });
 		expect(String(out.output.error)).toContain("not 02-next");
 		expect(phaseRecord()?.runtimeSessionId).toBeUndefined();
@@ -2620,7 +2660,7 @@ describe("phase repair-runtime", () => {
 	test("after the repair, the merge confirmation for the session is no longer refused as not connected", async () => {
 		await ship("review", deps());
 		unmark();
-		const repaired = await repair(deps(), ...REPAIR);
+		const repaired = await repair(listed(), ...REPAIR);
 		expect(repaired.output).toMatchObject({ ok: true });
 		const out = await ship("merge", deps());
 		expect(out.output.reason).not.toBe("runtime is not connected");

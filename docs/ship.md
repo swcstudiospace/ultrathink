@@ -309,12 +309,12 @@ Merge the PR on GitHub yourself. ultrathink does not watch it afterwards, and it
 <clone>/bin/ultrathink-ship <subcommand> --state <state dir>/sessions/<session-id>.json [--cwd <repo dir>] [--ignore-gsd]
 <clone>/bin/ultrathink-ship merge|run --state <state dir>/sessions/<session-id>.json --owner <name> --owner-override <reason> [--cwd <repo dir>]
 <clone>/bin/ultrathink-ship resolve <phase> --state <state dir>/sessions/<session-id>.json --owner <name> --evidence <text> [--cwd <repo dir>]
-<clone>/bin/ultrathink-ship phase repair-runtime --phase <phase> --session <session-id> --reason <text> [--cwd <repo dir>]
+<clone>/bin/ultrathink-ship phase repair-runtime --phase <phase> --session <session-id> --reason <text> --owner <name> [--cwd <repo dir>]
 ```
 
 `--state` is required for every subcommand except `phase repair-runtime`, which takes `--session` instead. `--cwd` defaults to the current directory, so run it from the project's working tree or pass `--cwd`; the config files are read for that directory. Each call prints one JSON object. The exit code is 0, except 2 for usage errors and 127 when Bun is missing. Failures are reported in the JSON as `ok: false` with a `reason` or `error`.
 
-An owner decision (`resolve --owner`, or `merge`/`run --owner-override`) needs its owner listed in `ship.owners` in your user config. Any other name, or an empty list, is refused before anything is written.
+An owner decision (`resolve --owner`, `phase repair-runtime --owner`, or `merge`/`run --owner-override`) needs its owner listed in `ship.owners` in your user config. Any other name, or an empty list, is refused before anything is written.
 
 | Subcommand | Does |
 |---|---|
@@ -325,7 +325,7 @@ An owner decision (`resolve --owner`, or `merge`/`run --owner-override`) needs i
 | `run` | `assess`, `pr`, `review` and `merge` in one call. It stops at the first step that is not ready, and before `merge` when `autoMerge` is off. When the review passed, it merges within what is left of its `waitMs`. Fixes stay with the agent. |
 | `status` | Print the stored ship state, including the attempt log. |
 | `resolve <phase>` | Owner only. Closes the open HTIL entry `verification:<phase>` with `--owner <name> --evidence <text>` and the time, under the phase-record lock. Refuses when no open entry exists for the phase. |
-| `phase repair-runtime` | Owner only. For a phase record written before the runtime marker: `--phase <phase> --session <sessionId> --reason <text>` sets `runtimeSessionId` to the session under the phase-record lock and keeps the reason and time as `runtimeRepair`. Refuses when the record is missing, already has the marker, is not at Verify, or names a different phase. Nothing else in the record changes. |
+| `phase repair-runtime` | Owner only. For a phase record written before the runtime marker: `--phase <phase> --session <sessionId> --reason <text> --owner <name>` sets `runtimeSessionId` to the session under the phase-record lock and keeps the reason and time as `runtimeRepair`. The owner must be listed in `ship.owners`, as for `resolve`. Refuses when the record is missing, already has the marker, is not at Verify, or names a different phase. Nothing else in the record changes. |
 
 Progress is stored under `ship` in the session record. It holds `phase`, `assessment`, `pr`, `rounds`, `pending`, `waiting`, `attempts`, `blockedReason`, `nudgedAt`, `mergedAt` and `history`. See [Configuration](configuration.md#state-directories) for where each host keeps the record.
 
