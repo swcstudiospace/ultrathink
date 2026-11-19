@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Ship owner decisions (`resolve --owner`, `merge` and `run` with `--owner-override`) name only an owner listed in the new `ship.owners` key (user files only). Until it is set, these decisions are refused and nothing is written.
+- The Omp completion gate releases a plan only when the whole plan is ready. A partial plan is held with the list of what is missing; there is no `proceed` or confirm path. The `ULTRATHINK_GATE_ALLOW_PARTIAL` variable is removed.
+- Tree-of-Thought PRDs use the session's selected model on every host. The cheapest-model routing, the `models.tot` candidate and model settings, and the price refusal are removed. PRDs are written from the Sub Issue text with no repository check, and `PRD_TEMPLATE_VERSION` is 3.
 
 ## [1.21.2] - 2026-11-08
 

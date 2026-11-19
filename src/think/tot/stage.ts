@@ -2,13 +2,12 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * The Tree-of-Thought pipeline stage: after Graph of Thought and the CoT Sub Issues exist and the tracker rows are made,
- * one PRD per Sub Issue is written (cheapest allowed model, checkpointed), then synced into its row. The stage returns a
+ * one PRD per Sub Issue is written (on the session's selected model, checkpointed), then synced into its row. The stage returns a
  * {@link PrdOutcome}: the manifest and the sync summary the CompletionGate reads, so the session only starts once every
  * PRD was generated and delivered (`failed == 0 && pending == 0`).
  *
  * The stage never throws for a model, tracker or disk failure: that is a partial outcome the gate turns into a
- * `partial_failure`. Only cancellation is rethrown. GoT and CoT never come through here: this is the one place the
- * cheap-model path is opened (`assertCheapPathAllowed("tot")`).
+ * `partial_failure`. Only cancellation is rethrown. GoT and CoT never come through here.
  *
  * Nothing the model wrote reaches the XML as text. The PRDs live in the Sub Issue rows; the XML only carries counts and
  * the model id, escaped (`injectPrdXml`), next to the row links the ISSUES block already renders.
@@ -16,45 +15,38 @@
 import { resolve } from "node:path";
 import type { ClaudeCompleter } from "../../claude/complete.ts";
 import type { UltrathinkConfig } from "../../config.ts";
-import type { HostId } from "../../host/types.ts";
 import { createMcpClientIfCredentialed } from "../../mcp/client.ts";
 import { storePath as defaultStorePath } from "../../mcp/store.ts";
 import { redactSecrets } from "../../redact.ts";
 import type { RetryPolicy, RetrySeams } from "../../resilience/retry.ts";
-import {
-	assertCheapPathAllowed,
-	createToTRouter,
-	type HostModelInfo,
-	PRD_NO_SELECTED_MODEL,
-	resolveToTModel,
-	type SelectedModel,
-	type SmokeCache,
-	TotRefusal,
-} from "../../route/cheapest-model.ts";
 import { isAbortError } from "../../shared.ts";
 import { type ToolCaller, stepKey } from "../../track/create.ts";
 import { syncPrds } from "../../track/prd-sync.ts";
 import type { SyncDeps, SyncSummary } from "../../track/prd-types.ts";
 import type { TrackingRefs, TrackPlan } from "../../track/types.ts";
+import { escapeXml, escapeXmlText } from "../../uplift/xml.ts";
 import { escapeText } from "./escape.ts";
 import {
-	type CompleteFn,
 	generatePrd,
-	getProjectFacts,
 	type ModelChoice,
 	type PrdRequest,
-	type ProjectFacts,
 	renderFallbackPrd,
 	runTot,
 	type TotManifest,
 	type TotProgress,
 } from "./index.ts";
+import type { PrdRecord } from "./types.ts";
+
+/** The `error` of a stage asked to write PRDs with no selected model id: nothing is written. */
+const PRD_NO_SELECTED_MODEL = "PRD_NO_SELECTED_MODEL";
+/** The reason every run records: Tree-of-Thought always uses the session's selected model. */
+const SELECTED_REASON = "the selected model: Tree-of-Thought uses the session model";
 
 /** What the stage hands the CompletionGate: how many PRDs were written and how many reached their tracker rows. */
 export interface PrdOutcome {
 	readonly manifest: TotManifest;
 	readonly sync: SyncSummary;
-	/** The model the PRDs were written on, with the reason the router chose it. */
+	/** The model the PRDs were written on: always the session's selected model. */
 	readonly model: ModelChoice;
 	/** Why the stage could not run to the end (a secret-free single line); absent on a normal run. */
 	readonly error?: string;
@@ -71,16 +63,6 @@ interface PrdCallers {
 export interface TotSeams {
 	/** Opens the tracker callers; `undefined` means no tracker is reachable (the PRDs then stay pending). */
 	readonly open: () => Promise<PrdCallers | undefined> | PrdCallers | undefined;
-	/**
-	 * A completer that takes a model per call. Absent: the stage drives the host's one bound completer and the router
-	 * keeps the selected model (the decision is logged as a warning).
-	 */
-	readonly complete?: CompleteFn;
-	/** Whether `complete` accepts another model than the selected one. Default: the host table in `route-defaults.ts`. */
-	readonly canPickModelPerCall?: boolean;
-	readonly listModels?: () => readonly HostModelInfo[] | Promise<readonly HostModelInfo[]>;
-	readonly isAvailable?: (modelId: string, provider: string) => boolean | Promise<boolean>;
-	readonly smokeCache?: SmokeCache;
 	/** Per-PRD retry of a failing completion call and its test seams. */
 	readonly retry?: RetryPolicy;
 	readonly retrySeams?: RetrySeams;
@@ -89,8 +71,12 @@ export interface TotSeams {
 		SyncDeps,
 		"concurrency" | "linearInlineLimit" | "notionTools" | "now" | "random" | "retryPolicy" | "sleep"
 	>;
-	/** Test seam: the project facts the PRDs are grounded in. Default: the bounded inspection of `cwd`. */
-	readonly facts?: ProjectFacts;
+}
+
+/** The session's selected model: its id and, when the host knows it, its provider. */
+interface SelectedModel {
+	readonly modelId: string;
+	readonly provider?: string;
 }
 
 interface TotStageInput {
@@ -101,12 +87,9 @@ interface TotStageInput {
 	/** The host's one bound completer. */
 	readonly complete: ClaudeCompleter;
 	readonly selected: SelectedModel;
-	readonly host?: HostId;
 	readonly seams: TotSeams;
 	/** The host state dir: PRD checkpoints and the tracker ledger live under it, keyed by graph id. */
 	readonly stateDir: string;
-	/** Root of the project the PRDs are grounded in. */
-	readonly cwd: string;
 	readonly signal?: AbortSignal;
 	readonly log: (line: string) => void;
 	readonly onProgress?: (event: TotProgress) => void;
@@ -156,33 +139,22 @@ function summaryOf(manifest: TotManifest | undefined, total: number): SyncSummar
 	};
 }
 
-const NO_FACTS = (root: string): ProjectFacts => ({
-	root,
-	files: new Set(),
-	dirs: new Set(),
-	symbols: new Map(),
-	truncated: false,
-	denied: 0,
-});
-
 /**
  * Writes and syncs the PRDs of one plan. A provider abort is rethrown; every other failure, an aborted `signal` included
  * (PRDs not started are `skipped`, rows not reached stay `pending`), is part of the returned outcome, so a caller that
  * gates on it never sees a half-written result as complete.
  *
- * A refusal writes 0 PRDs and reports its code as `error`: `PRD_NO_SELECTED_MODEL` for an empty selected model id, and
- * `PRD_NO_PRICE` when the host lists callable models of the provider and none publishes an input price.
+ * A refusal writes 0 PRDs and reports its code as `error`: `PRD_NO_SELECTED_MODEL` for an empty selected model id.
  */
 export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
-	assertCheapPathAllowed("tot");
 	const { plan, tracking, config, seams, signal, log } = input;
 	const requests = totRequests(plan);
 	const total = requests.length;
-	let model: ModelChoice = {
+	const model: ModelChoice = {
 		modelId: input.selected.modelId,
 		provider: input.selected.provider ?? "unknown",
 		source: "selected",
-		reason: "stage did not start",
+		reason: SELECTED_REASON,
 	};
 	const failedOutcome = (error: string, manifest?: TotManifest): PrdOutcome => ({
 		manifest: manifest ?? { total, generated: 0, failed: total, fallbacks: 0, records: [] },
@@ -190,39 +162,17 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 		model,
 		error,
 	});
+	if (input.selected.modelId.trim() === "") {
+		log(`tot refused: ${PRD_NO_SELECTED_MODEL}`);
+		return failedOutcome(PRD_NO_SELECTED_MODEL);
+	}
 	let callers: PrdCallers | undefined;
 	let written: TotManifest | undefined;
 	try {
-		if (input.selected.modelId.trim() === "") throw new TotRefusal(PRD_NO_SELECTED_MODEL);
-		const bound: CompleteFn = (call) => input.complete(call.system, call.user, call.signal);
-		const complete = seams.complete ?? bound;
-		const choice = await resolveToTModel({
-			config,
-			selected: input.selected,
-			...(input.host ? { host: input.host } : {}),
-			// A bound completer cannot take another model: the router then keeps the selected one, with a warning.
-			canPickModelPerCall: seams.complete ? seams.canPickModelPerCall : false,
-			...(seams.listModels ? { listModels: seams.listModels } : {}),
-			...(seams.isAvailable ? { isAvailable: seams.isAvailable } : {}),
-			...(seams.complete ? { complete: seams.complete } : {}),
-			...(seams.smokeCache ? { smokeCache: seams.smokeCache } : {}),
-			...(signal ? { signal } : {}),
-			log,
-		});
-		model = choice;
-		const router = createToTRouter({
-			choice,
-			selectedModelId: input.selected.modelId,
-			complete,
-			breakerThreshold: config.models.tot.breakerThreshold,
-			log,
-		});
 		const limits = {
 			maxLines: config.think.tot.maxPrdLines,
 			maxChars: config.think.tot.maxPrdChars,
 		};
-		const facts =
-			seams.facts ?? (await getProjectFacts(input.cwd).catch(() => NO_FACTS(input.cwd)));
 		const manifest = await runTot({
 			requests,
 			checkpointDir: resolve(input.stateDir, "tot", segment(plan.graphId)),
@@ -240,11 +190,9 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 				}
 				input.onProgress?.(event);
 			},
-			generate: async (request, callSignal) => {
-				let answered: string | undefined;
-				const generated = await generatePrd(request, {
-					modelId: choice.modelId,
-					facts,
+			generate: (request, callSignal) =>
+				generatePrd(request, {
+					modelId: model.modelId,
 					limits,
 					...(callSignal ? { signal: callSignal } : {}),
 					...(tracking.linear.steps[request.key]?.url
@@ -254,16 +202,8 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 						const url = tracking.linear.steps[source.key]?.url;
 						return renderFallbackPrd(source, url ? { linkUrl: url } : {});
 					},
-					complete: async (call) => {
-						const reply = await router.complete(call);
-						answered = reply.modelId;
-						return reply.text;
-					},
-				});
-				return answered !== undefined && !generated.fallback
-					? { ...generated, model: answered }
-					: generated;
-			},
+					complete: (call) => input.complete(call.system, call.user, call.signal),
+				}),
 		});
 		written = manifest;
 		callers = await seams.open();
@@ -289,10 +229,6 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 		return { manifest, sync: report.summary, model };
 	} catch (error) {
 		if (isAbortError(error)) throw error;
-		if (error instanceof TotRefusal) {
-			log(`tot refused: ${error.code}`);
-			return failedOutcome(error.code, written);
-		}
 		const cause = causeOf(error);
 		log(`tot failed: ${cause}`);
 		return failedOutcome(cause, written);
@@ -305,17 +241,60 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 	}
 }
 
+const ISSUES_OPEN = "<ISSUES ";
 const ISSUES_CLOSE = "</ISSUES>";
+const ISSUE_CLOSE = "</ISSUE>";
+const SUBISSUE_CLOSE = "</SUBISSUE>";
+
+/** The `<PRD>` element of one generated record: key and model as escaped attributes, the markdown as escaped element text. */
+function prdElement(record: PrdRecord): string {
+	return `<PRD key="${escapeXml(record.key)}" model="${escapeXml(record.model)}">${escapeXmlText(record.markdown)}</PRD>`;
+}
 
 /**
- * Adds one `<PRDS .../>` element to the ISSUES block of `xml`: counts and the model id, every value escaped. The PRD text
- * itself never enters the XML (it sits in the tracker rows the ISSUES block links). An XML with no ISSUES block is returned as is.
+ * The block with the record's PRD placed just before the `</SUBISSUE>` of its step. The key is `<nodeId>.<step>`, split at
+ * its last dot; the step is searched inside the ISSUE of its node only. Undefined when the block has no such Sub Issue.
  */
-export function injectPrdXml(xml: string, outcome: PrdOutcome): string {
+function placePrd(block: string, record: PrdRecord): string | undefined {
+	const dot = record.key.lastIndexOf(".");
+	if (dot < 0) return undefined;
+	const issueAt = block.indexOf(`<ISSUE node="${escapeXml(record.key.slice(0, dot))}"`);
+	if (issueAt < 0) return undefined;
+	const issueEnd = block.indexOf(ISSUE_CLOSE, issueAt);
+	const subAt = block.indexOf(`<SUBISSUE step="${escapeXml(record.key.slice(dot + 1))}"`, issueAt);
+	if (issueEnd < 0 || subAt < 0 || subAt > issueEnd) return undefined;
+	const subEnd = block.indexOf(SUBISSUE_CLOSE, subAt);
+	if (subEnd < 0 || subEnd > issueEnd) return undefined;
+	return `${block.slice(0, subEnd)}${prdElement(record)}${block.slice(subEnd)}`;
+}
+
+/**
+ * Writes the PRDs of `outcome` into the ISSUES block of `xml`. Each generated PRD becomes a `<PRD key model>` child of the
+ * `<SUBISSUE>` of its step, after the Sub Issue text and beside its links. One `<PRDS .../>` element with the counts and the
+ * model id closes the block. Every value is escaped. An XML with no ISSUES block is returned as is.
+ *
+ * Returns `xml`, the injected XML, and `unplaced`: the keys (`<nodeId>.<step>`, in record order) of the generated PRDs that
+ * matched no Sub Issue element, so they were written nowhere. A non-empty `unplaced` means the plan is missing PRDs: the
+ * caller holds it. Failed records are skipped.
+ */
+export function injectPrdXml(
+	xml: string,
+	outcome: PrdOutcome,
+): { readonly xml: string; readonly unplaced: readonly string[] } {
+	const generated = outcome.manifest.records.filter((record) => record.status === "generated");
 	const at = xml.lastIndexOf(ISSUES_CLOSE);
-	if (at < 0) return xml;
+	const open = at < 0 ? -1 : xml.lastIndexOf(ISSUES_OPEN, at);
+	if (open < 0)
+		return { xml, unplaced: generated.map((record) => record.key.replace(/\s+/g, " ")) };
+	let block = xml.slice(open, at);
+	const unplaced: string[] = [];
+	for (const record of generated) {
+		const placed = placePrd(block, record);
+		if (placed === undefined) unplaced.push(record.key.replace(/\s+/g, " "));
+		else block = placed;
+	}
 	const { manifest, sync } = outcome;
-	const attrs = [
+	const counts: [string, string | number][] = [
 		["total", manifest.total],
 		["generated", manifest.generated],
 		["failed", manifest.failed],
@@ -323,10 +302,12 @@ export function injectPrdXml(xml: string, outcome: PrdOutcome): string {
 		["synced", sync.synced],
 		["pending", sync.pending],
 		["model", outcome.model.modelId],
-	]
-		.map(([name, value]) => `${name}="${escapeText(String(value))}"`)
-		.join(" ");
-	return `${xml.slice(0, at).replace(/[ \t]*$/, "")}  <PRDS ${attrs}/>\n${xml.slice(at)}`;
+	];
+	const attrs = counts.map(([name, value]) => `${name}="${escapeText(String(value))}"`).join(" ");
+	return {
+		xml: `${xml.slice(0, open)}${block.replace(/[ \t]*$/, "")}  <PRDS ${attrs}/>\n${xml.slice(at)}`,
+		unplaced,
+	};
 }
 
 /** The credentialed tracker callers for `config`, opened lazily and closed by the stage. A tracker with no credential is left out. */

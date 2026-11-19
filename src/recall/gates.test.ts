@@ -107,6 +107,47 @@ describe("cooldown", () => {
 		).toMatchObject({ allowed: true });
 	});
 
+	test("failure signatures that differ only by path, line, column or address cool down together", () => {
+		const state = firedAt(failure("TypeError at /repo/src/a.ts:12:5: x is undefined"), T0);
+
+		expect(
+			checkCooldown(
+				state,
+				failure("TypeError at /other/lib/a.ts:40:9: x is undefined"),
+				WINDOWS,
+				T0 + 1,
+			),
+		).toMatchObject({ allowed: false, reason: "cooldown_active" });
+		expect(
+			checkCooldown(
+				state,
+				failure("TypeError at C:\\build\\a.ts:7:1: x is undefined"),
+				WINDOWS,
+				T0 + 1,
+			),
+		).toMatchObject({ allowed: false, reason: "cooldown_active" });
+		expect(
+			checkCooldown(
+				state,
+				failure("TypeError at /repo/src/a.ts:12:5: y is undefined"),
+				WINDOWS,
+				T0 + 1,
+			),
+		).toMatchObject({ allowed: true });
+
+		const crash = firedAt(failure("segfault at 0x7ffd5c2a1b10"), T0);
+		expect(
+			checkCooldown(crash, failure("segfault at 0x7ffd5c2a9f00"), WINDOWS, T0 + 1),
+		).toMatchObject({
+			allowed: false,
+		});
+		expect(
+			checkCooldown(crash, failure("segfault at 7ffd5c2a9f00"), WINDOWS, T0 + 1),
+		).toMatchObject({
+			allowed: false,
+		});
+	});
+
 	test("phase boundaries cool down per plan step and task type", () => {
 		const state = firedAt(phase("2", "migration"), T0);
 

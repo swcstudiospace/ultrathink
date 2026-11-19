@@ -37,5 +37,5 @@ Gating is `unverified` on all fifteen. Model routing is `per-call` only where th
 
 - Not a conformance adapter. Detection, doctor, and the golden Omp fixtures do not know these ids.
 - Not a gate. A skill file in the agent's directory does not hold a turn until the plan exists.
-- Not a model router. `models.tot` applies only where the host adapter can pick a model per call.
+- Not a model router.
 - Not verified on a live agent. The tests install into a scratch home.

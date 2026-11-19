@@ -14,14 +14,9 @@ import {
 } from "./config.ts";
 import { hasControlCharacter, MAX_TIMER_MS } from "./config/fields.ts";
 import type { DecisionsConfig } from "./decisions/types.ts";
+import { checkConfig } from "./doctor/config-check.ts";
 import { DEFAULT_GROK_CONFIG } from "./grok/types.ts";
-import { HOSTS } from "./host/types.ts";
-import {
-	ROUTE_DEFAULT_MODELS,
-	TOT_BREAKER_THRESHOLD,
-	TOT_HOST_PER_CALL_MODEL,
-	TOT_PRD_CANDIDATES,
-} from "./route-defaults.ts";
+import { ROUTE_DEFAULT_MODELS } from "./route-defaults.ts";
 
 function tempConfigFile(content: unknown): { path: string; cleanup: () => void } {
 	const dir = mkdtempSync(join(tmpdir(), "ultrathink-config-"));
@@ -1974,7 +1969,7 @@ describe("models config (D-05 merge truth table)", () => {
 		expect(Object.getPrototypeOf(base.models.providerDefaults)).toBeNull();
 	});
 
-	test("a project layer may set a host's model only: its provider, providerDefaults and tot are ignored (D-05, R5-A-2)", () => {
+	test("a project layer may set a host's model only: its provider and providerDefaults are ignored (D-05, R5-A-2)", () => {
 		const user = mergeConfig(
 			{
 				models: {
@@ -1989,7 +1984,6 @@ describe("models config (D-05 merge truth table)", () => {
 				models: {
 					hosts: { omp: { provider: "xai", model: "grok-x" }, hermes: { provider: "xai" } },
 					providerDefaults: { xai: "grok-other", openai: "gpt-x" },
-					tot: { model: "other-model" },
 				},
 			},
 			user,
@@ -1998,7 +1992,6 @@ describe("models config (D-05 merge truth table)", () => {
 		expect(project.models.hosts.omp).toEqual({ provider: "openai-codex", model: "grok-x" });
 		expect(project.models.hosts.hermes).toBeUndefined();
 		expect({ ...project.models.providerDefaults }).toEqual({ xai: "grok-fast" });
-		expect(project.models.tot).toEqual(user.models.tot);
 
 		const later = mergeConfig(
 			{
@@ -2608,82 +2601,36 @@ describe("project files: tighten, fill and timers", () => {
 	});
 });
 
-describe("models.tot (cheapest-model routing for ToT)", () => {
-	test("TOT_HOST_PER_CALL_MODEL has exactly one boolean per host in HOSTS", () => {
-		expect(Object.keys(TOT_HOST_PER_CALL_MODEL).sort()).toEqual([...HOSTS].sort());
-		for (const host of HOSTS) expect(typeof TOT_HOST_PER_CALL_MODEL[host]).toBe("boolean");
-	});
-	test("defaults carry the built-in candidates, no override and the breaker threshold", () => {
-		const { tot } = defaultConfig().models;
-		expect(tot.model).toBe("");
-		expect(tot.breakerThreshold).toBe(TOT_BREAKER_THRESHOLD);
-		expect(Object.keys(tot.candidates).sort()).toEqual(Object.keys(TOT_PRD_CANDIDATES).sort());
-		expect(tot.candidates.anthropic).toEqual([ROUTE_DEFAULT_MODELS.claude]);
-	});
-
-	test("a config without models.tot keeps the defaults and never shares the frozen default arrays", () => {
-		const merged = mergeConfig({ models: { providerDefaults: { xai: "fast" } } }, defaultConfig());
-		expect(merged.models.tot).toEqual(defaultConfig().models.tot);
-		expect(Object.isFrozen(defaultConfig().models.tot.candidates.anthropic)).toBe(false);
-		expect(Object.isFrozen(TOT_PRD_CANDIDATES.anthropic)).toBe(true);
-	});
-
-	test("model is trimmed, a blank clears it, a wrong type or a control character keeps the lower value", () => {
-		const base = defaultConfig();
-		const pinned = mergeConfig({ models: { tot: { model: " cheap-1 " } } }, base);
-		expect(pinned.models.tot.model).toBe("cheap-1");
-		expect(mergeConfig({ models: { tot: { model: 7 } } }, pinned).models.tot.model).toBe("cheap-1");
-		expect(mergeConfig({ models: { tot: { model: "x\u001b" } } }, pinned).models.tot.model).toBe(
-			"cheap-1",
-		);
-		expect(mergeConfig({ models: { tot: { model: " " } } }, pinned).models.tot.model).toBe("");
-	});
-
-	test("a provider's candidates are replaced, deduplicated and cleaned; an empty list removes the provider", () => {
-		const base = defaultConfig();
-		const file: Record<string, unknown> = JSON.parse(
-			'{"models":{"tot":{"candidates":{"Anthropic":[" a-1 ","a-1","",4,"a-2"],"openai":"single","xai":[],"__proto__":["evil"],"cursor":5}}}}',
-		);
-		const merged = mergeConfig(file, base);
-		const { candidates } = merged.models.tot;
-		expect(candidates.anthropic).toEqual(["a-1", "a-2"]);
-		expect(candidates.openai).toEqual(["single"]);
-		expect(Object.hasOwn(candidates, "xai")).toBe(false);
-		expect(candidates.cursor).toEqual([...(TOT_PRD_CANDIDATES.cursor ?? [])]);
-		expect(Object.getPrototypeOf(candidates)).toBeNull();
-		expect(JSON.stringify(merged.models.tot)).not.toContain("evil");
-		expect(base.models.tot.candidates.anthropic).toEqual([ROUTE_DEFAULT_MODELS.claude]);
-	});
-
-	test("breakerThreshold accepts positive integers only", () => {
-		const base = defaultConfig();
-		expect(
-			mergeConfig({ models: { tot: { breakerThreshold: 5 } } }, base).models.tot.breakerThreshold,
-		).toBe(5);
-		for (const bad of [0, -1, 1.5, "3", null]) {
-			expect(
-				mergeConfig({ models: { tot: { breakerThreshold: bad } } }, base).models.tot
-					.breakerThreshold,
-			).toBe(TOT_BREAKER_THRESHOLD);
-		}
-	});
-
-	test("a later layer overrides only the fields it sets", () => {
-		const lower = mergeConfig(
-			{ models: { tot: { model: "lower", candidates: { openai: ["o-1"] } } } },
-			defaultConfig(),
-		);
-		const merged = mergeConfig({ models: { tot: { candidates: { xai: ["x-1"] } } } }, lower);
-		expect(merged.models.tot.model).toBe("lower");
-		expect(merged.models.tot.candidates.openai).toEqual(["o-1"]);
-		expect(merged.models.tot.candidates.xai).toEqual(["x-1"]);
-	});
-
-	test("a non-object models.tot is ignored", () => {
-		for (const tot of [null, [], "x", 1]) {
-			expect(mergeConfig({ models: { tot } }, defaultConfig()).models.tot).toEqual(
-				defaultConfig().models.tot,
+describe("models.tot is removed", () => {
+	test("a configured models.tot section is reported by the doctor check as ignored", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ut-config-tot-"));
+		try {
+			mkdirSync(join(dir, "xdg", "ultrathink"), { recursive: true });
+			writeFileSync(
+				join(dir, "xdg", "ultrathink", "config.json"),
+				JSON.stringify({
+					models: { tot: { model: "cheap-1", candidates: { anthropic: ["a-1"] } } },
+				}),
 			);
+			const findings = checkConfig({
+				env: {
+					HOME: join(dir, "home"),
+					XDG_CONFIG_HOME: join(dir, "xdg"),
+					CLAUDE_CONFIG_DIR: join(dir, "claude"),
+				},
+				cwd: join(dir, "project"),
+				now: () => 0,
+				which: () => undefined,
+				bunVersion: "1.2.0",
+				runVersion: () => undefined,
+			});
+			const warnings = findings.filter(
+				(finding) => finding.level === "warn" || finding.level === "error",
+			);
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]?.title).toContain("models.tot");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

@@ -11,11 +11,11 @@ import { join } from "node:path";
 import { defaultConfig, type UltrathinkConfig } from "../config.ts";
 import { CompletionGate } from "../host/completion-gate.ts";
 import { graphJson, UPLIFT } from "../test.helpers.ts";
-import type { ProjectFacts } from "../think/tot/index.ts";
 import type { PrdOutcome, TotSeams } from "../think/tot/stage.ts";
 import type { ToolCaller } from "../track/create.ts";
 import type { Tracker } from "../track/gateway.ts";
 import type { IssueRef, TrackingRefs, TrackPlan } from "../track/types.ts";
+import type { ClaudeCompleter } from "./complete.ts";
 import {
 	type HookDeps,
 	type PromptSubmitInput,
@@ -108,21 +108,12 @@ function fakeLinear(): FakeLinear {
 	return fake;
 }
 
-const FACTS: ProjectFacts = {
-	root: "/repo",
-	files: new Set(["src/app.ts"]),
-	dirs: new Set(["src"]),
-	symbols: new Map([["runApp", ["src/app.ts"]]]),
-	truncated: false,
-	denied: 0,
-};
-
 const DRAFT = JSON.stringify({
 	objective: "Wire the runner.",
 	acceptanceCriteria: ["It runs"],
 	affectedFiles: [{ path: "src/app.ts" }],
-	interfaces: [{ signature: "function runApp(): void", symbol: "runApp" }],
-	implementation: [{ language: "ts", code: "runApp();", references: ["runApp"] }],
+	interfaces: ["function runApp(): void"],
+	implementation: [{ language: "ts", code: "runApp();" }],
 	testSkeleton: { language: "ts", code: "test('x', () => {});" },
 	assumptions: [],
 });
@@ -163,22 +154,23 @@ function world(
 	};
 	const tot: TotSeams = {
 		open: () => ({ linear: linear.caller }),
-		facts: FACTS,
-		complete: async ({ user }) => {
-			const key = user.match(/<SUB_ISSUE key="([^"]+)"/)?.[1] ?? "?";
-			asked.push(key);
-			if (key === state.failKey && !state.healed) throw new Error("simulated generation failure");
-			return DRAFT;
-		},
-		canPickModelPerCall: false,
 		retry: { maxAttempts: 1, baseMs: 1, capMs: 1 },
 		retrySeams: { sleep: async () => undefined },
 		sync: { sleep: async () => undefined, retryPolicy: { maxAttempts: 1, baseMs: 1, capMs: 1 } },
 	};
+	const planCall = planner();
+	const complete: ClaudeCompleter = async (system, user) => {
+		if (!user.includes("<SUB_ISSUE key=")) return planCall(system, user);
+		const key = user.match(/<SUB_ISSUE key="([^"]+)"/)?.[1] ?? "?";
+		asked.push(key);
+		if (key === state.failKey && !state.healed) throw new Error("simulated generation failure");
+		return DRAFT;
+	};
+
 	const deps: HookDeps = {
 		config,
 		control: {},
-		complete: planner(),
+		complete,
 		engine: "claude:claude-haiku-5-5",
 		stateDir,
 		git: () => ({ repo: "acme/widgets", branch: "feat/widget" }),
@@ -196,8 +188,8 @@ function world(
 
 const input: PromptSubmitInput = { session_id: "s1", cwd: "/repo", prompt: "add a widget" };
 
-function gateFor(context: string, prd: PrdOutcome, allowPartialSync = false): CompletionGate {
-	const gate = new CompletionGate({ inactivityMs: 0, allowPartialSync });
+function gateFor(context: string, prd: PrdOutcome): CompletionGate {
+	const gate = new CompletionGate({ inactivityMs: 0 });
 	gate.complete({
 		text: context,
 		expected: { nodes: NODES, issues: NODES, subIssues: 50, prds: prd.manifest.total },
@@ -227,22 +219,17 @@ describe("Tree-of-Thought stage through the hook and the gate", () => {
 		for (const id of order.slice(0, 36)) expect(w.linear.descriptions.get(id)).toContain("## PRD");
 		expect(w.linear.descriptions.has("ENG-n6-5")).toBe(false);
 
-		// The XML carries counts and the row links, never PRD text.
+		// The XML carries the counts, the row links and each generated PRD inside its own Sub Issue.
 		const context = contextOf(first);
 		expect(context).toContain('<PRDS total="50" generated="49" failed="1"');
 		expect(context).toContain('url="https://linear.app/o/issue/n6.5"');
-		expect(context).not.toContain("Test Skeleton");
-		expect(context).not.toContain("runApp");
+		expect(context.split('<PRD key="').length - 1).toBe(49);
+		expect(context).toContain("runApp");
 
 		const gate = gateFor(context, prd);
 		expect(gate.state).toBe("partial_failure");
-		expect(gate.release()).toMatchObject({ ok: false, reason: "needs_confirmation" });
+		expect(gate.release()).toMatchObject({ ok: false, reason: "not_ready" });
 		expect(gate.released).toBe(false);
-		// An explicit allowance (or a confirmation) is the only way a partial plan starts the session.
-		expect(gateFor(context, prd, true).release()).toMatchObject({
-			ok: true,
-			state: "partial_failure",
-		});
 
 		// Retry: the checkpoints hold PRDs 1-36 (and the rest); only the failed one is written again.
 		expect(readdirSync(join(w.deps.stateDir, "tot", plan?.graphId ?? "")).length).toBe(50);

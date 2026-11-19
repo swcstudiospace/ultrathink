@@ -146,11 +146,26 @@ function normalizeScopePath(path: string): string {
 	return collapsed.length > 1 && collapsed.endsWith("/") ? collapsed.slice(0, -1) : collapsed;
 }
 
-/** Error signature: lowercase, hex addresses and digit runs replaced by `#`, whitespace collapsed. */
+/** A path: an optional drive, then segments joined by `/` or `\`, with at least one separator. Lowercased input. */
+const PATH_PATTERN = /(?:[a-z]:)?[\w.@~+-]*[\\/][\w.@~+\\/-]*/g;
+/** A bare file name with a source, config or document extension, as it appears in a compiler or test message. */
+const FILE_PATTERN = /\b[\w-]+\.(?:[cm]?[jt]sx?|py|go|rs|java|rb|sh|json|ya?ml|toml|md)\b/g;
+/** A hexadecimal address with its `0x` prefix. */
+const PREFIXED_ADDRESS_PATTERN = /\b0x[0-9a-f]+\b/g;
+/** A bare hexadecimal address: eight or more hex digits holding at least one letter and one digit. */
+const BARE_ADDRESS_PATTERN = /\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{8,}\b/g;
+
+/**
+ * Error signature: lowercase, with paths, file names and addresses replaced by placeholders and digit runs (line and
+ * column numbers among them) replaced by `#`, so errors that differ only by location or address share one signature.
+ */
 function normalizeErrorSignature(error: string): string {
 	return error
 		.toLowerCase()
-		.replace(/0x[0-9a-f]+/g, "#")
+		.replace(PATH_PATTERN, "<path>")
+		.replace(FILE_PATTERN, "<file>")
+		.replace(PREFIXED_ADDRESS_PATTERN, "<addr>")
+		.replace(BARE_ADDRESS_PATTERN, "<addr>")
 		.replace(/\d+/g, "#")
 		.replace(/\s+/g, " ")
 		.trim();

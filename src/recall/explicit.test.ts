@@ -52,6 +52,11 @@ const LESSONS: LessonsLookup = {
 		},
 	],
 };
+const MOMENTS: LessonsLookup = {
+	...LESSONS,
+	ids: ["t1"],
+	rows: (LESSONS.rows ?? []).map((row) => ({ ...row, id: "t1", title: "Moment t1" })),
+};
 const SKILLS: SkillsLookup = {
 	outcome: "used",
 	count: 1,
@@ -81,6 +86,10 @@ function recordingFetchers(): { fetch: ExplicitFetchers; calls: string[] } {
 			lessons: async (query) => {
 				calls.push(`lessons:${query}`);
 				return LESSONS;
+			},
+			moments: async (query) => {
+				calls.push(`moments:${query}`);
+				return MOMENTS;
 			},
 			skills: async (query) => {
 				calls.push(`skills:${query}`);
@@ -121,7 +130,7 @@ describe("explicit recall", () => {
 		expect(calls).toEqual([]);
 	});
 
-	test("an explicit request fires knowledge, lessons and skills, each with a panel", async () => {
+	test("an explicit request fires knowledge, lessons, moments and skills, each with a panel", async () => {
 		const { fetch, calls } = recordingFetchers();
 
 		const result = await runExplicitRecall({
@@ -135,21 +144,29 @@ describe("explicit recall", () => {
 		expect(calls).toEqual([
 			"knowledge:why does the build fail",
 			"lessons:why does the build fail",
+			"moments:why does the build fail",
 			"skills:why does the build fail",
 		]);
 		if (!result.ok) throw new Error(`refused: ${result.reason}`);
 		expect(result.audit.map((entry) => [entry.source, entry.trigger, entry.outcome])).toEqual([
 			["knowledge", "explicit", "fired"],
 			["lessons", "explicit", "fired"],
+			["moments", "explicit", "fired"],
 			["skills", "explicit", "fired"],
 		]);
-		expect(Object.keys(result.panels).sort()).toEqual(["knowledge", "lessons", "skills"]);
+		expect(Object.keys(result.panels).sort()).toEqual([
+			"knowledge",
+			"lessons",
+			"moments",
+			"skills",
+		]);
 		expect(result.panels.knowledge?.status).toBe("success");
 		expect(result.panels.lessons?.status).toBe("success");
 		expect(result.panels.skills?.status).toBe("success");
+		expect(result.panels.moments?.status).toBe("success");
 	});
 
-	test("three sources fire although the per-turn call cap is two", async () => {
+	test("four sources fire although the per-turn call cap is two", async () => {
 		const { fetch } = recordingFetchers();
 		const settings = enabledSettings();
 		expect(settings.recall.budget.perTurnCalls).toBeLessThan(3);
@@ -164,7 +181,7 @@ describe("explicit recall", () => {
 		});
 
 		if (!result.ok) throw new Error(`refused: ${result.reason}`);
-		expect(result.audit.filter((entry) => entry.outcome === "fired")).toHaveLength(3);
+		expect(result.audit.filter((entry) => entry.outcome === "fired")).toHaveLength(4);
 	});
 
 	test("a rejected fetch becomes an error panel and the other sources still return", async () => {
@@ -208,8 +225,96 @@ describe("explicit recall", () => {
 		expect(result.audit.map((entry) => [entry.source, entry.outcome])).toEqual([
 			["knowledge", "no_source"],
 			["lessons", "fired"],
+			["moments", "no_source"],
 			["skills", "no_source"],
 		]);
 		expect(Object.keys(result.panels)).toEqual(["lessons"]);
+	});
+
+	test("a recall that outlasts its timeout returns partial results with remainderReason timeout", async () => {
+		const settings = enabledSettings();
+		settings.recall.timeoutMs = 20;
+
+		const result = await runExplicitRecall({
+			query: "why does the build fail",
+			nowMs: NOW,
+			settings,
+			state: freshState(),
+			fetch: {
+				knowledge: async () => KNOWLEDGE,
+				lessons: () => Promise.withResolvers<LessonsLookup>().promise,
+				moments: async () => MOMENTS,
+				skills: async () => SKILLS,
+			},
+		});
+
+		if (!result.ok) throw new Error(`refused: ${result.reason}`);
+		expect(result.remainderReason).toBe("timeout");
+		expect(result.panels.knowledge?.status).toBe("success");
+		expect(result.panels.lessons?.status).toBe("error");
+		expect(result.panels.moments?.status).toBe("success");
+		expect(result.panels.skills?.status).toBe("success");
+	});
+
+	test("a timed-out request keeps the completed panels and turns each pending fetch into an error panel", async () => {
+		const settings = enabledSettings();
+		settings.recall.timeoutMs = 20;
+
+		const result = await runExplicitRecall({
+			query: "why does the build fail",
+			nowMs: NOW,
+			settings,
+			state: freshState(),
+			fetch: {
+				knowledge: async () => KNOWLEDGE,
+				lessons: () => Promise.withResolvers<LessonsLookup>().promise,
+				moments: () => Promise.withResolvers<LessonsLookup>().promise,
+				skills: async () => SKILLS,
+			},
+		});
+
+		if (!result.ok) throw new Error(`refused: ${result.reason}`);
+		expect(result.remainderReason).toBe("timeout");
+		expect(result.panels.knowledge).toMatchObject({ status: "success" });
+		expect(result.panels.skills).toMatchObject({ status: "success" });
+		expect(result.panels.lessons).toMatchObject({ status: "error", message: "timeout" });
+		expect(result.panels.moments).toMatchObject({ status: "error", message: "timeout" });
+	});
+
+	test("an explicit request with a moments fetcher fetches moments and returns a moments panel", async () => {
+		const { fetch, calls } = recordingFetchers();
+
+		const result = await runExplicitRecall({
+			query: "why does the build fail",
+			nowMs: NOW,
+			settings: enabledSettings(),
+			state: freshState(),
+			fetch: { moments: fetch.moments },
+		});
+
+		expect(calls).toEqual(["moments:why does the build fail"]);
+		if (!result.ok) throw new Error(`refused: ${result.reason}`);
+		expect(result.audit.map((entry) => [entry.source, entry.outcome])).toEqual([
+			["knowledge", "no_source"],
+			["lessons", "no_source"],
+			["moments", "fired"],
+			["skills", "no_source"],
+		]);
+		expect(result.panels.moments).toMatchObject({ status: "success" });
+	});
+
+	test("a recall that finishes inside its timeout carries no remainderReason", async () => {
+		const { fetch } = recordingFetchers();
+
+		const result = await runExplicitRecall({
+			query: "why does the build fail",
+			nowMs: NOW,
+			settings: enabledSettings(),
+			state: freshState(),
+			fetch,
+		});
+
+		if (!result.ok) throw new Error(`refused: ${result.reason}`);
+		expect(result.remainderReason).toBeUndefined();
 	});
 });

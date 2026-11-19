@@ -9,6 +9,7 @@
 		"hooks/answers.ts",
 		"hooks/flow-eval.ts",
 		"hooks/pr-sync.ts",
+		"hooks/compact-reset.ts",
 		"hooks/stop.ts",
 		"hooks/engine.ts",
 		"scripts/cursor-plugin.ts",

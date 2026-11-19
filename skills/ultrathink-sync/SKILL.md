@@ -29,9 +29,12 @@ Update only the properties that actually have new information right now — don'
 | The PR was approved | `PR State = "Approved"` | — |
 | The PR was merged | `PR State = "Merged"`, `Status = "Merged"`, `Completed` = now | move the Linear issue(s) to "Done" |
 | Work stopped without a PR (research/investigation task) | `Status = "Done"` (or `"Failed"`/`"Blocked"` if it didn't finish), `Completed` = now if terminal | move the Linear issue(s) to match |
+| A Sub Issue (CoT step) is finished | On the step's Notion row: `Status = "Done"`, `Completed` = now, `Linear State = "Done"`. A step whose PR merged closes with the merge instead: `Status = "Merged"`, `Completed` = now. A step whose work stopped without a PR follows the work-stopped row above for `Status` and `Completed`. | Move that Sub Issue to "Done" (a stopped step: to match its `Status`) |
 | Still in progress, just checking in | `Status = "Implementing"` (leave as-is if already there) | move node issues whose TODOs are done to "Done" |
 
 Apply only the columns of configured trackers. When both are configured, set `Linear State` on the Notion row to mirror whatever you just set on the actual Linear issue(s), so the two stay consistent.
+
+A Sub Issue's Notion row must not stay in `Planning` or `Implementing` once the Sub Issue is finished: close it in the same update as its Linear sub-issue. Find the row by `tracking.notion.steps["<nodeId>.<step>"]`; without that ref, query the data source for `Level = "Sub-Issue"`, `Graph ID` = `graphId` and `Step` = the step number. Never create a row to do this; a row that cannot be found is reported in one line and skipped. If Notion is unreachable, follow "When a tracker is down" below.
 
 ### Locating the Linear issues
 
@@ -44,6 +47,8 @@ Read `tracking` from the same state file when its `plan.graphId` is this graph: 
 ### When a tracker is down
 
 If Notion or Linear is down, unreachable, rate-limited or unauthorised, do not retry in a loop. Say in one line which tracker could not be updated, update the other one if it works, and continue — a tracker outage never blocks the turn, least of all the one that created the PR.
+
+A Notion outage (unreachable, rate-limited, unauthorised, or a suspended workspace) is reported once in one line, not retried in a loop. It never holds back the Linear close: still move the Linear sub-issue of a finished step to "Done".
 
 ## 3. Report
 

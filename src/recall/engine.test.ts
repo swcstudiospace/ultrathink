@@ -8,7 +8,9 @@ import {
 	type BudgetState,
 	createBudgetState,
 	createDedupeState,
+	createFailureState,
 	dedupeKey,
+	recordFailure,
 	recordInjected,
 	recordSpend,
 	resetDedupeEpoch,
@@ -28,6 +30,7 @@ import type { PanelBody, PanelEnvelope } from "./panel-model.ts";
 
 const NOW = 1_000_000;
 const SCOPE_WINDOW = defaultRecallSettings().recall.cooldownMs.scopeChange;
+const FAILURE_WINDOW = defaultRecallSettings().recall.cooldownMs.failure;
 const SCOPE: RecallEvent = { trigger: "scopeChange", scopePath: "src/recall" };
 const EXPLICIT: RecallEvent = { trigger: "explicit" };
 
@@ -48,7 +51,11 @@ const CASES: { name: string; event: RecallEvent; sources: PanelSourceName[] }[] 
 		event: { trigger: "uncertainty", topic: "which cache layer" },
 		sources: ["knowledge"],
 	},
-	{ name: "explicit request", event: EXPLICIT, sources: ["knowledge", "lessons", "skills"] },
+	{
+		name: "explicit request",
+		event: EXPLICIT,
+		sources: ["knowledge", "lessons", "moments", "skills"],
+	},
 ];
 
 /**
@@ -125,6 +132,7 @@ function allLookups(): RecallLookups {
 	return {
 		knowledge: knowledgeUsed(["docs/a.md"]),
 		lessons: lessonsUsed([lessonRow("m1", 0.9)]),
+		moments: lessonsUsed([lessonRow("t1", 0.9)]),
 		skills: skillsUsed([SKILL]),
 	};
 }
@@ -177,6 +185,7 @@ describe("planRecall", () => {
 				reason: "master_off",
 			},
 			{ source: "lessons", trigger: "explicit", outcome: "skipped_disabled", reason: "master_off" },
+			{ source: "moments", trigger: "explicit", outcome: "skipped_disabled", reason: "master_off" },
 			{ source: "skills", trigger: "explicit", outcome: "skipped_disabled", reason: "master_off" },
 		]);
 		expect(result.panels).toEqual({});
@@ -281,7 +290,12 @@ describe("planRecall", () => {
 		const second = planned(
 			planRecall(planInput({ trigger: EXPLICIT, nowMs: NOW + 1, state: first.next })),
 		);
-		expect(second.audit.map((entry) => entry.outcome)).toEqual(["fired", "fired", "fired"]);
+		expect(second.audit.map((entry) => entry.outcome)).toEqual([
+			"fired",
+			"fired",
+			"fired",
+			"fired",
+		]);
 	});
 
 	test("a phase boundary fires once per plan step and task type for the session", () => {
@@ -346,9 +360,14 @@ describe("planRecall", () => {
 		expect(result.next.cooldown.size).toBe(0);
 	});
 
-	test("an explicit request under the default per-turn cap of 2 still reaches all three sources", () => {
+	test("an explicit request under the default per-turn cap of 2 still reaches all four sources", () => {
 		const result = planned(planRecall(planInput({ settings: enabledSettings(2) })));
-		expect(result.audit.map((entry) => entry.outcome)).toEqual(["fired", "fired", "fired"]);
+		expect(result.audit.map((entry) => entry.outcome)).toEqual([
+			"fired",
+			"fired",
+			"fired",
+			"fired",
+		]);
 	});
 
 	test("a lesson below the relevance floor is excluded in the panel with its score visible", () => {
@@ -531,7 +550,12 @@ describe("planRecall", () => {
 		const explicit = planned(
 			planRecall(planInput({ trigger: EXPLICIT, nowMs: NOW + 1, state: scoped.next })),
 		);
-		expect(explicit.audit.map((entry) => entry.outcome)).toEqual(["fired", "fired", "fired"]);
+		expect(explicit.audit.map((entry) => entry.outcome)).toEqual([
+			"fired",
+			"fired",
+			"fired",
+			"fired",
+		]);
 
 		const nearCeiling = planned(
 			planRecall(
@@ -550,6 +574,7 @@ describe("planRecall", () => {
 		expect(nearCeiling.audit).toEqual([
 			{ source: "knowledge", trigger: "explicit", outcome: "fired", injected: 1, deduped: 0 },
 			{ source: "lessons", trigger: "explicit", ...refused },
+			{ source: "moments", trigger: "explicit", ...refused },
 			{ source: "skills", trigger: "explicit", ...refused },
 		]);
 	});
@@ -614,8 +639,8 @@ describe("planRecall", () => {
 		const second = planned(
 			planRecall(planInput({ trigger: EXPLICIT, nowMs: NOW + 1, state: first.next })),
 		);
-		expect(first.next.budget.session.calls).toBe(3);
-		expect(second.next.budget.session.calls).toBe(6);
+		expect(first.next.budget.session.calls).toBe(4);
+		expect(second.next.budget.session.calls).toBe(8);
 	});
 
 	test("an injected id stays deduped until resetDedupeEpoch clears it", () => {
@@ -675,3 +700,99 @@ describe("planRecall", () => {
 		expect(state.cooldown.size).toBe(2);
 	});
 });
+
+describe("failure cooldown", () => {
+	const ERROR = "TypeError at /repo/src/a.ts:12";
+	const MOMENTS = { moments: lessonsUsed([lessonRow("t1", 0.9)]) };
+
+	function sourceEntry(plan: Extract<RecallPlan, { ok: true }>, source: PanelSourceName) {
+		return plan.audit.find((audited) => audited.source === source);
+	}
+
+	test("lessons cool down per error signature for the failure window, even when the occurrence count restarts", () => {
+		const first = planned(
+			planRecall(planInput({ trigger: { trigger: "failure", error: ERROR }, nowMs: NOW })),
+		);
+		// Each repeat starts the occurrence count again, as a failure record that has gone quiet does.
+		const repeat = (nowMs: number, error = ERROR) =>
+			planned(
+				planRecall(
+					planInput({
+						trigger: { trigger: "failure", error },
+						nowMs,
+						state: withFailureOccurrences(first.next, error, 1, NOW),
+					}),
+				),
+			);
+
+		expect(sourceEntry(repeat(NOW + FAILURE_WINDOW - 1), "lessons")).toEqual({
+			source: "lessons",
+			trigger: "failure",
+			outcome: "skipped_cooldown",
+			remainingMs: 1,
+		});
+		expect(sourceEntry(repeat(NOW + FAILURE_WINDOW - 1), "skills")).toMatchObject({
+			outcome: "fired",
+		});
+		expect(sourceEntry(repeat(NOW + 1, "ReferenceError at line 3"), "lessons")).toMatchObject({
+			outcome: "fired",
+		});
+		expect(sourceEntry(repeat(NOW + FAILURE_WINDOW), "lessons")).toMatchObject({
+			outcome: "fired",
+		});
+	});
+
+	test("moments cool down per error signature for the failure window", () => {
+		const first = planned(
+			planRecall(planInput({ trigger: { trigger: "failure", error: ERROR }, nowMs: NOW })),
+		);
+		const second = planned(
+			planRecall(
+				planInput({
+					trigger: { trigger: "failure", error: ERROR },
+					nowMs: NOW + 1_000,
+					state: first.next,
+					lookups: MOMENTS,
+				}),
+			),
+		);
+		expect(sourceEntry(second, "moments")).toMatchObject({ outcome: "fired" });
+
+		// The second occurrence again, with the first one seen one second before it.
+		const secondOccurrence = (nowMs: number) =>
+			planned(
+				planRecall(
+					planInput({
+						trigger: { trigger: "failure", error: ERROR },
+						nowMs,
+						state: withFailureOccurrences(second.next, ERROR, 2, nowMs - 1_000),
+						lookups: MOMENTS,
+					}),
+				),
+			);
+
+		expect(sourceEntry(secondOccurrence(NOW + 60_000), "moments")).toEqual({
+			source: "moments",
+			trigger: "failure",
+			outcome: "skipped_cooldown",
+			remainingMs: FAILURE_WINDOW - 59_000,
+		});
+		expect(sourceEntry(secondOccurrence(NOW + 1_000 + FAILURE_WINDOW), "moments")).toMatchObject({
+			outcome: "fired",
+		});
+	});
+});
+
+/** `state` with its failure records rebuilt so the next failure of `error` is occurrence `occurrence`; the earlier ones came up at `atMs`. */
+function withFailureOccurrences(
+	state: RecallRuntimeState,
+	error: string,
+	occurrence: number,
+	atMs: number,
+): RecallRuntimeState {
+	let failures = createFailureState();
+	for (let seen = 1; seen < occurrence; seen++) {
+		failures = recordFailure(failures, error, atMs, FAILURE_WINDOW).state;
+	}
+	return { ...state, failures };
+}

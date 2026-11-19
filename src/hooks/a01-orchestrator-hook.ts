@@ -126,7 +126,6 @@ export async function withA01OrchestratorTimeout<T>(
 		]);
 		if (raced.timedOut) {
 			const msg = `${prefix} FAILED (timeout after ${timeoutMs}ms)`;
-			// eslint-disable-next-line no-console
 			console.warn(msg);
 			markA01FailureInState(msg, opts.stateDir);
 			return { ok: false, timedOut: true };
@@ -134,7 +133,6 @@ export async function withA01OrchestratorTimeout<T>(
 		return raced;
 	} catch (err) {
 		const msg = `${prefix} FAILED: ${redactForLog(err instanceof Error ? err.message : String(err))}`;
-		// eslint-disable-next-line no-console
 		console.warn(msg);
 		markA01FailureInState(msg, opts.stateDir);
 		return { ok: false, error: redactForLog(String(err)) };

@@ -5,10 +5,10 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, type UltrathinkConfig } from "../../config.ts";
-import { ROUTE_DEFAULT_MODELS } from "../../route-defaults.ts";
 import type { ToolCaller } from "../../track/create.ts";
+import { injectTrackingXml } from "../../track/render.ts";
 import type { IssueRef, TrackingRefs, TrackPlan } from "../../track/types.ts";
-import type { PrdRequest, ProjectFacts } from "./index.ts";
+import type { PrdRequest } from "./index.ts";
 import {
 	injectPrdXml,
 	type PrdOutcome,
@@ -17,6 +17,7 @@ import {
 	totEnabled,
 	totRequests,
 } from "./stage.ts";
+import type { PrdRecord } from "./types.ts";
 
 type StageInput = Parameters<typeof runTotStage>[0];
 
@@ -31,15 +32,6 @@ function makeDir(prefix: string): string {
 	made.push(dir);
 	return dir;
 }
-
-const FACTS: ProjectFacts = {
-	root: "/repo",
-	files: new Set(["src/app.ts"]),
-	dirs: new Set(["src"]),
-	symbols: new Map([["runApp", ["src/app.ts"]]]),
-	truncated: false,
-	denied: 0,
-};
 
 function plan(steps: number): TrackPlan {
 	const subIssues = Array.from({ length: steps }, (_, i) => ({
@@ -131,8 +123,8 @@ function draft(): string {
 		objective: "Wire the runner.",
 		acceptanceCriteria: ["It runs"],
 		affectedFiles: [{ path: "src/app.ts" }],
-		interfaces: [{ signature: "function runApp(): void", symbol: "runApp" }],
-		implementation: [{ language: "ts", code: "runApp();", references: ["runApp"] }],
+		interfaces: ["function runApp(): void"],
+		implementation: [{ language: "ts", code: "runApp();" }],
 		testSkeleton: { language: "ts", code: "test('x', () => {});" },
 		assumptions: [],
 	});
@@ -147,7 +139,6 @@ const FAST = {
 function seams(linear: FakeLinear | undefined, extra: Partial<TotSeams> = {}): TotSeams {
 	return {
 		open: () => (linear ? { linear: linear.caller } : undefined),
-		facts: FACTS,
 		...FAST,
 		...extra,
 	};
@@ -173,10 +164,8 @@ function input(
 		config: config(),
 		complete: async () => draft(),
 		selected: { modelId: "claude-sonnet-5-5" },
-		host: "claude-code",
 		seams: tot,
 		stateDir,
-		cwd: stateDir,
 		log: (line: string) => {
 			lines.push(line);
 		},
@@ -220,7 +209,7 @@ describe("injectPrdXml", () => {
 	test("adds one escaped PRDS element inside the ISSUES block and nowhere else", () => {
 		const xml =
 			'<UPLIFT>\n<ISSUES graphId="g" status="complete">\n  <ISSUE id="n1"/>\n</ISSUES>\n</UPLIFT>';
-		const out = injectPrdXml(xml, outcome);
+		const { xml: out } = injectPrdXml(xml, outcome);
 		expect(out).toContain(
 			'<PRDS total="3" generated="2" failed="1" fallbacks="1" synced="2" pending="0" model="',
 		);
@@ -231,20 +220,147 @@ describe("injectPrdXml", () => {
 	});
 
 	test("an XML without an ISSUES block is returned unchanged", () => {
-		expect(injectPrdXml("<UPLIFT/>", outcome)).toBe("<UPLIFT/>");
+		expect(injectPrdXml("<UPLIFT/>", outcome)).toEqual({ xml: "<UPLIFT/>", unplaced: [] });
+	});
+
+	const PRD_MODEL = "claude-test";
+	const TRACKED_ROOT = "<UPLIFT>\n<GOAL/>\n</UPLIFT>";
+
+	function prdRecord(
+		key: string,
+		markdown: string,
+		status: PrdRecord["status"] = "generated",
+	): PrdRecord {
+		return {
+			key,
+			hash: "a".repeat(64),
+			markdown,
+			status,
+			model: PRD_MODEL,
+			fallback: false,
+			attempts: 1,
+		};
+	}
+
+	function prdOutcome(records: PrdRecord[]): PrdOutcome {
+		const generated = records.filter((r) => r.status === "generated").length;
+		return {
+			manifest: {
+				total: records.length,
+				generated,
+				failed: records.length - generated,
+				fallbacks: 0,
+				records,
+			},
+			sync: { total: records.length, synced: 0, pending: 0, failed: 0 },
+			model: { modelId: PRD_MODEL, provider: "x", source: "override", reason: "r" },
+		};
+	}
+
+	/** Every element opened in `xml` is closed in order; self-closing tags need no closer. */
+	function wellFormed(xml: string): boolean {
+		const open: string[] = [];
+		for (const match of xml.matchAll(/<(\/?)([A-Za-z_][\w.-]*)[^>]*?(\/?)>/g)) {
+			const [, close = "", name = "", selfClose = ""] = match;
+			if (selfClose) continue;
+			if (close) {
+				if (open.pop() !== name) return false;
+			} else {
+				open.push(name);
+			}
+		}
+		return open.length === 0;
+	}
+
+	test("writes each generated PRD inside the Sub Issue of its step, beside the links, and keeps the counts element", () => {
+		const tracked = injectTrackingXml(TRACKED_ROOT, plan(2), refs(2));
+		const { xml: out } = injectPrdXml(
+			tracked,
+			prdOutcome([prdRecord("n1.1", "PRD one"), prdRecord("n1.2", "PRD two")]),
+		);
+		expect(out).toContain(
+			`<SUBISSUE step="1" identifier="ENG-1" url="https://linear.app/t/issue/ENG-1">Step 1: do 1<PRD key="n1.1" model="${PRD_MODEL}">PRD one</PRD></SUBISSUE>`,
+		);
+		expect(out).toContain(
+			`<SUBISSUE step="2" identifier="ENG-2" url="https://linear.app/t/issue/ENG-2">Step 2: do 2<PRD key="n1.2" model="${PRD_MODEL}">PRD two</PRD></SUBISSUE>`,
+		);
+		expect(out).toContain(
+			`<PRDS total="2" generated="2" failed="0" fallbacks="0" synced="0" pending="0" model="${PRD_MODEL}"/>`,
+		);
+		expect(out).not.toContain("error=");
+		expect(wellFormed(out)).toBe(true);
+	});
+
+	test("nests a PRD under the Sub Issue of its own node only", () => {
+		const twoNodes = plan(1);
+		twoNodes.issues.push({ graphId: "ut-g1", nodeId: "n2", item: "[n2] Other", thought: "t" });
+		twoNodes.subIssues.push({
+			graphId: "ut-g1",
+			nodeId: "n2",
+			item: "[n2] Step 1: other",
+			step: 1,
+			thought: "x",
+		});
+		const tracked = injectTrackingXml(TRACKED_ROOT, twoNodes, refs(1));
+		const { xml: out } = injectPrdXml(tracked, prdOutcome([prdRecord("n2.1", "PRD other")]));
+		expect(out).toContain(
+			`<SUBISSUE step="1" status="pending">Step 1: other<PRD key="n2.1" model="${PRD_MODEL}">PRD other</PRD></SUBISSUE>`,
+		);
+		expect(out).toContain(
+			`<SUBISSUE step="1" identifier="ENG-1" url="https://linear.app/t/issue/ENG-1">Step 1: do 1</SUBISSUE>`,
+		);
+		expect(wellFormed(out)).toBe(true);
+	});
+
+	test("keeps PRD markdown that looks like markup as escaped text, so the element structure is unchanged", () => {
+		const tracked = injectTrackingXml(TRACKED_ROOT, plan(2), refs(2));
+		const markdown = 'a </SUBISSUE> <PRD key="x"> & b';
+		const { xml: out } = injectPrdXml(tracked, prdOutcome([prdRecord("n1.1", markdown)]));
+		expect(out).toContain(
+			`<SUBISSUE step="1" identifier="ENG-1" url="https://linear.app/t/issue/ENG-1">Step 1: do 1<PRD key="n1.1" model="${PRD_MODEL}">a &lt;/SUBISSUE&gt; &lt;PRD key="x"&gt; &amp; b</PRD></SUBISSUE>`,
+		);
+		expect(out.match(/<PRD[\s>]/g)).toHaveLength(1);
+		expect(out.match(/<\/SUBISSUE>/g)).toHaveLength(2);
+		expect(wellFormed(out)).toBe(true);
+	});
+
+	test("writes nothing for a generated PRD with no matching Sub Issue and reports its key as unplaced", () => {
+		const tracked = injectTrackingXml(TRACKED_ROOT, plan(2), refs(2));
+		const { xml: out, unplaced } = injectPrdXml(
+			tracked,
+			prdOutcome([
+				prdRecord("n1.1", "PRD one"),
+				prdRecord("n9.1", "orphan node"),
+				prdRecord("n1.7", "orphan step"),
+				prdRecord("n3.1", "failed", "failed"),
+			]),
+		);
+		expect(out).toContain(`<PRD key="n1.1" model="${PRD_MODEL}">PRD one</PRD>`);
+		expect(out).not.toContain('key="n9.1"');
+		expect(out).not.toContain('key="n1.7"');
+		expect(out).not.toContain("orphan");
+		expect(unplaced).toEqual(["n9.1", "n1.7"]);
+		expect(out).not.toContain("n3.1");
+		expect(out).not.toContain("error=");
+		expect(wellFormed(out)).toBe(true);
 	});
 });
 
 describe("runTotStage", () => {
-	test("writes every PRD, syncs it into its Sub Issue, and keeps the selected model on a bound completer", async () => {
+	test("writes every PRD on the selected model through a bound completer, and syncs each into its Sub Issue", async () => {
 		const dir = makeDir("ut-tot-stage-");
 		const linear = fakeLinear();
 		const outcome = await runTotStage(input(3, seams(linear), dir));
 		expect(outcome.manifest).toMatchObject({ total: 3, generated: 3, failed: 0 });
 		expect(outcome.sync).toEqual({ total: 3, synced: 3, pending: 0, failed: 0 });
 		expect(outcome.error).toBeUndefined();
-		expect(outcome.model.source).toBe("selected");
-		expect(outcome.model.reason).toContain("cannot pick a model per call");
+		expect(outcome.model).toEqual({
+			modelId: "claude-sonnet-5-5",
+			provider: "unknown",
+			source: "selected",
+			reason: "the selected model: Tree-of-Thought uses the session model",
+		});
+		expect(outcome.manifest.records.every((r) => r.model === "claude-sonnet-5-5")).toBe(true);
 		for (const id of ["ENG-1", "ENG-2", "ENG-3"]) {
 			expect(linear.descriptions.get(id)).toContain("## PRD");
 		}
@@ -253,31 +369,46 @@ describe("runTotStage", () => {
 		expect(existsSync(join(dir, "prd-sync", "ut-g1", "ledger.json"))).toBe(true);
 	});
 
-	test("a model per call: the override runs the PRDs and the router falls back to the selected model", async () => {
+	test("every PRD is written through the one bound completer, and the outcome and records name the selected model", async () => {
 		const dir = makeDir("ut-tot-stage-");
 		const linear = fakeLinear();
-		const used: string[] = [];
-		const cfg = config();
-		cfg.models.tot.model = "cheap-1";
+		let calls = 0;
 		const outcome = await runTotStage(
-			input(
-				2,
-				seams(linear, {
-					canPickModelPerCall: true,
-					complete: async ({ modelId }) => {
-						used.push(modelId);
-						if (modelId === "cheap-1") throw new Error("cheap model is down");
-						return draft();
-					},
-				}),
-				dir,
-				{ config: cfg },
-			),
+			input(2, seams(linear), dir, {
+				selected: { modelId: "claude-opus-5-5", provider: "anthropic" },
+				complete: async () => {
+					calls++;
+					return draft();
+				},
+			}),
 		);
-		expect(outcome.model).toMatchObject({ modelId: "cheap-1", source: "override" });
+		expect(calls).toBe(2);
+		expect(outcome.model).toEqual({
+			modelId: "claude-opus-5-5",
+			provider: "anthropic",
+			source: "selected",
+			reason: "the selected model: Tree-of-Thought uses the session model",
+		});
 		expect(outcome.manifest).toMatchObject({ generated: 2, failed: 0 });
-		expect(outcome.manifest.records.every((r) => r.model === "claude-sonnet-5-5")).toBe(true);
-		expect(used.filter((id) => id === "claude-sonnet-5-5").length).toBeGreaterThanOrEqual(2);
+		expect(outcome.sync).toEqual({ total: 2, synced: 2, pending: 0, failed: 0 });
+		expect(outcome.manifest.records.every((r) => r.model === "claude-opus-5-5")).toBe(true);
+	});
+
+	test("the PRD prompt carries no repository facts", async () => {
+		const dir = makeDir("ut-tot-stage-");
+		const linear = fakeLinear();
+		const prompts: string[] = [];
+		const outcome = await runTotStage(
+			input(2, seams(linear), dir, {
+				complete: async (_system: string, user: string) => {
+					prompts.push(user);
+					return draft();
+				},
+			}),
+		);
+		expect(outcome.manifest).toMatchObject({ generated: 2, failed: 0 });
+		expect(prompts).toHaveLength(2);
+		for (const prompt of prompts) expect(prompt).not.toContain("PROJECT_FACTS");
 	});
 
 	test("one failing PRD is a failed record, the others still land", async () => {
@@ -355,34 +486,23 @@ describe("runTotStage", () => {
 		expect(linear.saves).toBe(0);
 	});
 
-	test("refuses with PRD_NO_PRICE and writes 0 PRDs when no callable model publishes an input price", async () => {
+	test("refuses with PRD_NO_SELECTED_MODEL and writes no PRD when the selected model id is empty", async () => {
 		const dir = makeDir("ut-tot-stage-");
 		const linear = fakeLinear();
+		let asked = 0;
 		const outcome = await runTotStage(
-			input(
-				3,
-				seams(linear, {
-					complete: async () => draft(),
-					canPickModelPerCall: true,
-					listModels: () => [{ modelId: ROUTE_DEFAULT_MODELS.claude, provider: "anthropic" }],
-				}),
-				dir,
-			),
+			input(2, seams(linear), dir, {
+				selected: { modelId: "" },
+				complete: async () => {
+					asked++;
+					return draft();
+				},
+			}),
 		);
-		expect(outcome.error).toBe("PRD_NO_PRICE");
-		expect(outcome.manifest.generated).toBe(0);
-		expect(outcome.sync).toEqual({ total: 3, synced: 0, pending: 0, failed: 3 });
-		expect(linear.saves).toBe(0);
-		expect(existsSync(join(dir, "tot"))).toBe(false);
-	});
-
-	test("refuses with PRD_NO_SELECTED_MODEL and writes 0 PRDs when the selected model id is empty", async () => {
-		const dir = makeDir("ut-tot-stage-");
-		const linear = fakeLinear();
-		const outcome = await runTotStage(input(2, seams(linear), dir, { selected: { modelId: "" } }));
 		expect(outcome.error).toBe("PRD_NO_SELECTED_MODEL");
 		expect(outcome.manifest.generated).toBe(0);
 		expect(outcome.sync).toEqual({ total: 2, synced: 0, pending: 0, failed: 2 });
+		expect(asked).toBe(0);
 		expect(linear.saves).toBe(0);
 		expect(existsSync(join(dir, "tot"))).toBe(false);
 	});
