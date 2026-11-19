@@ -8,6 +8,7 @@ import {
 	type GateProgress,
 	type GateTimers,
 	validateArtifacts,
+	validatePlanChecklist,
 } from "./completion-gate.ts";
 
 /** A fake clock for the watchdog: timers fire only when the test advances time. */
@@ -521,5 +522,99 @@ describe("Plan gate (SPE-35029 design B)", () => {
 		expect(gate.getExecutionContext()).toMatchObject({ planId: accepted!.planId, planHash: accepted!.planHash });
 		expect(gate.planRecord()).toContain(accepted!.planHash);
 		expect(gate.release()).toMatchObject({ ok: true, text: expect.stringContaining("Objective: ship the plan gate") });
+	});
+});
+
+describe("Plan gate review fixes (round 1)", () => {
+	const CHECKLIST_PLAN_V2 = CHECKLIST_PLAN.replace("ship the plan gate", "ship the replacement gate");
+
+	test("(1) a valid resubmission in ready/executing/validating keeps the original planHash", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		expect(gate.state).toBe("ready");
+		expect(gate.submitPlan(CHECKLIST_PLAN_V2)).toBeUndefined();
+		expect(gate.state).toBe("ready");
+		expect(gate.planHash).toBe(accepted!.planHash);
+		expect(gate.beginExecution()).toBe(true);
+		expect(gate.submitPlan(CHECKLIST_PLAN_V2)).toBeUndefined();
+		expect(gate.state).toBe("executing");
+		expect(gate.planHash).toBe(accepted!.planHash);
+		expect(gate.beginValidation()).toBe(true);
+		expect(gate.submitPlan(CHECKLIST_PLAN_V2)).toBeUndefined();
+		expect(gate.state).toBe("validating");
+		expect(gate.planHash).toBe(accepted!.planHash);
+		expect(gate.transitions.filter((t) => t.to === "plan_validated" && !t.accepted).length).toBeGreaterThan(0);
+	});
+
+	test("(2) an invalid candidate in ready/plan_validated quarantines to waiting and clears the prior plan", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		expect(gate.submitPlan(CHECKLIST_PLAN)).toBeDefined();
+		expect(gate.state).toBe("ready");
+		expect(gate.submitPlan("plain text, no checklist")).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(gate.plan).toBeUndefined();
+		expect(gate.planHash).toBeUndefined();
+		expect(gate.buildWorkerContexts(["w1"])).toBeUndefined();
+		expect(gate.getExecutionContext()).toBeUndefined();
+		expect(gate.beginExecution()).toBe(false);
+		expect(gate.transitions.find((t) => t.to === "waiting_for_plan" && t.from === "ready")).toMatchObject({ accepted: true });
+		// A late valid Plan is quarantined-in, then auto-resumes to ready with its own hash.
+		const revived = gate.submitPlan(CHECKLIST_PLAN_V2);
+		expect(revived).toBeDefined();
+		expect(gate.state).toBe("ready");
+		expect(gate.planHash).toBe(revived!.planHash);
+
+		const validated = new CompletionGate({ inactivityMs: 0 });
+		expect(validated.tryTransition("plan_validated")).toBe(true);
+		expect(validated.submitPlan("plain text, no checklist")).toBeUndefined();
+		expect(validated.state).toBe("waiting_for_plan");
+		expect(validated.plan).toBeUndefined();
+	});
+
+	test("(3) manual pollOnce and re-arming leave at most one poll timer", () => {
+		const clock = fakeClock();
+		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers, pollIntervalMs: 1_000 });
+		expect(gate.enterWaitingForPlan()).toBe(true);
+		expect(clock.armed()).toBe(1);
+		gate.pollOnce();
+		expect(clock.armed()).toBe(1);
+		gate.pollOnce();
+		expect(clock.armed()).toBe(1);
+		clock.advance(1_000);
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(clock.armed()).toBe(1);
+		// Re-entering waiting restarts polling without stacking a second handle.
+		expect(gate.enterWaitingForPlan()).toBe(true);
+		expect(clock.armed()).toBe(1);
+	});
+
+	test("(4) the checklist requires labeled non-empty values, SPE-<n> and ROADMAP wave/ordering", () => {
+		expect(validatePlanChecklist(CHECKLIST_PLAN)).toEqual({ ok: true, problems: [] });
+		// Bare keywords with no `Label:` lines do not count.
+		const bare = plan().replace(
+			"</BUILD_PROMPT>",
+			"\nObjective scope named surfaces acceptance out-of-scope dependencies ordering SPE-123 ROADMAP wave 1\n</BUILD_PROMPT>",
+		);
+		const bareVerdict = validatePlanChecklist(bare);
+		expect(bareVerdict.ok).toBe(false);
+		expect(bareVerdict.problems).toContain("objective missing");
+		expect(bareVerdict.problems).toContain("scope missing");
+		expect(bareVerdict.problems).toContain("named surfaces missing");
+		expect(bareVerdict.problems).toContain("acceptance missing");
+		expect(bareVerdict.problems).toContain("out-of-scope missing");
+		expect(bareVerdict.problems).toContain("dependencies missing");
+		expect(bareVerdict.problems).toContain("ordering missing");
+		// A label with an empty value does not count.
+		const empty = CHECKLIST_PLAN.replace("Objective: ship the plan gate.", "Objective:");
+		expect(validatePlanChecklist(empty).problems).toContain("objective missing");
+		// An explicit SPE-<n> reference is required.
+		expect(validatePlanChecklist(CHECKLIST_PLAN.replace("SPE-35029", "an issue")).problems).toContain(
+			"referenced Linear issues missing",
+		);
+		// ROADMAP alone, without a wave/ordering/consistency reference on its line, does not count.
+		expect(validatePlanChecklist(CHECKLIST_PLAN.replace("ROADMAP wave 1", "ROADMAP")).problems).toContain(
+			"ROADMAP consistency missing",
+		);
 	});
 });

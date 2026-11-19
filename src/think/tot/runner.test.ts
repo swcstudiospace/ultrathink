@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { PrdValidationError } from "./generator.ts";
 import { checkpointPath, inputHash, MANIFEST_FILE, runTot } from "./runner.ts";
-import { sha256Hex } from "./template.ts";
+import { PRD_TEMPLATE_VERSION, sha256Hex } from "./template.ts";
 import type { GeneratedPrd, PrdRequest, TotProgress } from "./types.ts";
 
 const made: string[] = [];
@@ -186,6 +186,58 @@ describe("runTot: checkpoints", () => {
 		expect(inputHash(request)).not.toBe(inputHash({ ...request, title: "other" }));
 		expect(inputHash(request)).not.toBe(inputHash({ ...request, thought: "other" }));
 		expect(inputHash(request, "model-a")).not.toBe(inputHash(request, "model-b"));
+	});
+
+	test("the input hash does not cover the execution wave", () => {
+		const [request] = makeRequests(1);
+		if (request === undefined) throw new Error("no request");
+		// Wave is scheduling, not PRD content: changing it must not change the hash, so checkpoints written
+		// before waves existed still match and a rerun resumes them instead of regenerating.
+		expect(inputHash({ ...request, wave: 1 })).toBe(inputHash({ ...request, wave: 99 }));
+		expect(inputHash({ ...request, wave: 99 })).toBe(inputHash(request));
+	});
+
+	test("a checkpoint written with the pre-wave hash format is resumed", async () => {
+		const dir = makeDir();
+		const [request] = makeRequests(1);
+		if (request === undefined) throw new Error("no request");
+		const waved = { ...request, wave: 7 };
+		const markdown = "# Pre-existing PRD\n";
+		// The pre-wave hash: the content array without any wave element.
+		const legacy = sha256Hex(
+			JSON.stringify([
+				PRD_TEMPLATE_VERSION,
+				"",
+				waved.key,
+				waved.graphId,
+				waved.nodeId,
+				waved.step,
+				waved.title,
+				waved.thought,
+			]),
+		);
+		expect(legacy).toBe(inputHash(waved));
+		const record = {
+			key: waved.key,
+			hash: sha256Hex(markdown),
+			markdown,
+			status: "generated",
+			model: "m-1",
+			fallback: false,
+			attempts: 1,
+		};
+		writeFileSync(checkpointPath(dir, waved.key), JSON.stringify({ version: 1, inputHash: legacy, record }));
+		const calls: string[] = [];
+		const manifest = await runTot({
+			requests: [waved],
+			checkpointDir: dir,
+			generate: async (r) => {
+				calls.push(r.key);
+				return prd(r);
+			},
+		});
+		expect(calls).toEqual([]);
+		expect(manifest.records).toEqual([record]);
 	});
 
 	test("a changed salt regenerates everything", async () => {

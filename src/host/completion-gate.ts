@@ -466,28 +466,49 @@ export class CompletionGate {
 	/** Enter waiting_for_plan (missing/stale/unparseable/fails checklist) and start bounded polling. */
 	enterWaitingForPlan(actor = "system", reason = "plan missing, stale, unparseable or failing checklist"): boolean {
 		const ok = this.tryTransition("waiting_for_plan", actor, reason);
-		if (ok) this.#startPolling();
+		if (ok) {
+			// Quarantine: no prior plan may execute while waiting; a late valid Plan re-validates via submitPlan.
+			this.#plan = undefined;
+			this.#startPolling();
+		}
 		return ok;
 	}
 
 	/**
-	 * Submit a candidate plan. Returns the plan when it validates (hash computed, gate
-	 * auto-transitions plan_validated -> ready without manual restart); else undefined and
-	 * the gate stays/returns to waiting_for_plan (invalid/stale quarantined).
+	 * Submit a candidate plan. Returns the plan when it validates and its transition is accepted
+	 * (hash computed, gate auto-transitions plan_validated -> ready without manual restart); else
+	 * undefined. An invalid candidate quarantines to waiting_for_plan and clears any prior plan.
+	 * A valid candidate in ready/executing/validating/complete is not accepted: the rejected
+	 * transitions are logged and the original plan/state are kept, never overwritten.
 	 */
 	submitPlan(text: string | undefined, options: { actor?: string; stale?: boolean; version?: string } = {}): PlanGatePlan | undefined {
 		const actor = options.actor ?? "planner";
 		const verdict = validatePlanChecklist(text, options);
 		if (!verdict.ok) {
-			if (this.#state !== "waiting_for_plan") this.enterWaitingForPlan(actor, `plan quarantined: ${verdict.problems.join("; ")}`);
-			else this.tryTransition("waiting_for_plan", actor, `plan quarantined: ${verdict.problems.join("; ")}`);
+			// Quarantine semantics: an invalid candidate must not leave a prior plan executing, even
+			// when it arrives after validation. From waiting/plan_validated/ready the waiting_for_plan
+			// edge holds (ready/plan_validated enter via the quarantine edge) and the prior plan is
+			// cleared. From executing/validating/complete/failed there is no held state: the candidate
+			// is rejected (logged by tryTransition) and loudly emitted, and the already-validated plan
+			// stays authoritative for the running/terminal gate.
+			const reason = `plan quarantined: ${verdict.problems.join("; ")}`;
+			if (this.#state === "waiting_for_plan") {
+				this.#plan = undefined;
+				this.tryTransition("waiting_for_plan", actor, reason);
+			} else if (!this.enterWaitingForPlan(actor, reason)) {
+				this.#emit(`plan quarantined (rejected, no held state): ${verdict.problems.join("; ")}`);
+			}
 			return undefined;
 		}
 		const plan = buildPlanGatePlan(text ?? "", options.version);
-		this.#plan = plan;
-		if (this.#state !== "plan_validated") this.tryTransition("plan_validated", actor, "plan checklist passed");
+		// Only acceptance into plan_validated may replace #plan: attempt that transition first,
+		// and never let an unrelated ready edge (validating -> ready) accept a resubmission.
+		let accepted = this.#state === "plan_validated";
+		if (!accepted) accepted = this.tryTransition("plan_validated", actor, "plan checklist passed");
+		if (!accepted) return undefined;
 		// Automatic use: validated means ready; no manual restart is required.
 		this.tryTransition("ready", actor, "auto-use validated plan");
+		this.#plan = plan;
 		this.#stopPolling();
 		return plan;
 	}
@@ -495,7 +516,9 @@ export class CompletionGate {
 	/** One bounded poll tick (host timer or test): re-check provider, auto-resume or block. */
 	pollOnce(): PlanGatePlan | undefined {
 		if (this.#state !== "waiting_for_plan") return undefined;
-		this.#pollAttempts += 1;
+		// A manual tick supersedes any armed poll timer; the re-arm below leaves at most one handle.
+		this.#stopPolling();
+		this.#pollAttempts++;
 		const candidate = this.#planProvider?.();
 		if (candidate !== undefined) {
 			const accepted = this.submitPlan(candidate);
@@ -558,6 +581,8 @@ export class CompletionGate {
 
 	#armPollTimer(): void {
 		if (this.#state !== "waiting_for_plan") return;
+		// Clear any prior handle first: arming must never leave two poll timers live.
+		this.#stopPolling();
 		const timer = this.#timers.setTimeout(() => {
 			this.#pollTimer = undefined;
 			this.pollOnce();
@@ -735,17 +760,19 @@ function describe(problems: readonly GateProblem[]): string {
 /** Allowed hard-state-machine edges: the spec chain discovering->discussing->planning->waiting_for_plan->
  * plan_validated->ready->executing->validating->complete, plus legacy generating (the entry state, which may
  * enter discovering) and terminal failed_or_cancelled. No backward or skip edges: executing is ready-only and
- * complete is validating-only (plus evidence). `waiting_for_plan` self-quarantine is idempotent. */
-function planGateAllowed(from: GateState): ReadonlySet<GateState> {
+ * complete is validating-only (plus evidence). `waiting_for_plan` self-quarantine is idempotent. The sole
+ * backward exception is quarantine: plan_validated/ready may fall back to waiting_for_plan so a rejected
+ * Plan candidate clears the prior plan instead of executing on it; executing/validating have no such edge. */
+export function planGateAllowed(from: GateState): ReadonlySet<GateState> {
 	const table: Record<string, readonly GateState[]> = {
 		discovering: ["discussing", "waiting_for_plan", "plan_validated", "failed_or_cancelled"],
 		discussing: ["planning", "waiting_for_plan", "plan_validated", "failed_or_cancelled"],
 		planning: ["waiting_for_plan", "plan_validated", "failed_or_cancelled"],
 		waiting_for_plan: ["waiting_for_plan", "plan_validated", "failed_or_cancelled"],
-		plan_validated: ["ready", "failed_or_cancelled"],
+		plan_validated: ["ready", "waiting_for_plan", "failed_or_cancelled"],
 		generating: ["discovering", "validating", "partial_failure", "failed_or_cancelled", "waiting_for_plan", "plan_validated"],
 		validating: ["ready", "partial_failure", "failed_or_cancelled", "complete"],
-		ready: ["executing", "validating", "failed_or_cancelled"],
+		ready: ["executing", "validating", "failed_or_cancelled", "waiting_for_plan"],
 		executing: ["validating", "failed_or_cancelled"],
 		partial_failure: ["failed_or_cancelled", "waiting_for_plan"],
 		failed_or_cancelled: [],
@@ -765,10 +792,18 @@ function buildPlanGatePlan(text: string, version?: string): PlanGatePlan {
 }
 
 /**
- * Plan checklist: objective, scope, named surfaces, acceptance, out-of-scope,
- * dependencies, ordering, referenced Linear issues, ROADMAP consistency.
+ * Plan checklist: a labeled non-empty value for objective, scope, named surfaces, acceptance,
+ * out-of-scope, dependencies and ordering; an explicit SPE-<n> issue reference; and ROADMAP with a
+ * wave/ordering/consistency reference on the ROADMAP line. Bare keywords do not count.
  * Unparseable (empty/truncated XML) fails; stale is flagged by the caller.
  */
+function labeledChecklistValue(body: string, labelPattern: string): string | undefined {
+	const end = String.raw`(?=\s*(?:Objective|Scope|Named surfaces?|Acceptance|Out[- ]of[- ]scope|Dependencies|Ordering)\s*:|\n|$)`;
+	const match = new RegExp(`(?:^|[.;\\n]\\s*)${labelPattern}\\s*:\\s*([^\\n]*?)${end}`, "i").exec(body);
+	const value = match?.[1]?.trim();
+	return value ? value : undefined;
+}
+
 export function validatePlanChecklist(
 	text: string | undefined,
 	options: { stale?: boolean } = {},
@@ -779,16 +814,23 @@ export function validatePlanChecklist(
 	if (problems.length > 0) return { ok: false, problems };
 	const body = text ?? "";
 	if (!checkUpliftXml(body, "").ok) problems.push("plan unparseable");
-	if (!/objective/i.test(body)) problems.push("objective missing");
-	if (!/scope/i.test(body)) problems.push("scope missing");
-	if (!/surfaces?/i.test(body)) problems.push("named surfaces missing");
-	if (!/acceptance/i.test(body)) problems.push("acceptance missing");
-	if (!/out-of-scope|out of scope/i.test(body)) problems.push("out-of-scope missing");
-	if (!/dependencies/i.test(body)) problems.push("dependencies missing");
-	if (!/ordering|order/i.test(body)) problems.push("ordering missing");
-	if (!/SPE-\d+/.test(body)) problems.push("referenced Linear issues missing");
-	// ROADMAP consistency: the Plan must name ROADMAP and the ordering it is consistent with.
-	if (!/ROADMAP/.test(body)) problems.push("ROADMAP consistency missing");
+	const labeled: readonly (readonly [problem: string, label: string])[] = [
+		["objective missing", "Objective"],
+		["scope missing", "Scope"],
+		["named surfaces missing", "Named surfaces?"],
+		["acceptance missing", "Acceptance"],
+		["out-of-scope missing", "Out[- ]of[- ]scope"],
+		["dependencies missing", "Dependencies"],
+		["ordering missing", "Ordering"],
+	];
+	for (const [problem, label] of labeled) {
+		if (labeledChecklistValue(body, label) === undefined) problems.push(problem);
+	}
+	if (!/\bSPE-\d+\b/.test(body)) problems.push("referenced Linear issues missing");
+	// ROADMAP consistency: the ROADMAP line must name a wave/ordering/consistency reference.
+	const roadmapLine = body.split("\n").find((line) => /ROADMAP/.test(line));
+	if (roadmapLine === undefined || !/\b(?:wave|ordering|order|consistency|consistent)\b/i.test(roadmapLine))
+		problems.push("ROADMAP consistency missing");
 	return { ok: problems.length === 0, problems };
 }
 

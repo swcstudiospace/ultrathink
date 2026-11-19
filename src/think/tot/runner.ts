@@ -61,7 +61,11 @@ export function waveOf(request: PrdRequest): number {
 	return request.wave ?? request.step;
 }
 
-/** Hash of everything one PRD is generated from; a checkpoint is reused only while it still matches. */
+/**
+ * Hash of everything one PRD is generated from; a checkpoint is reused only while it still matches. The wave is
+ * deliberately excluded: it is scheduling (execution order), not PRD content, so a wave change must not
+ * invalidate an already-generated PRD, and checkpoints written before waves existed keep matching.
+ */
 export function inputHash(request: PrdRequest, salt = ""): string {
 	return sha256Hex(
 		JSON.stringify([
@@ -71,7 +75,6 @@ export function inputHash(request: PrdRequest, salt = ""): string {
 			request.graphId,
 			request.nodeId,
 			request.step,
-			waveOf(request),
 			request.title,
 			request.thought,
 		]),
