@@ -18,6 +18,7 @@ import { findPhaseDirectory, openHtilEntries, verificationEntryId } from "../hos
 import { createMcpClientIfCredentialed } from "../mcp/client.ts";
 import type { McpClient } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
+import { sleep } from "../resilience/sleep.ts";
 import type { ToolCaller } from "../track/create.ts";
 import { fileStore } from "../workflow/phase-loop-store.ts";
 import {
@@ -1506,7 +1507,7 @@ async function main(): Promise<number> {
 			client ??= createMcpClientIfCredentialed("greptile", { storePath: storePath() });
 			return client;
 		},
-		sleep: Bun.sleep,
+		sleep,
 		phaseLoopDir: join(stateDir, "phase-loop"),
 		decisions: (record) =>
 			createDecisions({ config: config.decisions, sessionId: record.sessionId, stateDir }),

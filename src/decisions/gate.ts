@@ -70,7 +70,7 @@ export interface DecisionsDeps {
 	storePath?: string; // default storePath(env)
 	fetch?: DecisionsFetch; // default: globalThis.fetch at call time
 	now?: () => number; // default Date.now
-	sleep?: (ms: number) => Promise<void>; // default Bun.sleep
+	sleep?: (ms: number) => Promise<void>; // default: the shared sleep in ../resilience/sleep.ts
 	random?: () => number; // default Math.random
 	/** One line per decision, without the "[ultrathink] " prefix. Default: when env.ULTRATHINK_DEBUG === "1",
 	 *  process.stderr.write(`[ultrathink] ${line}\n`); otherwise no output. */
