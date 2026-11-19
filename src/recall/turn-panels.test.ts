@@ -130,4 +130,36 @@ describe("buildTurnPanels: one envelope per supplied lookup", () => {
 		expect(Object.keys(panels ?? {})).toEqual(["substrate"]);
 		expect(panels?.substrate).toMatchObject({ status: "success" });
 	});
+
+	test("a moments lookup is one teachable_moment panel; omitting it yields no moments envelope", () => {
+		const withMoments = buildTurnPanels({ moments: lessons([row()]) }, settings(true), {
+			trigger: "explicit",
+			startedAt: 1_000,
+		});
+		expect(Object.keys(withMoments ?? {})).toEqual(["moments"]);
+		expect(withMoments?.moments).toMatchObject({ surface: "teachable_moment" });
+
+		const without = buildTurnPanels({ skills: skills([skillRow()]) }, settings(true), {
+			trigger: "explicit",
+			startedAt: 1_000,
+		});
+		expect(Object.keys(without ?? {})).toEqual(["skills"]);
+		expect(without?.moments).toBeUndefined();
+	});
+});
+
+describe("buildTurnPanels: prompt-turn moments", () => {
+	test("a moments lookup carries the turn's trigger, start and query", () => {
+		const panels = buildTurnPanels({ moments: lessons([row()]) }, settings(true), {
+			trigger: "prompt_turn",
+			startedAt: 2_000,
+			query: "flaky fetch",
+		});
+		expect(panels?.moments).toMatchObject({
+			surface: "teachable_moment",
+			trigger: "prompt_turn",
+			timing: { startedAt: 2_000 },
+			request: { queryPreview: "flaky fetch", startedAt: 2_000 },
+		});
+	});
 });

@@ -55,7 +55,9 @@ import type { ProgressEvent, ProgressSink, StageName } from "../host/progress.ts
 import type { CompletionReport } from "../completion-report.ts";
 import type { UpliftResult, UpliftState } from "../types.ts";
 import { docsLookup, formatDocsSection, groundDocs } from "../ragflow/ground.ts";
-import { teachContext, teachEnabled } from "../teach/context.ts";
+import { teachContext, teachEnabled, tryStore } from "../teach/context.ts";
+import { resolveMoment } from "../teach/capture.ts";
+import { normalizeSignature } from "../teach/skill-author.ts";
 import { formatLessonsSection, lessonsLookup, recallLessons } from "../teach/recall.ts";
 import { buildTurnPanels, type TurnPanels, withoutRows } from "../recall/turn-panels.ts";
 import {
@@ -661,6 +663,7 @@ async function recallMomentsFor(
 	deps: Pick<HookDeps, "config" | "stateDir">,
 	input: FailureLookupInput,
 	arg: { query: string; cwd: string; signal: AbortSignal },
+	countUse = true,
 ): Promise<LessonsLookup> {
 	const ctx = teachContext({
 		host: input.host,
@@ -677,7 +680,7 @@ async function recallMomentsFor(
 		now: input.now,
 		log: input.log,
 	});
-	return recallMoments(arg.query, ctx, { countUse: true });
+	return recallMoments(arg.query, ctx, { countUse });
 }
 
 /** A failure trigger's lookup, bounded by `recall.timeoutMs`. Never rejects. */
@@ -864,6 +867,24 @@ function startSkills(
 		(reason) => ({ status: "error", skills: [], chars: 0, ms: input.now() - started, reason }),
 		deps.timers ?? platformTimers,
 	);
+}
+
+/** The Substrate brief request as the turn panel describes it: the repository and branch it keyed on, and its surface. */
+function briefRequestSummary(request: {
+	repo: string | undefined;
+	branch: string | undefined;
+	surface: string;
+}): { query: string; filters: string[] } {
+	const filters = [
+		...(request.repo ? [`repo: ${request.repo}`] : []),
+		...(request.branch ? [`branch: ${request.branch}`] : []),
+		`surface: ${request.surface}`,
+	];
+	const target = request.repo ?? "no repository";
+	return {
+		query: `Substrate brief for ${target}${request.branch ? ` on ${request.branch}` : ""}`,
+		filters,
+	};
 }
 
 /** The stable wording of a missing brief's reason; a closed vocabulary, so a segment can never carry a token or a URL. */
@@ -1144,6 +1165,8 @@ export async function runPromptSubmit(
 		// Decided before the brief: the knowledge-base prefetch only runs when clarify will.
 		const hitlOn = deps.control.hitlEnabled ?? deps.config.hitl.enabled;
 
+		// The turn's lookups start here; each panel's startedAt is this instant.
+		const turnStartedAt = now();
 		// Started now, awaited before the Graph of Thought: the graph is then
 		// planned knowing what other agents already did, and the round trip
 		// overlaps the uplift call instead of adding to it.
@@ -1157,12 +1180,14 @@ export async function runPromptSubmit(
 					backend: deps.config.substrate.backend,
 					gateway: deps.config.gateway,
 				}));
-		const briefPromise = fetchSessionBrief({
+		const briefRequest = {
 			repo: git.repo,
 			branch: git.branch,
 			surface: deps.surface ?? "claude-code",
-			signal: lifetime,
-		}).catch((): BriefResult => ({ text: "", state: "none", reason: "unreachable" }));
+		};
+		const briefPromise = fetchSessionBrief({ ...briefRequest, signal: lifetime }).catch(
+			(): BriefResult => ({ text: "", state: "none", reason: "unreachable" }),
+		);
 
 		// The Realm probe runs beside the brief and the uplift, once per plan, capped at 1 s; it never rejects.
 		// The async wrapper turns a seam that throws before returning its promise into a rejection too.
@@ -1236,6 +1261,25 @@ export async function runPromptSubmit(
 					})
 				: undefined;
 
+		// The turn panel's moments: the failure trigger's moments source, read for display only, so no use is counted.
+		const promptMoments: FailureLookupInput = {
+			query: lookupQuery,
+			cwd,
+			host: surfaceId,
+			env: lookupEnv,
+			sessionId,
+			now,
+			log,
+			parent: lifetime,
+			timers,
+		};
+		const momentsPromise =
+			lookups && recallOn && recallSettings.recall.sources.moments
+				? boundedFailureLookup(deps, promptMoments, (arg) =>
+						recallMomentsFor(deps, promptMoments, arg, false),
+					)
+				: undefined;
+
 		// The knowledge-base prefetch (find the repo, list documents, read index.md) overlaps the uplift and the
 		// Graph of Thought; the topic-specific documents are read right before clarify.
 		const reader = hitlOn ? (deps.knowledge ?? createGreptileKnowledge(deps.config)) : undefined;
@@ -1286,6 +1330,8 @@ export async function runPromptSubmit(
 		// degraded or snapshot label is plain text and survives; only secret shapes are masked. Then control characters go
 		// and the text is capped, so a brief another agent wrote cannot carry terminal escapes or flood the context.
 		const brief = sanitizeBrief(redactSecrets(briefResult.text));
+		// The panel reads the brief before the handoff cap, so its trimmed count covers the cut the cap makes too.
+		const briefText = redactSecrets(briefResult.text);
 		// One secret-free line when a configured Substrate answered nothing; shown in the summary only (never repeated).
 		const briefNotice = substrateBriefNotice(briefResult);
 		if (brief) log(`substrate brief: ${brief.split("\n").length} lines`);
@@ -1319,10 +1365,11 @@ export async function runPromptSubmit(
 		}
 
 		// Settled before anything is formatted so the record says what happened; all are bounded and never reject.
-		const [recalled, grounded, skilled] = await Promise.all([
+		const [recalled, grounded, skilled, momentsRecalled] = await Promise.all([
 			recallPromise,
 			groundPromise,
 			skillsPromise,
+			momentsPromise,
 		]);
 		throwIfCancelled(cancellation);
 		let lessons: LessonsLookup | undefined;
@@ -2088,9 +2135,16 @@ export async function runPromptSubmit(
 				knowledge,
 				lessons,
 				skills,
-				substrate: { text: brief, state: briefResult.state, reason: briefResult.reason },
+				moments: momentsRecalled,
+				substrate: {
+					text: briefText,
+					state: briefResult.state,
+					reason: briefResult.reason,
+					...briefRequestSummary(briefRequest),
+				},
 			},
 			deps.config.recallSettings,
+			{ trigger: "prompt_turn", startedAt: turnStartedAt, query: lookupQuery },
 		);
 		return {
 			output,
@@ -2169,6 +2223,64 @@ function errorTextOf(response: unknown): string {
 	return text === "" ? "tool error" : text;
 }
 
+/** The root cause a resolution made by a successful retry records. */
+const RETRY_ROOT_CAUSE = "resolved by a successful retry of the same failure signature";
+
+/**
+ * The success half of the resolution rule: a non-error tool result that follows a failed one resolves this session's
+ * Teachable Moments whose normalized name matches the failure's signature. The failure marker is taken here, so only
+ * the result right after a failure can resolve. With recall off this does nothing and touches no state.
+ */
+function resolveRetriedFailure(
+	deps: ToolResultDeps,
+	input: ToolResultInput,
+	sessionId: string,
+): void {
+	const log = deps.log ?? (() => undefined);
+	if (readSession(deps.stateDir, sessionId)?.recall?.lastFailure === undefined) return;
+	const taken: { failure?: { signature: string; at: number } } = {};
+	try {
+		updateRecall(
+			deps.stateDir,
+			sessionId,
+			(current) => {
+				if (current?.lastFailure === undefined) return undefined;
+				taken.failure = current.lastFailure;
+				const { lastFailure: _taken, ...kept } = current;
+				return kept;
+			},
+			HOOK_LOCK,
+		);
+	} catch (cause) {
+		log(`recall failure marker failed: ${cause instanceof Error ? cause.name : "error"}`);
+		return;
+	}
+	const failure = taken.failure;
+	if (failure === undefined) return;
+	const ctx = teachContext({
+		host: deps.surface ?? "claude-code",
+		cwd: input.cwd?.trim() || process.cwd(),
+		env: deps.decisionsDeps?.env ?? process.env,
+		sessionId,
+		stateDir: deps.stateDir,
+		config: {
+			teach: deps.config.teach,
+			hindsight: deps.config.hindsight,
+			gateway: deps.config.gateway,
+		},
+		now: deps.now ?? Date.now,
+		log,
+	});
+	if (!teachEnabled(ctx)) return;
+	for (const moment of tryStore(ctx)?.list() ?? []) {
+		if (
+			moment.sourcePhase === `session:${sessionId}` &&
+			normalizeSignature(moment.name) === failure.signature
+		)
+			resolveMoment(moment.id, ctx, RETRY_ROOT_CAUSE);
+	}
+}
+
 /**
  * The failure trigger for one PostToolUse (SPE-34394). With recall.enabled off it does nothing and touches no state. The
  * lessons for an error's first occurrence, and its teachable moments on the second, are fetched before the lock; the
@@ -2181,8 +2293,11 @@ export async function runToolResultRecall(
 ): Promise<ToolResultRecall> {
 	const settings = deps.config.recallSettings;
 	const sessionId = hostSessionId(input.session_id);
-	if (!settings.recall.enabled || sessionId === undefined || !isErrorToolResult(input))
+	if (!settings.recall.enabled || sessionId === undefined) return { audit: [], reasons: [] };
+	if (!isErrorToolResult(input)) {
+		resolveRetriedFailure(deps, input, sessionId);
 		return { audit: [], reasons: [] };
+	}
 	const now = deps.now ?? Date.now;
 	const nowMs = now();
 	const timers = deps.timers ?? platformTimers;
@@ -2261,6 +2376,7 @@ export async function runToolResultRecall(
 					state: serializeRecallState(pass.next),
 					...(current?.lastScope !== undefined ? { lastScope: current.lastScope } : {}),
 					last: { at: nowMs, audit: pass.audit, reasons: pass.reasons },
+					lastFailure: { signature: normalizeSignature(error), at: nowMs },
 				};
 			},
 			HOOK_LOCK,

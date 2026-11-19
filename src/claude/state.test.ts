@@ -42,6 +42,7 @@ import {
 	sessionPath,
 	sessionRecordPath,
 	trackingCheckpoint,
+	updateRecall,
 	updateSession,
 	writeControl,
 	writeSession,
@@ -1099,5 +1100,25 @@ describe("recall state", () => {
 		expect([...restored.dedupe.injected]).toEqual(["k1"]);
 		expect(restored.failures?.size).toBe(1);
 		expect(restoreRecallState("damaged")).toEqual(createRecallState());
+	});
+});
+
+describe("recall record: last failure", () => {
+	test("the last failure's signature and time round-trip through the session file", () => {
+		const dir = tempDir();
+		writeSession(dir, {
+			sessionId: "rf1",
+			at: 1,
+			result: { xml: "<X/>", original: "x", root: "X", source: "llm" },
+		});
+		const saved = updateRecall(dir, "rf1", () => ({
+			state: serializeRecallState(createRecallState()),
+			lastFailure: { signature: "eacces permission denied", at: 5 },
+		}));
+		expect(saved?.lastFailure).toEqual({ signature: "eacces permission denied", at: 5 });
+		expect(readSession(dir, "rf1")?.recall?.lastFailure).toEqual({
+			signature: "eacces permission denied",
+			at: 5,
+		});
 	});
 });

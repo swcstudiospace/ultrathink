@@ -364,6 +364,7 @@ export function skillsLookup(
 			description: entry.description,
 			target: "drafts" as const,
 			injected: false,
+			status: entry.status,
 		})),
 	];
 	const lookup: SkillsLookup = {

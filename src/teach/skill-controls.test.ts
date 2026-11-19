@@ -5,13 +5,17 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_HINDSIGHT_CONFIG } from "../hindsight/types.ts";
 import { promoteGeneratedSkill, runSkillsCommand } from "./skill-controls.ts";
 import { type AutoSkill, contentHashOf } from "./skill-author.ts";
 import {
+	generatedStoreDir,
 	promoteGeneratedSkillAutomatically,
 	setGeneratedStatus,
 	writeGeneratedSkill,
 } from "./skill-store.ts";
+import { recallSkills, skillsLookup } from "./skills.ts";
+import { DEFAULT_TEACH_CONFIG, type TeachContext } from "./types.ts";
 
 const NOW = "2026-11-17T10:00:00.000Z";
 const SKILL = "tsc-value-import-of-types";
@@ -66,17 +70,17 @@ describe("/ultrathink-skills", () => {
 		expect(await run("list")).toBe("No generated skills.");
 	});
 
-	test("listing shows a written generated skill with its status and version", async () => {
+	test("listing shows a written generated skill with its status, version and auto marker", async () => {
 		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
 
-		expect(await run("list")).toBe(`${SKILL} · draft · v1`);
+		expect(await run("list")).toBe(`${SKILL} · draft · v1 · auto`);
 	});
 
 	test("disable marks the skill disabled and the list shows it", async () => {
 		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
 
 		expect(await run(`disable ${SKILL}`)).toBe(`disabled ${SKILL}`);
-		expect(await run("list")).toBe(`${SKILL} · disabled · v1`);
+		expect(await run("list")).toBe(`${SKILL} · disabled · v1 · auto`);
 	});
 
 	test("delete removes the skill's directory and its entry", async () => {
@@ -91,7 +95,7 @@ describe("/ultrathink-skills", () => {
 		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
 
 		expect(await run("delete never-written")).toBe("not_found: no generated skill with that name");
-		expect(await run("list")).toBe(`${SKILL} · draft · v1`);
+		expect(await run("list")).toBe(`${SKILL} · draft · v1 · auto`);
 	});
 
 	test("an unknown subcommand, a missing name, or an enable or generate request returns the usage line", async () => {
@@ -110,7 +114,7 @@ describe("/ultrathink-skills", () => {
 			changed: true,
 			entry: { name: SKILL, status: "active" },
 		});
-		expect(await run("list")).toBe(`${SKILL} · active · v1`);
+		expect(await run("list")).toBe(`${SKILL} · active · v1 · auto`);
 		expect(await readFile(join(storeDir, SKILL, "SKILL.md"), "utf8")).toContain("status: active\n");
 		expect(await auditRecords()).toMatchObject([
 			{ action: "create", name: SKILL },
@@ -129,7 +133,7 @@ describe("/ultrathink-skills", () => {
 			entry: { status: "active" },
 		});
 		expect(await auditRecords()).toEqual(before);
-		expect(await run("list")).toBe(`${SKILL} · active · v1`);
+		expect(await run("list")).toBe(`${SKILL} · active · v1 · auto`);
 	});
 
 	test("a disabled skill is refused promotion with its reason and stays disabled", async () => {
@@ -140,7 +144,7 @@ describe("/ultrathink-skills", () => {
 			ok: false,
 			reason: "wrong_status",
 		});
-		expect(await run("list")).toBe(`${SKILL} · disabled · v1`);
+		expect(await run("list")).toBe(`${SKILL} · disabled · v1 · auto`);
 	});
 
 	test("promoting a name the manifest does not list is refused with its reason", async () => {
@@ -149,7 +153,7 @@ describe("/ultrathink-skills", () => {
 		expect(
 			await promoteGeneratedSkill(storeDir, "never-written", { confirmedBy: "alice" }),
 		).toMatchObject({ ok: false, reason: "not_found" });
-		expect(await run("list")).toBe(`${SKILL} · draft · v1`);
+		expect(await run("list")).toBe(`${SKILL} · draft · v1 · auto`);
 	});
 
 	test("promotion needs a non-blank confirmedBy name", async () => {
@@ -159,7 +163,7 @@ describe("/ultrathink-skills", () => {
 			ok: false,
 			reason: "invalid_input",
 		});
-		expect(await run("list")).toBe(`${SKILL} · draft · v1`);
+		expect(await run("list")).toBe(`${SKILL} · draft · v1 · auto`);
 	});
 
 	test("the general status setter refuses active, and the skill stays draft", async () => {
@@ -171,7 +175,7 @@ describe("/ultrathink-skills", () => {
 				reason: "invalid_input",
 			},
 		);
-		expect(await run("list")).toBe(`${SKILL} · draft · v1`);
+		expect(await run("list")).toBe(`${SKILL} · draft · v1 · auto`);
 	});
 
 	test("regenerating an active skill writes it as draft, which needs a fresh promotion", async () => {
@@ -186,7 +190,7 @@ describe("/ultrathink-skills", () => {
 
 		expect(result).toMatchObject({ ok: true, entry: { status: "draft", version: 2 } });
 		expect(await readFile(join(storeDir, SKILL, "SKILL.md"), "utf8")).toContain("status: draft\n");
-		expect(await run("list")).toBe(`${SKILL} · draft · v2`);
+		expect(await run("list")).toBe(`${SKILL} · draft · v2 · auto`);
 	});
 });
 
@@ -204,7 +208,7 @@ describe("automatic promotion", () => {
 			changed: true,
 			entry: { name: SKILL, status: "active" },
 		});
-		expect(await run("list")).toBe(`${SKILL} · active · v1`);
+		expect(await run("list")).toBe(`${SKILL} · active · v1 · auto`);
 		const promotion = (await auditRecords()).at(-1);
 		expect(promotion).toMatchObject({ action: "promote", name: SKILL, reason: REASON, ts: LATER });
 		expect(promotion).not.toHaveProperty("confirmedBy");
@@ -215,7 +219,7 @@ describe("automatic promotion", () => {
 		await run(`disable ${SKILL}`);
 
 		expect(await promote(SKILL)).toMatchObject({ ok: false, reason: "wrong_status" });
-		expect(await run("list")).toBe(`${SKILL} · disabled · v1`);
+		expect(await run("list")).toBe(`${SKILL} · disabled · v1 · auto`);
 	});
 
 	test("a user-authored skill directory is refused and its SKILL.md is left as it was", async () => {
@@ -233,6 +237,60 @@ describe("automatic promotion", () => {
 		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
 
 		expect(await promote(SKILL, "  ")).toMatchObject({ ok: false, reason: "invalid_input" });
-		expect(await run("list")).toBe(`${SKILL} · draft · v1`);
+		expect(await run("list")).toBe(`${SKILL} · draft · v1 · auto`);
+	});
+});
+
+describe("/ultrathink-skills panel after disable or delete", () => {
+	const KEY = { query: "typescript build", taskType: "typescript-build" };
+	let ctx: TeachContext;
+
+	beforeEach(() => {
+		// The keyed lookup reads the generated store under the state directory, so the command's store is that directory.
+		storeDir = generatedStoreDir(root);
+		ctx = {
+			host: "omp",
+			cwd: root,
+			config: {
+				teach: { ...DEFAULT_TEACH_CONFIG, enabled: true },
+				hindsight: { ...DEFAULT_HINDSIGHT_CONFIG },
+			},
+			env: { HOME: root },
+			stateDir: root,
+			now: () => Date.parse(NOW),
+		};
+	});
+
+	test("after a disable, the next keyed lookup does not inject the skill and the list shows the auto marker", async () => {
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+		await promoteGeneratedSkill(storeDir, SKILL, { confirmedBy: "alice" });
+		expect(await recallSkills(KEY, ctx)).toMatchObject({
+			status: "used",
+			skills: [{ name: SKILL }],
+		});
+
+		expect(await run(`disable ${SKILL}`)).toBe(`disabled ${SKILL}`);
+		const outcome = await recallSkills(KEY, ctx);
+		expect(outcome).toMatchObject({ status: "used", skills: [] });
+		expect(skillsLookup(outcome)).toMatchObject({ count: 0, names: [] });
+		expect(skillsLookup(outcome).rows).toEqual([
+			expect.objectContaining({ name: SKILL, injected: false }),
+		]);
+		expect(await run("list")).toBe(`${SKILL} · disabled · v1 · auto`);
+	});
+
+	test("after a delete, the next keyed lookup does not return the skill at all", async () => {
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+		await promoteGeneratedSkill(storeDir, SKILL, { confirmedBy: "alice" });
+		expect(await recallSkills(KEY, ctx)).toMatchObject({
+			status: "used",
+			skills: [{ name: SKILL }],
+		});
+
+		expect(await run(`delete ${SKILL}`)).toBe(`deleted ${SKILL}`);
+		const outcome = await recallSkills(KEY, ctx);
+		expect(outcome).toMatchObject({ status: "none", skills: [], excluded: [] });
+		expect(skillsLookup(outcome)).toMatchObject({ count: 0, names: [], rows: [] });
+		expect(await run("list")).toBe("No generated skills.");
 	});
 });

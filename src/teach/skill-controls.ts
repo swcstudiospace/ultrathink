@@ -29,10 +29,10 @@ async function listReply(storeDir: string): Promise<string> {
 	if (!result.ok) return failureText(result);
 	if (result.entries.length === 0) return "No generated skills.";
 	return result.entries
-		.map(
-			(entry) =>
-				`${entry.name} · ${entry.status} · v${entry.version}${entry.stale ? " · stale" : ""}`,
-		)
+		.map((entry) => {
+			const auto = entry.generated_by === "auto" ? " · auto" : "";
+			return `${entry.name} · ${entry.status} · v${entry.version}${auto}${entry.stale ? " · stale" : ""}`;
+		})
 		.join("\n");
 }
 

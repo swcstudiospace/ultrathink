@@ -614,7 +614,8 @@ async function authorDrafts(ctx: TeachContext, verdicts: Map<string, boolean>): 
 					facts: {
 						taskType: moment.kind,
 						scopeGlobs: [],
-						resolved: false,
+						rootCause: moment.rootCause,
+						resolved: moment.resolvedAt !== undefined,
 						userConfirmed: moment.origin === "explicit",
 					},
 				},
