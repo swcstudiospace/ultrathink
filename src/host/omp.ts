@@ -1731,6 +1731,10 @@ export function createOmpExtension(
 			earlyDelivered?: boolean;
 			/** The completion gate guarding this flight; absent when the gate is off, which keeps the old race. */
 			gate?: CompletionGate;
+			/** This flight's gate was seen in `waiting_for_plan`: a later `ready` auto-resumes and delivers the Plan. */
+			gateWaiting?: boolean;
+			/** The gate-released Plan already went (or is going) out as the flight's one aside: the duplicate guard. */
+			gateAsideDelivered?: boolean;
 			/** Tracker rows are expected in the plan (tracking on and a tracker configured when the flight launched). */
 			tracked?: boolean;
 			/** The no-plan or stalled note, or a recovered stored plan, was already delivered for this flight. */
@@ -3153,8 +3157,11 @@ export function createOmpExtension(
 				const missing = (gate.verdict?.problems ?? []).map((problem) => problem.detail).join("; ");
 				return { kind: "hold", text: gateHoldPartial(missing, true) };
 			}
-			if (gate.state === "waiting_for_plan")
+			if (gate.state === "waiting_for_plan") {
+				// The one-time hold: arm the late auto-resume, so a later `ready` delivers through the aside.
+				flight.gateWaiting = true;
 				return { kind: "hold", text: gate.blocked ? gateWaitingBlocked(gate.blockReason) : GATE_WAITING };
+			}
 			if (gate.state === "plan_validated") {
 				const transitioned = gate.tryTransition("ready", "omp", "auto-use validated plan");
 				if (!transitioned) {
@@ -3249,6 +3256,30 @@ export function createOmpExtension(
 				() => view,
 			);
 		};
+		/**
+		 * Late valid Plan auto-resume: the gate was held in `waiting_for_plan` and has since reached `ready`.
+		 * Runs the same `gateDelivery` release as `settle` and sends the released text as the one aside.
+		 * `gateAsideDelivered` is set synchronously before the first await, so a repeated `ready` (or a
+		 * `settle`/`gatedMessage` delivery racing this one) cannot send a second aside; `deliveredInline`
+		 * covers a plan that already reached the model inline.
+		 */
+		const deliverLateGatePlan = async (flight: Flight): Promise<void> => {
+			const gate = flight.gate;
+			if (!gate || gate.state !== "ready" || !flight.gateWaiting) return;
+			if (!flight.settled || flight.cancelled || deliberateSkip(flight.skipped)) return;
+			if (flight.deliveredInline || flight.gateAsideDelivered) return;
+			if (!current(flight)) return;
+			const delivery = gateDelivery(flight, gate);
+			if (delivery.kind !== "plan") return;
+			if (flight.deliveredInline || flight.gateAsideDelivered) return;
+			flight.gateAsideDelivered = true;
+			if (!(await sendAside(flight, planMessage(delivery.text, flight.view)))) {
+				flight.gateAsideDelivered = false;
+				return;
+			}
+			barWrite(flight.generation, () => store.delivered("aside", flight.view, now()));
+			markPlanDelivered(flight);
+		};
 		/** Delivery once the plan settles: only a still-current flight on an unchanged live model shows or sends anything. */
 		const settle = async (flight: Flight, result: OmpPlan): Promise<void> => {
 			flight.settled = true;
@@ -3333,10 +3364,14 @@ export function createOmpExtension(
 			}
 			// A non-gated plan released to the model is kept durably; the gate saved its own release.
 			if (!gate && flight.content) saveReleased(flight, flight.content);
+			// A late auto-resume already sent this plan as the aside: one aside per flight, never two.
+			if (flight.gateAsideDelivered) return;
+			if (gate && flight.releasedText !== undefined) flight.gateAsideDelivered = true;
 			// The aside is the only delivery of a deferred plan: it reads delivered only once the host took it. A refused
 			// send keeps `flight.content`, so the plan is not lost, and the same submission's next run delivers it inline.
 			if (!(await sendAside(flight, planMessage(body, flight.view)))) {
 				flight.deferred = false;
+				flight.gateAsideDelivered = false;
 				if (flight.content) barWrite(flight.generation, () => store.skipped("aside failed", now()));
 				return;
 			}
@@ -3405,6 +3440,21 @@ export function createOmpExtension(
 							),
 						);
 					},
+				});
+				// Late Plan auto-resume: `onProgress` is the gate's only later effect. A `waiting_for_plan`
+				// arms the flight; a later `ready` delivers the released Plan as the one aside. Deferred to
+				// a microtask so the `ready` emit inside `gateDelivery`'s own transition cannot reenter it.
+				flight.gate.onProgress((progress) => {
+					if (progress.state === "waiting_for_plan") {
+						flight.gateWaiting = true;
+						return;
+					}
+					if (progress.state !== "ready" || !flight.gateWaiting) return;
+					void Promise.resolve()
+						.then(() => deliverLateGatePlan(flight))
+						.catch(() => {
+							// reason: a failing late delivery must never break the host; the gate itself already reported the transition
+						});
 				});
 			}
 			// Subscribed before the callback boundary below: cancelling the previous flight runs its abort
@@ -3868,6 +3918,8 @@ export function createOmpExtension(
 			switch (delivery.kind) {
 				case "plan":
 					flight.deliveredInline = true;
+					// The late auto-resume already sent this plan as the one aside: never repeat it inline.
+					if (flight.gateAsideDelivered) return undefined;
 					barWrite(flight.generation, () => store.delivered("inline", flight.view, now()));
 					markPlanDelivered(flight);
 					return { message: planMessage(delivery.text, flight.view) };
