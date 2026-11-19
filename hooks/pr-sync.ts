@@ -18,8 +18,10 @@ import { resolve } from "node:path";
 import { isChildInvocation } from "../src/claude/complete.ts";
 import {
 	isErrorToolResult,
+	runTodoWriteRecall,
 	runToolResultRecall,
 	type ToolResultRecall,
+	type TodoWriteTodo,
 } from "../src/claude/hook.ts";
 import { defaultStateDir, readSession, sessionRecordPath } from "../src/claude/state.ts";
 import { claudeConfigPaths, loadConfig } from "../src/config.ts";
@@ -33,7 +35,7 @@ interface HookInput {
 	session_id?: string;
 	cwd?: string;
 	tool_name?: string;
-	tool_input?: { command?: string; cmd?: string };
+	tool_input?: { command?: string; cmd?: string; todos?: TodoWriteTodo[] };
 	tool_response?: unknown;
 }
 
@@ -90,6 +92,30 @@ async function recallFailure(
 	}
 }
 
+/**
+ * The phase-boundary trigger (SPE-34394) for a `TodoWrite` tool result: the skills its status transitions recall,
+ * or undefined when this result is not a successful `TodoWrite`. Off under ULTRATHINK_UPLIFT=0. Fail-open, like
+ * the failure trigger.
+ */
+async function recallTodos(
+	input: HookInput,
+	stateDir: string,
+): Promise<ToolResultRecall | undefined> {
+	if (process.env.ULTRATHINK_UPLIFT === "0") return undefined;
+	if (input.tool_name !== "TodoWrite") return undefined;
+	const cwd = input.cwd?.trim() || process.cwd();
+	try {
+		return await runTodoWriteRecall(input, {
+			config: loadConfig(claudeConfigPaths(cwd)),
+			stateDir,
+			surface: detectHost(),
+		});
+	} catch {
+		// reason: fail-open: a recall failure never costs the PR notice or the tool call
+		return undefined;
+	}
+}
+
 async function main(): Promise<void> {
 	if (isChildInvocation()) return;
 	let raw: Record<string, unknown>;
@@ -105,10 +131,13 @@ async function main(): Promise<void> {
 
 	const stateDir = defaultStateDir();
 	const recalled = await recallFailure(input, stateDir);
+	const todos = await recallTodos(input, stateDir);
 	const pr = prNotice(input, input.session_id, stateDir);
-	const additionalContext = [pr?.additionalContext, recalled?.additionalContext].filter(
-		(text): text is string => Boolean(text),
-	);
+	const additionalContext = [
+		pr?.additionalContext,
+		recalled?.additionalContext,
+		todos?.additionalContext,
+	].filter((text): text is string => Boolean(text));
 	if (!pr && additionalContext.length === 0) return;
 	// One JSON object per event: the PR notice and any recalled lessons share it.
 	await Bun.write(

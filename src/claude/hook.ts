@@ -118,8 +118,10 @@ import {
 	updateSession,
 	writeSession,
 	restoreRecallState,
+	restoreTodoSnapshot,
 	serializeRecallState,
 	type RecallRecord,
+	type TodoSnapshotItem,
 	updateRecall,
 } from "./state.ts";
 
@@ -591,7 +593,7 @@ const RECALL_HEADER =
 /** Whether a recall trigger may fetch a source: the master switch and both flags are on. */
 function recallWants(
 	recall: RecallSettings["recall"],
-	trigger: "scopeChange" | "failure" | "uncertainty",
+	trigger: "scopeChange" | "failure" | "phaseBoundary" | "uncertainty",
 	source: "knowledge" | "lessons" | "moments" | "skills",
 ): boolean {
 	return recall.enabled && recall.triggers[trigger] && recall.sources[source];
@@ -1753,6 +1755,9 @@ export async function runPromptSubmit(
 							recallAudit.length > 0 || recallReasons.length > 0
 								? { at: now(), audit: recallAudit, reasons: recallReasons }
 								: priorRecall?.last,
+						// The TodoWrite snapshot the phase-boundary trigger diffs against: a prompt's record rewrite
+						// must not lose the previous snapshot, or the next snapshot would diff against nothing.
+						...(priorRecall?.lastTodos !== undefined ? { lastTodos: priorRecall.lastTodos } : {}),
 					};
 
 		let plan: TrackPlan | undefined;
@@ -2175,12 +2180,20 @@ export async function runPromptSubmit(
 	}
 }
 
-/** What a PostToolUse event carries that the failure trigger reads. */
+/** One todo a `TodoWrite` tool call carries. `content` is the step's stable identity; `status` is its lifecycle. */
+export interface TodoWriteTodo {
+	content: string;
+	status: string;
+	activeForm?: string;
+}
+
+/** What a PostToolUse event carries: the failure trigger reads the response, the phase-boundary trigger the todos. */
 export interface ToolResultInput {
 	session_id?: string;
 	cwd?: string;
 	hook_event_name?: string;
 	tool_name?: string;
+	tool_input?: { todos?: TodoWriteTodo[] };
 	tool_response?: unknown;
 }
 
@@ -2210,6 +2223,44 @@ export function isErrorToolResult(input: ToolResultInput): boolean {
 	if (input.hook_event_name === "PostToolUseFailure") return true;
 	const response = input.tool_response;
 	return isRecord(response) && (response.is_error === true || response.isError === true);
+}
+
+/**
+ * A `TodoWrite` call's todos as a snapshot to persist, or undefined when they are absent or not an array (not a
+ * `TodoWrite` call). A malformed entry costs only itself, as `restoreTodoSnapshot` does for a stored record.
+ */
+function parseTodoSnapshot(todos: unknown): TodoSnapshotItem[] | undefined {
+	if (!Array.isArray(todos)) return undefined;
+	return restoreTodoSnapshot(todos);
+}
+
+/**
+ * The phase-boundary steps between two consecutive snapshots, as step contents in next-snapshot order. Step identity
+ * is `content`: a reorder changes no identity, and only duplicate contents fall back to index order (the nth copy in
+ * the next snapshot is matched against the nth copy in the previous one). A boundary is a forward status transition
+ * only — `pending` to `in_progress` (the step starts) and `in_progress` to `completed` (the step finishes). Every
+ * other move is noise and starts no boundary: `pending` to `completed` skips the start, a reopen moves backward, a
+ * repeat holds the status, and an `activeForm`-only or order-only change moves nothing.
+ */
+function todoBoundarySteps(
+	previous: readonly TodoSnapshotItem[],
+	next: readonly TodoSnapshotItem[],
+): string[] {
+	const earlier = new Map<string, TodoSnapshotItem[]>();
+	for (const item of previous) {
+		const queue = earlier.get(item.content);
+		if (queue) queue.push(item);
+		else earlier.set(item.content, [item]);
+	}
+	const steps: string[] = [];
+	for (const item of next) {
+		const prior = earlier.get(item.content)?.shift();
+		if (prior === undefined) continue;
+		const starts = prior.status === "pending" && item.status === "in_progress";
+		const finishes = prior.status === "in_progress" && item.status === "completed";
+		if (starts || finishes) steps.push(item.content);
+	}
+	return steps;
 }
 
 /** The text the failure trigger keys on: the response's error, stderr or message, else its text. Redacted, one line, capped. */
@@ -2377,6 +2428,7 @@ export async function runToolResultRecall(
 				return {
 					state: serializeRecallState(pass.next),
 					...(current?.lastScope !== undefined ? { lastScope: current.lastScope } : {}),
+					...(current?.lastTodos !== undefined ? { lastTodos: current.lastTodos } : {}),
 					last: { at: nowMs, audit: pass.audit, reasons: pass.reasons },
 					lastFailure: { signature: normalizeSignature(error), at: nowMs },
 				};
@@ -2387,6 +2439,149 @@ export async function runToolResultRecall(
 		log(`recall state write failed: ${cause instanceof Error ? cause.name : "error"}`);
 	}
 	const pass = holder.pass ?? planRecallPass(settings, restored, nowMs, event, lookups, reasons);
+	return {
+		audit: pass.audit,
+		reasons: pass.reasons,
+		...(pass.lines.length > 0
+			? { additionalContext: [RECALL_HEADER, ...pass.lines].join("\n") }
+			: {}),
+	};
+}
+
+/**
+ * The phase-boundary trigger for one `TodoWrite` PostToolUse (SPE-34394). Model ground: a plan step's identity is
+ * its todo `content` (see `todoBoundarySteps`), a boundary is a forward status transition of that step, and the
+ * boundary event carries `planStep` as the content and `taskType` as `"general"` — there is no prompt task-type
+ * classifier on this host, so every step is the same general task type for skill matching. The existing planner
+ * admits a phase-boundary source once per session per `(planStep, taskType)`: a step that starts and then finishes
+ * calls the planner on both transitions, but the second is `skipped_cooldown`, so the same step never recalls twice
+ * in one session. The skills lookup is fetched before the lock, keyed by the step's task type; the passes then run
+ * under the session record's lock threading the planner state, so the state they write is the stored one. The new
+ * snapshot is persisted (on the recall record's `lastTodos`) even when no transition starts a boundary or the
+ * phaseBoundary trigger is off: the next snapshot always diffs against the previous one. A failed `TodoWrite` wrote
+ * nothing, so it neither advances a boundary nor replaces the snapshot. With recall.enabled off it does nothing and
+ * touches no state.
+ */
+export async function runTodoWriteRecall(
+	input: ToolResultInput,
+	deps: ToolResultDeps,
+): Promise<ToolResultRecall> {
+	const settings = deps.config.recallSettings;
+	const sessionId = hostSessionId(input.session_id);
+	const snapshot = parseTodoSnapshot(input.tool_input?.todos);
+	if (!settings.recall.enabled || sessionId === undefined || snapshot === undefined) {
+		return { audit: [], reasons: [] };
+	}
+	if (isErrorToolResult(input)) return { audit: [], reasons: [] };
+	const now = deps.now ?? Date.now;
+	const nowMs = now();
+	const timers = deps.timers ?? platformTimers;
+	const log = deps.log ?? (() => undefined);
+	const cwd = input.cwd?.trim() || process.cwd();
+	const restored = restoreRecallState(readSession(deps.stateDir, sessionId)?.recall?.state);
+	const previous = restoreTodoSnapshot(readSession(deps.stateDir, sessionId)?.recall?.lastTodos);
+	const steps = previous === undefined ? [] : todoBoundarySteps(previous, snapshot);
+	const reasons: string[] = [];
+	const lookupsByStep: RecallLookups[] = [];
+	if (
+		steps.length > 0 &&
+		!isChildInvocation() &&
+		!isSubagentEnvelope(input as Record<string, unknown>)
+	) {
+		for (const planStep of steps) {
+			let lookups: RecallLookups = {};
+			if (recallWants(settings.recall, "phaseBoundary", "skills")) {
+				const todoInput: FailureLookupInput = {
+					query: planStep,
+					cwd,
+					sessionId,
+					host: deps.surface ?? "claude-code",
+					env: deps.decisionsDeps?.env ?? process.env,
+					now,
+					log,
+					parent: new AbortController().signal,
+					timers,
+				};
+				const skillsPromise = startSkills(deps, {
+					...todoInput,
+					key: { taskType: "general", scope: cwd },
+				});
+				if (skillsPromise) {
+					const skills = await skillsPromise;
+					if (skills.status === "error")
+						reasons.push(`phaseBoundary/skills: ${skills.reason ?? "error"}`);
+					lookups = { skills: skillsLookup(skills) };
+				}
+			}
+			lookupsByStep.push(lookups);
+		}
+	}
+	const holder: { pass?: RecallPass } = {};
+	try {
+		updateRecall(
+			deps.stateDir,
+			sessionId,
+			(current) => {
+				let state = restoreRecallState(current?.state);
+				const audit: RecallAuditEntry[] = [];
+				const lines: string[] = [];
+				const wroteReasons = [...reasons];
+				for (const [index, planStep] of steps.entries()) {
+					const pass = planRecallPass(
+						settings,
+						state,
+						nowMs,
+						{ trigger: "phaseBoundary", planStep, taskType: "general" },
+						lookupsByStep[index] ?? {},
+						wroteReasons,
+					);
+					state = pass.next;
+					audit.push(...pass.audit);
+					lines.push(...pass.lines);
+				}
+				const pass = { next: state, audit, reasons: wroteReasons, lines };
+				holder.pass = pass;
+				return {
+					state: serializeRecallState(pass.next),
+					...(current?.lastScope !== undefined ? { lastScope: current.lastScope } : {}),
+					...(current?.lastFailure !== undefined ? { lastFailure: current.lastFailure } : {}),
+					lastTodos: snapshot,
+					last:
+						steps.length > 0 || pass.reasons.length > 0
+							? { at: nowMs, audit: pass.audit, reasons: pass.reasons }
+							: current?.last,
+				};
+			},
+			HOOK_LOCK,
+		);
+	} catch (cause) {
+		log(`recall state write failed: ${cause instanceof Error ? cause.name : "error"}`);
+	}
+	const pass = holder.pass;
+	if (pass === undefined) {
+		// No session record to write to: plan unsaved from the restored state, like the failure trigger.
+		let state = restored;
+		const audit: RecallAuditEntry[] = [];
+		const lines: string[] = [];
+		for (const [index, planStep] of steps.entries()) {
+			const planned = planRecallPass(
+				settings,
+				state,
+				nowMs,
+				{ trigger: "phaseBoundary", planStep, taskType: "general" },
+				lookupsByStep[index] ?? {},
+				reasons,
+			);
+			state = planned.next;
+			audit.push(...planned.audit);
+			lines.push(...planned.lines);
+		}
+		return {
+			audit,
+			reasons,
+			...(lines.length > 0 ? { additionalContext: [RECALL_HEADER, ...lines].join("\n") } : {}),
+		};
+	}
 	return {
 		audit: pass.audit,
 		reasons: pass.reasons,

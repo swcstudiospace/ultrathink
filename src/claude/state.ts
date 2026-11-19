@@ -646,6 +646,19 @@ export interface RecallStateRecord {
  * The mid-session recall record of a session (SPE-34394): the planner state the next prompt or tool result restores, the
  * scope of the last planned prompt, and what the last recall pass did.
  */
+/** A TodoWrite todo's lifecycle: `pending` (not started), `in_progress` (the active step), `completed` (done). */
+type TodoStatus = "pending" | "in_progress" | "completed";
+
+/**
+ * One todo of a stored TodoWrite snapshot. `content` is the step's stable identity across snapshots: a reorder
+ * changes no identity, and a rewritten content is a different step.
+ */
+export interface TodoSnapshotItem {
+	content: string;
+	status: TodoStatus;
+	activeForm?: string;
+}
+
 export interface RecallRecord {
 	state: RecallStateRecord;
 	/** Scope of the last planned prompt: the repository slug, else the working directory. */
@@ -654,6 +667,8 @@ export interface RecallRecord {
 	last?: { at: number; audit: RecallAuditEntry[]; reasons: string[] };
 	/** The last failed tool result: its normalized error signature and when it came. The next non-error tool result takes it. */
 	lastFailure?: { signature: string; at: number };
+	/** The previous TodoWrite snapshot, against which the next one is diffed for phase-boundary transitions. */
+	lastTodos?: TodoSnapshotItem[];
 }
 
 export function serializeRecallState(state: RecallRuntimeState): RecallStateRecord {
@@ -733,6 +748,28 @@ export function restoreRecallState(stored: unknown): RecallRuntimeState {
 			),
 		),
 	};
+}
+
+const TODO_STATUSES: readonly string[] = ["pending", "in_progress", "completed"];
+
+/**
+ * The `TodoWrite` snapshot a stored record holds, or undefined when it holds none. A damaged entry costs only itself:
+ * a hand-edited record never throws and never invents a transition from a value it cannot read as a lifecycle status.
+ */
+export function restoreTodoSnapshot(stored: unknown): TodoSnapshotItem[] | undefined {
+	if (!Array.isArray(stored)) return undefined;
+	const items: TodoSnapshotItem[] = [];
+	for (const entry of stored) {
+		if (!isRecord(entry)) continue;
+		if (typeof entry.content !== "string" || entry.content === "") continue;
+		if (typeof entry.status !== "string" || !TODO_STATUSES.includes(entry.status)) continue;
+		items.push({
+			content: entry.content,
+			status: entry.status as TodoStatus,
+			...(typeof entry.activeForm === "string" ? { activeForm: entry.activeForm } : {}),
+		});
+	}
+	return items;
 }
 
 /**
