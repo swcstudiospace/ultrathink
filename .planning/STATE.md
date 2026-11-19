@@ -598,8 +598,8 @@ Correction (2026-11-17, later the same day): the statement "v1.24 has no phases"
 
 ## Run record 2026-11-19 (n7 synthesis; no phase status changed)
 
-- Wave 5 n7 synthesized the wave-ordered execution plan at `.planning/research/phase-execution-summary.md`; roadmap got a one-line active-milestone note. No phase was marked complete and no history was rewritten.
-- Reconciled status (read from archived VERIFICATION.md, not re-verified here): v1.24 109 complete and 113 verified; 110-112 human_needed/deferred; phase 114 6/7 with criterion 7 blocked on Notion payment (403); v1.15 68-76 human/external; v1.22 108 closed as accepted tech debt. STATE frontmatter counts unchanged (2 of 5).
+- Wave 5 n7 synthesized the wave-ordered execution plan (local git-ignored working copy at `.planning/research/phase-execution-summary.md`, outside this PR); roadmap got a one-line active-milestone note. No phase was marked complete and no history was rewritten.
+- Reconciled status (read from archived VERIFICATION.md, not re-verified here): v1.24 109 complete and 113 gaps_found/gap closure; 110-112 human_needed/deferred; phase 114 6/7 with criterion 7 blocked on Notion payment (403); v1.15 68-76 human/external; v1.22 108 closed as accepted tech debt. STATE frontmatter counts unchanged (2 of 5).
 - Wave-ordered execution changes are local on this branch and await verification; no tests were run in this lane. No phase status changed.
 - Local PRD template, density (0/48 = 0.0) and 48-row sync queue live under git-ignored `.planning/` (`.gitignore` keeps only ROADMAP/STATE/PHASES-INVENTORY tracked). Live Linear/Notion writes remain blocked-on-integration per q3; density claim and any "complete" marking await the integration lane.
 - Next: human `/gsd:verify-work 110`, `111`, `112` and the phase-114 criterion-7 check; then commit/ship via `ultrathink-ship` (not run); then live Linear PRD write + Notion round-trip once MCP is approved.

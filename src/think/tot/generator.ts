@@ -75,7 +75,7 @@ export function userPrompt(
 	limits: PrdLimits,
 	feedback: readonly string[],
 ): string {
-	const wave = request.wave !== undefined ? ` wave="${request.wave}"` : "";
+	const wave = request.wave !== undefined ? ` wave="${escapeText(String(request.wave))}"` : "";
 	const lines = [
 		`<SUB_ISSUE key="${escapeText(request.key)}" graph="${escapeText(request.graphId)}" node="${escapeText(request.nodeId)}" step="${request.step}"${wave}>`,
 		`<TITLE>${escapeText(request.title)}</TITLE>`,

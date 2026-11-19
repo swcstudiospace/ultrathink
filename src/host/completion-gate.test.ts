@@ -651,12 +651,14 @@ describe("Plan gate review fixes (round 2)", () => {
 		const releasedText = released.ok ? released.text : "";
 		expect(releasedText).toBe(accepted!.text);
 		expect(releasedText).not.toBe(plan());
-		// The omp.ts composition: `record ? `${text}\n\n${record}` : text`.
-		const record = gate.planRecord();
-		const composed = record ? `${releasedText}\n\n${record}` : releasedText;
-		expect(composed).toContain(releasedText);
-		expect(composed).toContain(accepted!.planHash);
-		expect(composed).toContain(accepted!.planId);
+		// omp.ts delivers/saves exactly `released.text`; planRecord stays separate for attribution/logging.
+		const delivered = releasedText;
+		expect(delivered).toBe(releasedText);
+		expect(planGateHash(delivered)).toBe(accepted!.planHash);
+		for (const ctx of contexts) expect(planGateHash(delivered)).toBe(ctx.planHash);
+		expect(gate.planRecord()).toContain(accepted!.planId);
+		expect(gate.planRecord()).toContain(accepted!.planHash);
+		expect(delivered).not.toContain(gate.planRecord());
 	});
 
 	test("(2) a pure plan gate still records its plan id/hash", () => {
@@ -669,10 +671,13 @@ describe("Plan gate review fixes (round 2)", () => {
 		expect(released.ok).toBe(true);
 		const releasedText = released.ok ? released.text : "";
 		expect(releasedText).toContain("Objective: ship the plan gate");
-		const record = gate.planRecord();
-		const composed = record ? `${releasedText}\n\n${record}` : releasedText;
-		expect(composed).toContain(accepted!.planHash);
-		expect(composed).toContain(accepted!.planId);
+		// omp.ts delivers/saves exactly `released.text`; planRecord stays separate.
+		const delivered = releasedText;
+		expect(delivered).toBe(releasedText);
+		expect(planGateHash(delivered)).toBe(accepted!.planHash);
+		expect(gate.planRecord()).toContain(accepted!.planId);
+		expect(gate.planRecord()).toContain(accepted!.planHash);
+		expect(delivered).not.toContain(gate.planRecord());
 	});
 });
 describe("Plan gate review fixes (round 3)", () => {
@@ -822,6 +827,12 @@ describe("Plan gate review fixes (round 5)", () => {
 		expect(gate.getExecutionContext()).toMatchObject({ planHash: planGateHash(releasedText), text: releasedText });
 		expect(gate.planRecord()).toContain(planGateHash(releasedText));
 		expect(releasedText).toBe(accepted!.text);
+		// omp.ts delivery: delivered text is exactly released.text, so re-hashing it matches workers.
+		const delivered = releasedText;
+		expect(delivered).toBe(releasedText);
+		expect(planGateHash(delivered)).toBe(accepted!.planHash);
+		for (const ctx of contextsAfter!) expect(planGateHash(delivered)).toBe(ctx.planHash);
+		expect(delivered).not.toContain(gate.planRecord());
 	});
 
 	test("(2) legacy staged-only release is unchanged: staged text, no record, no plan contexts", () => {
@@ -838,3 +849,23 @@ describe("Plan gate review fixes (round 5)", () => {
 		expect(gate.planRecord()).toBe("");
 	});
 });
+describe("Plan gate review fixes (round 6)", () => {
+	test("(1) delivered text === released.text even with a plan record (no append breaks planHash)", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		const contexts = gate.buildWorkerContexts(["w1"]);
+		const released = gate.release();
+		expect(released.ok).toBe(true);
+		const releasedText = released.ok ? released.text : "";
+		// Record is non-empty here, so the old `${text}\n\n${record}` composition would re-hash differently.
+		expect(gate.planRecord()).not.toBe("");
+		const delivered = releasedText;
+		expect(delivered).toBe(releasedText);
+		expect(planGateHash(delivered)).toBe(accepted!.planHash);
+		for (const ctx of contexts!) expect(planGateHash(delivered)).toBe(ctx.planHash);
+		expect(gate.planRecord()).toContain(planGateHash(delivered));
+		expect(delivered).not.toContain(gate.planRecord());
+	});
+});
+

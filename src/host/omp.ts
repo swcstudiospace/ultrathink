@@ -3157,8 +3157,10 @@ export function createOmpExtension(
 				return { kind: "notice", text: planFailedNotice(`the plan is still ${gate.state}`) };
 			const released = gate.release();
 			if (!released.ok) return { kind: "notice", text: planFailedNotice(released.detail) };
-			const record = gate.planRecord();
-			const text = record ? `${released.text}\n\n${record}` : released.text;
+			// Delivered/saved text is exactly `released.text`: workers re-hash it and
+			// must get `planHash`. The `planRecord()` (plan id/hash) stays separate for
+			// attribution/logging and is never appended into the plan body.
+			const text = released.text;
 			flight.releasedText = text;
 			saveReleased(flight, text);
 			return { kind: "plan", text };
