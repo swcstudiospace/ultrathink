@@ -3160,6 +3160,8 @@ export function createOmpExtension(
 			if (gate.state === "waiting_for_plan") {
 				// The one-time hold: arm the late auto-resume, so a later `ready` delivers through the aside.
 				flight.gateWaiting = true;
+				// A quarantine revoked the prior release: a revised Plan may be delivered again.
+				flight.gateAsideDelivered = false;
 				return { kind: "hold", text: gate.blocked ? gateWaitingBlocked(gate.blockReason) : GATE_WAITING };
 			}
 			if (gate.state === "plan_validated") {
@@ -3447,6 +3449,8 @@ export function createOmpExtension(
 				flight.gate.onProgress((progress) => {
 					if (progress.state === "waiting_for_plan") {
 						flight.gateWaiting = true;
+						// A quarantine revoked the prior release: a revised Plan may be delivered again.
+						flight.gateAsideDelivered = false;
 						return;
 					}
 					if (progress.state !== "ready" || !flight.gateWaiting) return;
