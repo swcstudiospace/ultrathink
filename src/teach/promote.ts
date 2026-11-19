@@ -44,8 +44,20 @@ import { askLesson, lessonDecisions } from "./context.ts";
 import { documentIdFor, tagsFor } from "./mapping.ts";
 import { redactText } from "./redact.ts";
 import { appendAudit } from "./skill-audit.ts";
-import { authorSkill, type SkillChecks, type SkillSource } from "./skill-author.ts";
-import { listGenerated, writeGeneratedSkill } from "./skill-store.ts";
+import {
+	authorSkill,
+	evaluateAutoPromotion,
+	normalizeSignature,
+	type SignatureEvent,
+	type SkillChecks,
+	type SkillSource,
+} from "./skill-author.ts";
+import {
+	generatedStoreDir,
+	listGenerated,
+	promoteGeneratedSkillAutomatically,
+	writeGeneratedSkill,
+} from "./skill-store.ts";
 import { openStore, storeDir } from "./store.ts";
 import { TEACH_KILL_ENV } from "./types.ts";
 import type {
@@ -538,8 +550,6 @@ function freeName(draft: SkillDraft, taken: Set<string>): SkillDraft {
 
 /** The window a signature must recur in, twice, to qualify a lesson that was not captured explicitly. */
 const SKILL_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
-/** The generated-skill store under the state directory; `skills.ts` and `omp.ts` read it there. */
-const GENERATED_STORE = "generated-skills";
 
 /** The names on disk in the generated store, user-authored entries included. */
 function namesIn(dir: string): string[] {
@@ -559,7 +569,7 @@ function namesIn(dir: string): string[] {
  * signature is skipped.
  */
 async function authorDrafts(ctx: TeachContext, verdicts: Map<string, boolean>): Promise<void> {
-	const dir = join(ctx.stateDir, GENERATED_STORE);
+	const dir = generatedStoreDir(ctx.stateDir);
 	const listed = await listGenerated(dir);
 	if (!listed.ok) return;
 	let records: Array<{ moment: TeachableMoment; source: SkillSource }>;
@@ -649,6 +659,51 @@ async function authorDrafts(ctx: TeachContext, verdicts: Map<string, boolean>): 
 	}
 }
 
+/**
+ * The automatic promotion of generated skills, run by `promoteDue`. A draft whose resolutions satisfy the rule
+ * (`evaluateAutoPromotion`) becomes active through `promoteGeneratedSkillAutomatically`, with the same validation as an
+ * explicit promotion. Only the generated manifest is read, so a user-authored skill is never listed and never touched.
+ */
+async function promoteGeneratedDue(ctx: TeachContext): Promise<void> {
+	const dir = generatedStoreDir(ctx.stateDir);
+	const listed = await listGenerated(dir);
+	if (!listed.ok) return;
+	const drafts = listed.entries.filter((entry) => entry.status === "draft");
+	if (drafts.length === 0) return;
+	let moments: TeachableMoment[];
+	try {
+		moments = openStore(storeDir(ctx.stateDir)).list();
+	} catch {
+		return;
+	}
+	const resolutions: SignatureEvent[] = [];
+	const occurrences: SignatureEvent[] = [];
+	for (const moment of moments) {
+		const signature = normalizeSignature(moment.name);
+		if (moment.resolvedAt !== undefined) resolutions.push({ signature, at: moment.resolvedAt });
+		if (moment.recurredAt !== undefined) occurrences.push({ signature, at: moment.recurredAt });
+	}
+	const now = new Date(nowOf(ctx)).toISOString();
+	for (const entry of drafts) {
+		const verdict = evaluateAutoPromotion({
+			status: entry.status,
+			generatedAt: entry.generated_at,
+			signatures: entry.applies_when.error_signatures,
+			resolutions,
+			occurrences,
+			now,
+		});
+		if (!verdict.promote) continue;
+		const result = await promoteGeneratedSkillAutomatically(dir, entry.name, {
+			reason: verdict.reason,
+			ts: now,
+		});
+		if (!result.ok) {
+			ctx.log?.(`teach: generated skill ${entry.name} was not promoted (${result.reason})`);
+		}
+	}
+}
+
 export async function promoteDue(
 	ctx: TeachContext,
 ): Promise<{ drafted: InstallOutcome[]; installed: InstallOutcome[] }> {
@@ -684,5 +739,10 @@ export async function promoteDue(
 		}
 	}
 	await authorDrafts(ctx, verdicts);
+	try {
+		await promoteGeneratedDue(ctx);
+	} catch {
+		// reason: a failed generated-skill sweep must not hide the lessons promoted above; the next observe run retries it
+	}
 	return result;
 }

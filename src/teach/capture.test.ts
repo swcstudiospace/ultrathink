@@ -16,6 +16,7 @@ import {
 	captureMoment,
 	confirmMoment,
 	forgetMoment,
+	resolveMoment,
 	syncOutbox,
 	TeachInputError,
 } from "./capture.ts";
@@ -1146,5 +1147,75 @@ describe("aborted lifetimes leave no late writes", () => {
 		);
 		expect(healthy.calls.retain).toHaveLength(1);
 		expect(healthy.calls.retain[0]?.content).toContain("Newer body wins.");
+	});
+});
+
+describe("resolveMoment and recurrences", () => {
+	const DAY_MS = 24 * 60 * 60 * 1000;
+
+	test("a repeat capture inside 14 days of a resolution is its recurrence, and only the first is kept", async () => {
+		const { ctx, store, clock } = setup();
+		const start = clock.now;
+		const first = await captureMoment(lesson(), ctx);
+		clock.now = start + DAY_MS;
+		resolveMoment(first.moment.id, ctx);
+		clock.now = start + 3 * DAY_MS;
+		await captureMoment(lesson(), ctx);
+		clock.now = start + 5 * DAY_MS;
+		await captureMoment(lesson(), ctx);
+
+		expect(store.get(first.moment.id)).toMatchObject({
+			resolvedAt: new Date(start + DAY_MS).toISOString(),
+			recurredAt: new Date(start + 3 * DAY_MS).toISOString(),
+			occurrences: 3,
+		});
+	});
+
+	test("a capture of the same signature from another project inside the window is a recurrence too", async () => {
+		const { ctx, store, clock, root } = setup();
+		const start = clock.now;
+		const first = await captureMoment(lesson(), ctx);
+		resolveMoment(first.moment.id, ctx);
+		clock.now = start + 2 * DAY_MS;
+		mkdirSync(join(root, "elsewhere"), { recursive: true });
+		const elsewhere = await captureMoment(lesson(), { ...ctx, cwd: join(root, "elsewhere") });
+
+		expect(elsewhere.created).toBe(true);
+		expect(store.get(first.moment.id)).toMatchObject({
+			recurredAt: new Date(start + 2 * DAY_MS).toISOString(),
+		});
+	});
+
+	test("a capture after the 14 days records no recurrence", async () => {
+		const { ctx, store, clock } = setup();
+		const start = clock.now;
+		const first = await captureMoment(lesson(), ctx);
+		resolveMoment(first.moment.id, ctx);
+		clock.now = start + 15 * DAY_MS;
+		await captureMoment(lesson(), ctx);
+
+		expect(store.get(first.moment.id)?.recurredAt).toBeUndefined();
+	});
+
+	test("resolving again clears the recurrence recorded against the earlier resolution", async () => {
+		const { ctx, store, clock } = setup();
+		const start = clock.now;
+		const first = await captureMoment(lesson(), ctx);
+		clock.now = start + DAY_MS;
+		resolveMoment(first.moment.id, ctx);
+		clock.now = start + 2 * DAY_MS;
+		await captureMoment(lesson(), ctx);
+		clock.now = start + 3 * DAY_MS;
+		resolveMoment(first.moment.id, ctx);
+
+		expect(store.get(first.moment.id)).toMatchObject({
+			resolvedAt: new Date(start + 3 * DAY_MS).toISOString(),
+		});
+		expect(store.get(first.moment.id)?.recurredAt).toBeUndefined();
+	});
+
+	test("resolveMoment is undefined for an unknown lesson", () => {
+		const { ctx } = setup();
+		expect(resolveMoment("tm-missing", ctx)).toBeUndefined();
 	});
 });

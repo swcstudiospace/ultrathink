@@ -29,6 +29,8 @@ import {
 	renderSkillDraft,
 	targetForHost,
 } from "./promote.ts";
+import { type AutoSkill, contentHashOf } from "./skill-author.ts";
+import { listGenerated, setGeneratedStatus, writeGeneratedSkill } from "./skill-store.ts";
 import { openStore, storeDir } from "./store.ts";
 import { DEFAULT_TEACH_CONFIG, MOMENT_KINDS } from "./types.ts";
 import type {
@@ -1162,6 +1164,163 @@ describe("promoteDue skillworthy gate", () => {
 		expect(existsSync(join(f.stateDir, "teach", "skill-drafts", "lesson-skip-lesson"))).toBe(false);
 		expect(store.get(skip.id)?.status).toBe("confirmed");
 		expect(store.get(keep.id)?.status).toBe("promoted");
+	});
+});
+
+describe("promoteDue: generated skills", () => {
+	const DAY_MS = 24 * 60 * 60 * 1000;
+	const SIGNATURE = "tsc rejects value imports of types";
+	const SKILL = "tsc-value-import-of-types";
+	const dayAt = (days: number): string => new Date(NOW + days * DAY_MS).toISOString();
+	const genDir = (f: Fixture): string => join(f.stateDir, "generated-skills");
+
+	function generated(overrides: Partial<AutoSkill> = {}): AutoSkill {
+		const draft: AutoSkill = {
+			name: SKILL,
+			description: "Use import type for type-only imports in typescript-build runs.",
+			applies_when: {
+				task_types: ["typescript-build"],
+				scope_globs: ["src/**"],
+				error_signatures: [SIGNATURE],
+			},
+			steps: ["Change the import to import type for symbols that are only types."],
+			source_ids: ["tm-source"],
+			generated_by: "auto",
+			generated_at: dayAt(-60),
+			content_hash: "",
+			version: 1,
+			status: "draft",
+			signature_hash: "0123456789abcdef0123456789abcdef",
+			stale: false,
+			warnings: [],
+			...overrides,
+		};
+		return { ...draft, content_hash: contentHashOf(draft) };
+	}
+
+	/** A lesson on the skill's signature, resolved `resolvedDay` days from NOW, and recurring `recurredDay` days from NOW if given. */
+	function resolvedLesson(f: Fixture, resolvedDay: number, recurredDay?: number): void {
+		openStore(storeDir(f.stateDir)).put(
+			moment({
+				name: SIGNATURE,
+				kind: "bug",
+				resolvedAt: dayAt(resolvedDay),
+				...(recurredDay === undefined ? {} : { recurredAt: dayAt(recurredDay) }),
+			}),
+		);
+	}
+
+	async function statusOf(f: Fixture): Promise<string | undefined> {
+		const listed = await listGenerated(genDir(f));
+		return listed.ok ? listed.entries.find((entry) => entry.name === SKILL)?.status : undefined;
+	}
+
+	function auditOf(f: Fixture): Array<Record<string, unknown>> {
+		return readFileSync(join(genDir(f), "audit.ndjson"), "utf8")
+			.split("\n")
+			.filter((line) => line !== "")
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+	}
+
+	test("two resolutions held 14 days with no recurrence make a draft active, audited without confirmedBy", async () => {
+		const f = fixture();
+		await writeGeneratedSkill(genDir(f), generated(), dayAt(-60));
+		resolvedLesson(f, -30);
+		resolvedLesson(f, -20);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		expect(await statusOf(f)).toBe("active");
+		const promotion = auditOf(f).at(-1);
+		expect(promotion).toMatchObject({
+			action: "promote",
+			name: SKILL,
+			reason: "2 resolutions held 14 days with no recurrence",
+			ts: dayAt(0),
+		});
+		expect(promotion).not.toHaveProperty("confirmedBy");
+	});
+
+	test("one resolution, or one still inside its 14 days, leaves the draft as it is", async () => {
+		const f = fixture();
+		await writeGeneratedSkill(genDir(f), generated(), dayAt(-60));
+		resolvedLesson(f, -30);
+		resolvedLesson(f, -3);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		expect(await statusOf(f)).toBe("draft");
+		expect(auditOf(f).some((record) => record.action === "promote")).toBe(false);
+	});
+
+	test("a recurrence inside the window cancels that resolution", async () => {
+		const f = fixture();
+		await writeGeneratedSkill(genDir(f), generated(), dayAt(-60));
+		resolvedLesson(f, -30, -25);
+		resolvedLesson(f, -20);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		expect(await statusOf(f)).toBe("draft");
+	});
+
+	test("a disabled skill is never promoted", async () => {
+		const f = fixture();
+		await writeGeneratedSkill(genDir(f), generated(), dayAt(-60));
+		await setGeneratedStatus(genDir(f), SKILL, "disabled");
+		resolvedLesson(f, -30);
+		resolvedLesson(f, -20);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		expect(await statusOf(f)).toBe("disabled");
+	});
+
+	test("nothing is promoted while autoPromote is off", async () => {
+		const f = fixture();
+		await writeGeneratedSkill(genDir(f), generated(), dayAt(-60));
+		resolvedLesson(f, -30);
+		resolvedLesson(f, -20);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: false } }));
+
+		expect(await statusOf(f)).toBe("draft");
+	});
+
+	test("the sweep never touches a user-authored skill directory it does not list", async () => {
+		const f = fixture();
+		await writeGeneratedSkill(genDir(f), generated(), dayAt(-60));
+		mkdirSync(join(genDir(f), "hand-written"), { recursive: true });
+		writeFileSync(join(genDir(f), "hand-written", "SKILL.md"), "# hand-written\n");
+		resolvedLesson(f, -30);
+		resolvedLesson(f, -20);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		expect(readFileSync(join(genDir(f), "hand-written", "SKILL.md"), "utf8")).toBe(
+			"# hand-written\n",
+		);
+		expect(await listGenerated(genDir(f))).toMatchObject({
+			ok: true,
+			entries: expect.arrayContaining([expect.objectContaining({ name: SKILL })]),
+		});
+	});
+
+	test("a regenerated skill counts from its new generated_at", async () => {
+		const f = fixture();
+		const tenDaysOn = { ...f.ctx({ teach: { autoPromote: true } }), now: () => NOW + 10 * DAY_MS };
+		await writeGeneratedSkill(genDir(f), generated(), dayAt(-60));
+		resolvedLesson(f, -30);
+		resolvedLesson(f, -20);
+		await writeGeneratedSkill(genDir(f), generated(), dayAt(-10));
+		resolvedLesson(f, -9);
+
+		await promoteDue(tenDaysOn);
+		expect(await statusOf(f)).toBe("draft");
+
+		resolvedLesson(f, -8);
+		await promoteDue(tenDaysOn);
+		expect(await statusOf(f)).toBe("active");
 	});
 });
 

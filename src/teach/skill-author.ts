@@ -5,6 +5,8 @@
  * or recalled lesson is worth a skill, drafts it from the record's own fields, validates it and merges it into an
  * existing skill. No filesystem, network or clock: the caller passes `now`, the existence and symbol predicates, the
  * existing skills and the recurrence pool, and writes the result.
+ * `evaluateAutoPromotion` makes the same kind of decision for a draft generated skill: from its resolutions, its
+ * occurrences and the clock, it says whether the draft becomes active.
  *
  * `authorSkill` runs: qualify -> secret scan of the full source text -> plan (create or merge) -> validate.
  * Validation order: schema and length bounds; minimum description length; secret scan; referenced paths (a missing path
@@ -486,6 +488,66 @@ export function authorSkill(input: AuthorInput): AuthorOutcome {
 		match: plan.match,
 		skill: validation.skill,
 		qualification,
+	};
+}
+
+/** Successful resolutions a draft generated skill needs before it becomes active. */
+const AUTO_PROMOTE_RESOLUTIONS = 2;
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** The window a resolution is watched for: judged once it has passed, and a recurrence counts against it only inside it. */
+export const AUTO_PROMOTE_WINDOW_MS = 14 * DAY_MS;
+
+/** One event on a normalized error signature: a resolution of it, or a recurrence of it. `at` is ISO 8601 UTC. */
+export interface SignatureEvent {
+	signature: string;
+	at: string;
+}
+
+interface AutoPromotionInput {
+	/** The manifest status. Only a draft is ever promoted. */
+	status: AutoSkill["status"] | "active";
+	/** The skill's current `generated_at`: a resolution at or before it belongs to an earlier version and does not count. */
+	generatedAt: string;
+	/** The normalized error signatures the skill applies to; events on any other signature are ignored. */
+	signatures: readonly string[];
+	resolutions: readonly SignatureEvent[];
+	occurrences: readonly SignatureEvent[];
+	/** ISO 8601 UTC: the clock. A resolution is judged only once its window has elapsed. */
+	now: string;
+}
+
+type AutoPromotionVerdict =
+	| { promote: false; successful: number }
+	| { promote: true; successful: number; reason: string };
+
+/**
+ * The automatic promotion rule for one generated skill. A resolution is successful when its window has elapsed (`now` is
+ * at or past 14 days after `at`) and no recurrence of its signature fell inside that window (after `at`, up to and
+ * including its end). The draft becomes active once two resolutions are successful, counting only resolutions after
+ * `generatedAt`. Nothing reads a clock here: the caller passes `now`.
+ */
+export function evaluateAutoPromotion(input: AutoPromotionInput): AutoPromotionVerdict {
+	const now = Date.parse(input.now);
+	const generatedAt = Date.parse(input.generatedAt);
+	if (input.status !== "draft" || Number.isNaN(now) || Number.isNaN(generatedAt)) {
+		return { promote: false, successful: 0 };
+	}
+	const successful = input.resolutions.filter((resolution) => {
+		if (!input.signatures.includes(resolution.signature)) return false;
+		const at = Date.parse(resolution.at);
+		if (Number.isNaN(at) || at <= generatedAt) return false;
+		if (now < at + AUTO_PROMOTE_WINDOW_MS) return false;
+		return !input.occurrences.some((occurrence) => {
+			if (occurrence.signature !== resolution.signature) return false;
+			const seen = Date.parse(occurrence.at);
+			return seen > at && seen <= at + AUTO_PROMOTE_WINDOW_MS;
+		});
+	}).length;
+	if (successful < AUTO_PROMOTE_RESOLUTIONS) return { promote: false, successful };
+	return {
+		promote: true,
+		successful,
+		reason: `${successful} resolutions held ${AUTO_PROMOTE_WINDOW_MS / DAY_MS} days with no recurrence`,
 	};
 }
 

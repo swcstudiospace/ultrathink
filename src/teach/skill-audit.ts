@@ -32,6 +32,8 @@ export interface AuditRecord {
 	match_by?: MatchBy;
 	/** Who confirmed a promotion to active, as the caller named them. Set only on a promote record. */
 	confirmedBy?: string;
+	/** Why an automatic promotion happened: the rule's outcome, never skill text. A promote record names `confirmedBy` or `reason`. */
+	reason?: string;
 	/** Why a candidate was refused. A kind and field name, never the text that failed. */
 	reject_kind?: string;
 	reject_field?: string;
@@ -65,6 +67,7 @@ function auditLineOf(record: AuditRecord): AuditRecord {
 		qualification_by: record.qualification_by,
 		match_by: record.match_by,
 		confirmedBy: record.confirmedBy,
+		reason: record.reason,
 		reject_kind: record.reject_kind,
 		reject_field: record.reject_field,
 	};

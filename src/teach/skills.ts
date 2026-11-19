@@ -26,7 +26,7 @@ import { CONTENT_MAX_BYTES, markerIds } from "./promote.ts";
 import { redactLine } from "./redact.ts";
 import { clean, queryTokens, tokenOverlap } from "./recall.ts";
 import { normalizeSignature } from "./skill-author.ts";
-import { listGenerated } from "./skill-store.ts";
+import { generatedStoreDir, listGenerated } from "./skill-store.ts";
 import { listRecentMoments, readMoment, storeDir } from "./store.ts";
 import type {
 	RecalledSkill,
@@ -57,8 +57,6 @@ const FRAMING =
 const SKILL_TARGETS: readonly string[] = ["hermes", "omp", "claude", "prime-agent", "drafts"];
 /** A path is printed verbatim on its own line: control characters would break the line, `</` could close a wrapper. */
 const UNSAFE_PATH = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]|<\//;
-/** The generated-skill store under the state directory: `omp.ts` writes it there. */
-const GENERATED_DIR = "generated-skills";
 /** Score of a keyed match: a positive floor, so a keyed match is recalled whatever its query overlap. */
 const KEYED_SCORE = 1;
 
@@ -265,7 +263,7 @@ async function generatedCandidates(
 	ctx: TeachContext,
 	key: SkillKey,
 ): Promise<{ candidates: Candidate[]; excluded: GeneratedExclusion[] }> {
-	const dir = join(ctx.stateDir, GENERATED_DIR);
+	const dir = generatedStoreDir(ctx.stateDir);
 	const listed = await listGenerated(dir);
 	const candidates: Candidate[] = [];
 	const excluded: GeneratedExclusion[] = [];

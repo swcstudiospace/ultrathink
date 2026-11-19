@@ -75,6 +75,13 @@ export interface TeachableMoment {
 	/** Set once Hindsight confirmed the write. */
 	retained?: { at: string; bank: string; documentId: string };
 	promoted?: { at: string; skill: string; target: SkillTarget; path?: string };
+	/** ISO 8601 UTC: when `resolveMoment` recorded that the problem this lesson describes was fixed. Latest only. */
+	resolvedAt?: string;
+	/**
+	 * ISO 8601 UTC: the first capture of the same signature inside the 14 days after `resolvedAt`, from this lesson or
+	 * another one. `capture` records it, and a resolution that has one never counts toward an automatic promotion.
+	 */
+	recurredAt?: string;
 }
 
 export const CAPTURE_MODES = ["explicit", "observe", "auto"] as const;
