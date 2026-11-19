@@ -15,7 +15,7 @@ blocked-evidence accounting (density 0.0, live sync blocked), **not success**.
 - SPE-35032 n5 aggregate state rules
 - SPE-35033 n7 Synthesize wave-ordered execution plan (steps SPE-35075..SPE-35081)
 
-Sub-issue census range: SPE-35034..SPE-35081 (all Backlog, team Spectrum Web Co).
+Sub-issue census range: SPE-35034..SPE-35081 (per-issue status and team unverified in this PR).
 Graph fit: parents + steps named above; full per-issue enumeration requires
 `linear list_issues` with `parentId` per parent — **blocked** (see evidence).
 
