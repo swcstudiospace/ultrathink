@@ -895,12 +895,12 @@ export function validatePlanChecklist(
 		if (labeledChecklistValue(body, label) === undefined) problems.push(problem);
 	}
 	if (!/\bSPE-\d+\b/.test(body)) problems.push("referenced Linear issues missing");
-	// ROADMAP consistency: any ROADMAP line must name a wave/ordering/order/consistency reference.
-	// Scan every line: an earlier bare ROADMAP line does not hide a later qualified one.
-	const hasRoadmapConsistency = body
-		.split("\n")
-		.some((line) => /ROADMAP/.test(line) && /\b(?:wave|ordering|order|consistency|consistent)\b/i.test(line));
-	if (!hasRoadmapConsistency) problems.push("ROADMAP consistency missing");
+	// ROADMAP consistency: every ROADMAP line must name a wave/ordering/order/consistency reference.
+	const roadmapLines = body.split("\n").filter((line) => /ROADMAP/.test(line));
+	const roadmapConsistent =
+		roadmapLines.length > 0 &&
+		roadmapLines.every((line) => /\b(?:wave|ordering|order|consistency|consistent)\b/i.test(line));
+	if (!roadmapConsistent) problems.push("ROADMAP consistency missing");
 	return { ok: problems.length === 0, problems };
 }
 

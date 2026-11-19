@@ -77,7 +77,7 @@ export function userPrompt(
 ): string {
 	const wave = request.wave !== undefined ? ` wave="${escapeText(String(request.wave))}"` : "";
 	const lines = [
-		`<SUB_ISSUE key="${escapeText(request.key)}" graph="${escapeText(request.graphId)}" node="${escapeText(request.nodeId)}" step="${request.step}"${wave}>`,
+		`<SUB_ISSUE key="${escapeText(request.key)}" graph="${escapeText(request.graphId)}" node="${escapeText(request.nodeId)}" step="${escapeText(String(request.step))}"${wave}>`,
 		`<TITLE>${escapeText(request.title)}</TITLE>`,
 		`<THOUGHT>${escapeText(clip(request.thought, MAX_THOUGHT_CHARS).text)}</THOUGHT>`,
 		"</SUB_ISSUE>",

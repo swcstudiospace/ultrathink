@@ -792,9 +792,10 @@ describe("Plan gate review fixes (round 4)", () => {
 		expect(progress.at(-1)!.label).toContain("boom-provider");
 	});
 
-	test("(3) ROADMAP scan passes when a later line carries the token", () => {
-		const laterQualified = CHECKLIST_PLAN.replace("ROADMAP wave 1.", "ROADMAP\nROADMAP wave 1.");
-		expect(validatePlanChecklist(laterQualified)).toEqual({ ok: true, problems: [] });
+	test("(3) ROADMAP scan requires every ROADMAP line to carry the token", () => {
+		// A bare ROADMAP line anywhere fails, even if another ROADMAP line is qualified.
+		const mixed = CHECKLIST_PLAN.replace("ROADMAP wave 1.", "ROADMAP\nROADMAP wave 1.");
+		expect(validatePlanChecklist(mixed).problems).toContain("ROADMAP consistency missing");
 		// No qualified ROADMAP line anywhere still fails.
 		expect(validatePlanChecklist(CHECKLIST_PLAN.replace("ROADMAP wave 1", "ROADMAP")).problems).toContain(
 			"ROADMAP consistency missing",
