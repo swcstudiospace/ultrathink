@@ -118,6 +118,12 @@ function parseMoment(raw: unknown, id: string): TeachableMoment | undefined {
 		};
 		if (typeof promoted.path === "string") moment.promoted.path = promoted.path;
 	}
+	if (typeof raw.resolvedAt === "string" && !Number.isNaN(Date.parse(raw.resolvedAt))) {
+		moment.resolvedAt = raw.resolvedAt;
+	}
+	if (typeof raw.recurredAt === "string" && !Number.isNaN(Date.parse(raw.recurredAt))) {
+		moment.recurredAt = raw.recurredAt;
+	}
 	return moment;
 }
 

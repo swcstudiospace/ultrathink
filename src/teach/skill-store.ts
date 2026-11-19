@@ -41,6 +41,7 @@ import { type AutoSkill, contentHashOf } from "./skill-author.ts";
 
 const MANIFEST = "manifest.json";
 const SKILL_FILE = "SKILL.md";
+const GENERATED_DIR = "generated-skills";
 const MANIFEST_SCHEMA = 2;
 /** Kebab-case, the same shape `skill-author` gives names. Excludes separators and dot segments by construction. */
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -51,9 +52,14 @@ const LINE_BREAK_RE = /[\r\n\u2028\u2029]/;
 /** A YAML plain scalar is written bare only when no YAML syntax character can change its meaning. */
 const PLAIN_SCALAR_RE = /^[A-Za-z0-9][^#:"'\\]*$/;
 
+/** The generated-skill store under a host state directory. */
+export function generatedStoreDir(stateDir: string): string {
+	return join(stateDir, GENERATED_DIR);
+}
+
 export type GeneratedStatus = AutoSkill["status"];
 
-/** Every status a manifest entry may hold. Only promoteGeneratedSkill sets `active`; the general setter refuses it. */
+/** Every status a manifest entry may hold. Only the promotion path sets `active`; the general setter refuses it. */
 type ManifestStatus = GeneratedStatus | "active";
 
 /** One generated skill as the manifest records it. */
@@ -151,7 +157,7 @@ export async function writeGeneratedSkill(
 	}
 }
 
-/** Sets a generated skill to draft or disabled, in the manifest and the `status:` line of its frontmatter. Only promoteGeneratedSkill sets active. */
+/** Sets a generated skill to draft or disabled, in the manifest and the `status:` line of its frontmatter. Only promotion sets active. */
 export async function setGeneratedStatus(
 	storeDir: string,
 	name: string,
@@ -180,15 +186,40 @@ export async function promoteGeneratedSkill(
 	name: string,
 	confirmedBy: string,
 ): Promise<PromoteResult> {
+	return promoteDraft(storeDir, name, { confirmedBy }, new Date().toISOString());
+}
+
+/**
+ * Promotes a draft generated skill to active because `evaluateAutoPromotion` found enough successful resolutions. It
+ * takes the same path and refusals as `promoteGeneratedSkill`. Its audit record carries `reason` and no `confirmedBy`,
+ * and is stamped with `ts`, the time the rule was evaluated.
+ */
+export async function promoteGeneratedSkillAutomatically(
+	storeDir: string,
+	name: string,
+	{ reason, ts }: { reason: string; ts: string },
+): Promise<PromoteResult> {
+	return promoteDraft(storeDir, name, { reason }, ts);
+}
+
+/** The one promotion path: a named confirmation or an automatic reason, never both. */
+async function promoteDraft(
+	storeDir: string,
+	name: string,
+	basis: { confirmedBy: string } | { reason: string },
+	ts: string,
+): Promise<PromoteResult> {
+	const field = "confirmedBy" in basis ? "confirmedBy" : "reason";
+	const text = "confirmedBy" in basis ? basis.confirmedBy : basis.reason;
 	try {
 		requireSlug(name);
-		if (!isSingleLine(confirmedBy)) throw new StoreError("invalid_input", "confirmedBy is invalid");
+		if (!isSingleLine(text)) throw new StoreError("invalid_input", `${field} is invalid`);
 		const outcome = underManifestLock(storeDir, false, () => promoteStatus(storeDir, name));
 		if (!outcome.changed) return { ok: true, changed: false, entry: outcome.entry };
 		const audit = appendAudit(storeDir, {
-			ts: new Date().toISOString(),
+			ts,
 			action: "promote",
-			confirmedBy,
+			...basis,
 			...auditFieldsOf(outcome.entry),
 		});
 		return { ok: true, changed: true, entry: outcome.entry, audit };

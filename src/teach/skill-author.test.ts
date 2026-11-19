@@ -6,6 +6,7 @@ import {
 	type AutoSkill,
 	authorSkill,
 	contentHashOf,
+	evaluateAutoPromotion,
 	planSkill,
 	qualifySkillCandidate,
 	type SkillCandidate,
@@ -364,5 +365,91 @@ describe("validateSkill", () => {
 		if (!outcome.ok) return;
 		expect(outcome.skill.steps).toEqual(["Confirm the changelog entry matches."]);
 		expect(outcome.skill.warnings).toContain("stripped 1 instruction-like step(s)");
+	});
+});
+
+describe("evaluateAutoPromotion", () => {
+	const DAY_MS = 24 * 60 * 60 * 1000;
+	const SIGNATURE = "tsc rejects value imports of types";
+	/** A timestamp `days` from NOW; negative values are in the past. */
+	const dayAt = (days: number): string => new Date(Date.parse(NOW) + days * DAY_MS).toISOString();
+	const resolution = (days: number, signature = SIGNATURE) => ({ signature, at: dayAt(days) });
+	const verdictOf = (overrides: Partial<Parameters<typeof evaluateAutoPromotion>[0]>) =>
+		evaluateAutoPromotion({
+			status: "draft",
+			generatedAt: dayAt(-60),
+			signatures: [SIGNATURE],
+			resolutions: [],
+			occurrences: [],
+			now: NOW,
+			...overrides,
+		});
+
+	test("two successful resolutions promote a draft", () => {
+		expect(verdictOf({ resolutions: [resolution(-30), resolution(-20)] })).toMatchObject({
+			promote: true,
+			successful: 2,
+		});
+	});
+
+	test("one successful resolution does not promote", () => {
+		expect(verdictOf({ resolutions: [resolution(-30)] })).toEqual({
+			promote: false,
+			successful: 1,
+		});
+	});
+
+	test("a resolution newer than 14 days does not count yet; one exactly 14 days old does", () => {
+		expect(verdictOf({ resolutions: [resolution(-30), resolution(-3)] })).toEqual({
+			promote: false,
+			successful: 1,
+		});
+		expect(verdictOf({ resolutions: [resolution(-30), resolution(-14)] })).toMatchObject({
+			promote: true,
+			successful: 2,
+		});
+	});
+
+	test("a recurrence inside 14 days after a resolution cancels that resolution only", () => {
+		const occurrences = [{ signature: SIGNATURE, at: dayAt(-25) }];
+		expect(verdictOf({ resolutions: [resolution(-30), resolution(-20)], occurrences })).toEqual({
+			promote: false,
+			successful: 1,
+		});
+	});
+
+	test("a recurrence after the window, or of another signature, cancels nothing", () => {
+		const occurrences = [
+			{ signature: SIGNATURE, at: dayAt(-2) },
+			{ signature: "an unrelated error", at: dayAt(-25) },
+		];
+		expect(
+			verdictOf({ resolutions: [resolution(-30), resolution(-20)], occurrences }),
+		).toMatchObject({ promote: true, successful: 2 });
+	});
+
+	test("a regenerated skill recounts: only resolutions after its generated_at count", () => {
+		const generatedAt = dayAt(-25);
+		expect(
+			verdictOf({ generatedAt, resolutions: [resolution(-30), resolution(-26), resolution(-20)] }),
+		).toEqual({ promote: false, successful: 1 });
+		expect(
+			verdictOf({
+				generatedAt,
+				resolutions: [resolution(-30), resolution(-26), resolution(-20), resolution(-22)],
+			}),
+		).toMatchObject({ promote: true, successful: 2 });
+	});
+
+	test("a disabled or active skill is never promoted, whatever its resolutions", () => {
+		const resolutions = [resolution(-30), resolution(-20), resolution(-10)];
+		expect(verdictOf({ status: "disabled", resolutions }).promote).toBe(false);
+		expect(verdictOf({ status: "active", resolutions }).promote).toBe(false);
+	});
+
+	test("an unreadable clock or generated_at promotes nothing", () => {
+		const resolutions = [resolution(-30), resolution(-20)];
+		expect(verdictOf({ now: "not a time", resolutions }).promote).toBe(false);
+		expect(verdictOf({ generatedAt: "not a time", resolutions }).promote).toBe(false);
 	});
 });

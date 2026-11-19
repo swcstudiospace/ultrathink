@@ -36,6 +36,12 @@ import { nowOf, unique } from "../shared.ts";
 import { askLesson, lessonDecisions } from "./context.ts";
 import { documentIdFor, tagsFor } from "./mapping.ts";
 import { redactText } from "./redact.ts";
+import { evaluateAutoPromotion, normalizeSignature, type SignatureEvent } from "./skill-author.ts";
+import {
+	generatedStoreDir,
+	listGenerated,
+	promoteGeneratedSkillAutomatically,
+} from "./skill-store.ts";
 import { openStore, storeDir } from "./store.ts";
 import { TEACH_KILL_ENV } from "./types.ts";
 import type {
@@ -518,6 +524,51 @@ function freeName(draft: SkillDraft, taken: Set<string>): SkillDraft {
 	}
 }
 
+/**
+ * The automatic promotion of generated skills, run by `promoteDue`. A draft whose resolutions satisfy the rule
+ * (`evaluateAutoPromotion`) becomes active through `promoteGeneratedSkillAutomatically`, with the same validation as an
+ * explicit promotion. Only the generated manifest is read, so a user-authored skill is never listed and never touched.
+ */
+async function promoteGeneratedDue(ctx: TeachContext): Promise<void> {
+	const dir = generatedStoreDir(ctx.stateDir);
+	const listed = await listGenerated(dir);
+	if (!listed.ok) return;
+	const drafts = listed.entries.filter((entry) => entry.status === "draft");
+	if (drafts.length === 0) return;
+	let moments: TeachableMoment[];
+	try {
+		moments = openStore(storeDir(ctx.stateDir)).list();
+	} catch {
+		return;
+	}
+	const resolutions: SignatureEvent[] = [];
+	const occurrences: SignatureEvent[] = [];
+	for (const moment of moments) {
+		const signature = normalizeSignature(moment.name);
+		if (moment.resolvedAt !== undefined) resolutions.push({ signature, at: moment.resolvedAt });
+		if (moment.recurredAt !== undefined) occurrences.push({ signature, at: moment.recurredAt });
+	}
+	const now = new Date(nowOf(ctx)).toISOString();
+	for (const entry of drafts) {
+		const verdict = evaluateAutoPromotion({
+			status: entry.status,
+			generatedAt: entry.generated_at,
+			signatures: entry.applies_when.error_signatures,
+			resolutions,
+			occurrences,
+			now,
+		});
+		if (!verdict.promote) continue;
+		const result = await promoteGeneratedSkillAutomatically(dir, entry.name, {
+			reason: verdict.reason,
+			ts: now,
+		});
+		if (!result.ok) {
+			ctx.log?.(`teach: generated skill ${entry.name} was not promoted (${result.reason})`);
+		}
+	}
+}
+
 export async function promoteDue(
 	ctx: TeachContext,
 ): Promise<{ drafted: InstallOutcome[]; installed: InstallOutcome[] }> {
@@ -550,6 +601,11 @@ export async function promoteDue(
 		} catch {
 			// reason: an unrenderable lesson is dropped with no signal, so the failure is hidden. Deferred: outside services, see 79-CONTEXT D-03 (root-side B sites).
 		}
+	}
+	try {
+		await promoteGeneratedDue(ctx);
+	} catch {
+		// reason: a failed generated-skill sweep must not hide the lessons promoted above; the next observe run retries it
 	}
 	return result;
 }

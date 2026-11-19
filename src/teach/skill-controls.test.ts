@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promoteGeneratedSkill, runSkillsCommand } from "./skill-controls.ts";
 import { type AutoSkill, contentHashOf } from "./skill-author.ts";
-import { setGeneratedStatus, writeGeneratedSkill } from "./skill-store.ts";
+import {
+	promoteGeneratedSkillAutomatically,
+	setGeneratedStatus,
+	writeGeneratedSkill,
+} from "./skill-store.ts";
 
 const NOW = "2026-11-17T10:00:00.000Z";
 const SKILL = "tsc-value-import-of-types";
@@ -183,5 +187,52 @@ describe("/ultrathink-skills", () => {
 		expect(result).toMatchObject({ ok: true, entry: { status: "draft", version: 2 } });
 		expect(await readFile(join(storeDir, SKILL, "SKILL.md"), "utf8")).toContain("status: draft\n");
 		expect(await run("list")).toBe(`${SKILL} · draft · v2`);
+	});
+});
+
+describe("automatic promotion", () => {
+	const REASON = "2 resolutions held 14 days with no recurrence";
+	const LATER = "2026-12-01T00:00:00.000Z";
+	const promote = (name: string, reason = REASON) =>
+		promoteGeneratedSkillAutomatically(storeDir, name, { reason, ts: LATER });
+
+	test("makes a draft active, and its audit record carries the reason and no confirmedBy", async () => {
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+
+		expect(await promote(SKILL)).toMatchObject({
+			ok: true,
+			changed: true,
+			entry: { name: SKILL, status: "active" },
+		});
+		expect(await run("list")).toBe(`${SKILL} · active · v1`);
+		const promotion = (await auditRecords()).at(-1);
+		expect(promotion).toMatchObject({ action: "promote", name: SKILL, reason: REASON, ts: LATER });
+		expect(promotion).not.toHaveProperty("confirmedBy");
+	});
+
+	test("a disabled skill is refused and stays disabled", async () => {
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+		await run(`disable ${SKILL}`);
+
+		expect(await promote(SKILL)).toMatchObject({ ok: false, reason: "wrong_status" });
+		expect(await run("list")).toBe(`${SKILL} · disabled · v1`);
+	});
+
+	test("a user-authored skill directory is refused and its SKILL.md is left as it was", async () => {
+		mkdirSync(join(storeDir, "hand-written"), { recursive: true });
+		writeFileSync(join(storeDir, "hand-written", "SKILL.md"), "# hand-written\n");
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+
+		expect(await promote("hand-written")).toMatchObject({ ok: false, reason: "user_authored" });
+		expect(await readFile(join(storeDir, "hand-written", "SKILL.md"), "utf8")).toBe(
+			"# hand-written\n",
+		);
+	});
+
+	test("a blank reason is refused, and the skill stays draft", async () => {
+		await writeGeneratedSkill(storeDir, skillFixture(), NOW);
+
+		expect(await promote(SKILL, "  ")).toMatchObject({ ok: false, reason: "invalid_input" });
+		expect(await run("list")).toBe(`${SKILL} · draft · v1`);
 	});
 });

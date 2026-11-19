@@ -25,6 +25,7 @@ import {
 	tagsFor,
 } from "./mapping.ts";
 import { redactLine, redactText, type RedactOptions } from "./redact.ts";
+import { AUTO_PROMOTE_WINDOW_MS, normalizeSignature } from "./skill-author.ts";
 import { isValidId } from "./store.ts";
 import {
 	MAX_BODY_CHARS,
@@ -198,6 +199,23 @@ function mergeMoments(old: TeachableMoment, fresh: TeachableMoment): TeachableMo
 	const supersedes = fresh.supersedes ?? old.supersedes;
 	if (supersedes !== undefined) merged.supersedes = supersedes;
 	return merged;
+}
+
+/**
+ * A capture inside the 14 days after a resolution is that resolution's recurrence, whichever lesson it lands on. Only the
+ * first such capture is kept. `captured` is already stored, so the scan judges it as it now reads.
+ */
+function recordRecurrence(store: TeachStore, captured: TeachableMoment): void {
+	const signature = normalizeSignature(captured.name);
+	const capturedAt = Date.parse(captured.lastSeenAt);
+	for (const other of store.list()) {
+		if (other.resolvedAt === undefined || other.recurredAt !== undefined) continue;
+		const resolvedAt = Date.parse(other.resolvedAt);
+		const inWindow = capturedAt > resolvedAt && capturedAt <= resolvedAt + AUTO_PROMOTE_WINDOW_MS;
+		if (inWindow && normalizeSignature(other.name) === signature) {
+			store.put({ ...other, recurredAt: captured.lastSeenAt });
+		}
+	}
 }
 
 function dropRetainOps(store: TeachStore, momentId: string): void {
@@ -412,6 +430,12 @@ async function persist(
 	const target = existing && existing.status !== "superseded" ? existing : undefined;
 	const saved = target ? mergeMoments(target, moment) : moment;
 	store.put(saved);
+	try {
+		recordRecurrence(store, saved);
+	} catch {
+		// reason: the capture is stored; an unrecorded recurrence leaves its resolution credited, so it is logged
+		ctx.log?.("teach: a recurrence could not be recorded; a resolution may count in error");
+	}
 	const tagsEntry = moment.supersedes
 		? supersede(store, moment.supersedes, saved.id, now)
 		: undefined;
@@ -480,6 +504,29 @@ export async function confirmMoment(
 			reason: `teach store write failed: ${redactLine(error instanceof Error ? error.message : String(error))}`,
 		};
 	}
+}
+
+/**
+ * Records now as the moment the problem a lesson describes was fixed. A lesson keeps only its latest resolution, and a new
+ * one clears any recurrence recorded against the earlier one. Local only: nothing is retained or sent. undefined for an
+ * unknown lesson, when Teachable Moments is off, or when the store cannot be written.
+ */
+export function resolveMoment(id: string, ctx: TeachContext): TeachableMoment | undefined {
+	const store = tryStore(ctx);
+	const moment = store?.get(id);
+	if (!store || !moment || !teachEnabled(ctx)) return undefined;
+	const resolved: TeachableMoment = {
+		...moment,
+		resolvedAt: new Date(nowOf(ctx)).toISOString(),
+		recurredAt: undefined,
+	};
+	try {
+		store.put(resolved);
+	} catch {
+		// reason: a failed write leaves the lesson as it was; the caller gets undefined, never a partial record
+		return undefined;
+	}
+	return resolved;
 }
 
 /** Removes the local file; a moment that reached (or may have reached) Hindsight also loses its document, now or from the outbox. */
