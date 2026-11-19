@@ -147,3 +147,19 @@ describe("buildTurnPanels: one envelope per supplied lookup", () => {
 		expect(without?.moments).toBeUndefined();
 	});
 });
+
+describe("buildTurnPanels: prompt-turn moments", () => {
+	test("a moments lookup carries the turn's trigger, start and query", () => {
+		const panels = buildTurnPanels({ moments: lessons([row()]) }, settings(true), {
+			trigger: "prompt_turn",
+			startedAt: 2_000,
+			query: "flaky fetch",
+		});
+		expect(panels?.moments).toMatchObject({
+			surface: "teachable_moment",
+			trigger: "prompt_turn",
+			timing: { startedAt: 2_000 },
+			request: { queryPreview: "flaky fetch", startedAt: 2_000 },
+		});
+	});
+});

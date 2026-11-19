@@ -7,15 +7,15 @@
  * is shown only as an excluded row, so the panel can say that drafts exist without ever injecting one.
  */
 import type { LessonRow, LessonsLookup, SkillsLookup } from "../teach/types.ts";
-import type { RecallEvent } from "./engine.ts";
 import {
 	type PanelBody,
 	type PanelEnvelope,
 	type PanelItem,
 	type PanelSurface,
+	type ProducerTrigger,
 	PREVIEW_MAX_CHARS,
 	clipPanelText,
-	panelTriggerFromPlanner,
+	producerPanelTrigger,
 	sanitizePanelText,
 	withPanelMeta,
 } from "./panel-model.ts";
@@ -57,9 +57,9 @@ function lessonItem(row: LessonRow): PanelItem {
 	return item;
 }
 
-/** When a producer's lookup started and the planner trigger that called it. Without one, no metadata is added. */
+/** When a producer's lookup started and the trigger that called it. Without one, no metadata is added. */
 export interface ProducerInvocation {
-	trigger: RecallEvent["trigger"];
+	trigger: ProducerTrigger;
 	startedAt: number;
 	/** The query the lookup ran on, when the caller has it. Sanitized into the envelope's preview. */
 	query?: string | undefined;
@@ -92,7 +92,7 @@ function withInvocation(
 	if (invocation === undefined) return panel;
 	return withPanelMeta(panel, {
 		surface,
-		trigger: panelTriggerFromPlanner(invocation.trigger),
+		trigger: producerPanelTrigger(invocation.trigger),
 		query: request.query ?? invocation.query ?? "",
 		filters: [...(request.filters ?? invocation.filters ?? [])],
 		startedAt: invocation.startedAt,

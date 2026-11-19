@@ -50,7 +50,7 @@ type PanelScoreDirection = "higher_is_better" | "lower_is_better";
 /** The surfaces a panel can belong to. Closed. */
 const PANEL_SURFACES = ["substrate", "teachable_moment", "lesson", "knowledge", "skill"] as const;
 export type PanelSurface = (typeof PANEL_SURFACES)[number];
-/** What invoked a lookup. Closed. The planner's camelCase triggers map onto these in `panelTriggerFromPlanner`. */
+/** What invoked a lookup. Closed. The planner's camelCase triggers map onto these in `panelTriggerFromPlanner`; `prompt_turn` is a prompt's own turn lookups and has no planner trigger. */
 const PANEL_TRIGGERS = [
 	"session_start",
 	"session_end",
@@ -59,6 +59,7 @@ const PANEL_TRIGGERS = [
 	"phase_boundary",
 	"uncertainty",
 	"explicit_request",
+	"prompt_turn",
 ] as const;
 export type PanelTrigger = (typeof PANEL_TRIGGERS)[number];
 
@@ -366,6 +367,14 @@ const PLANNER_TRIGGER: Record<RecallEvent["trigger"], PanelTrigger> = {
 
 export function panelTriggerFromPlanner(trigger: RecallEvent["trigger"]): PanelTrigger {
 	return PLANNER_TRIGGER[trigger];
+}
+
+/** What a producer's lookup was invoked by: a planner trigger, or a prompt's own turn lookups (`prompt_turn`). */
+export type ProducerTrigger = RecallEvent["trigger"] | "prompt_turn";
+
+/** The panel trigger of a producer's trigger: `prompt_turn` passes through, a planner trigger maps via `panelTriggerFromPlanner`. */
+export function producerPanelTrigger(trigger: ProducerTrigger): PanelTrigger {
+	return trigger === "prompt_turn" ? "prompt_turn" : panelTriggerFromPlanner(trigger);
 }
 
 /** Attach one invocation's metadata to an envelope. Returns a new envelope; its state and lists are unchanged. */

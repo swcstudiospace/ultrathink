@@ -14,7 +14,7 @@ import {
 	substrateBriefToPanel,
 } from "./adapters.ts";
 import type { RecallSettings } from "./config.ts";
-import { type PanelEnvelope, knowledgeLookupToPanel } from "./panel-model.ts";
+import { type PanelEnvelope, knowledgeLookupToPanel, producerPanelTrigger } from "./panel-model.ts";
 
 /** Panel envelopes for one prompt; a source the planner did not look up has no entry. */
 export interface TurnPanels {
@@ -42,7 +42,13 @@ export function buildTurnPanels(
 ): TurnPanels | undefined {
 	if (!settings.panels.informationPanels) return undefined;
 	const panels: TurnPanels = {};
-	if (lookups.knowledge) panels.knowledge = knowledgeLookupToPanel(lookups.knowledge);
+	if (lookups.knowledge)
+		panels.knowledge = knowledgeLookupToPanel(
+			lookups.knowledge,
+			invocation
+				? { trigger: producerPanelTrigger(invocation.trigger), startedAt: invocation.startedAt }
+				: undefined,
+		);
 	if (lookups.lessons)
 		panels.lessons = lessonsLookupToPanel(
 			lookups.lessons,
