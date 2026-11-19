@@ -89,9 +89,11 @@ import type {
 	SkillRecallOutcome,
 	SkillsLookup,
 } from "../teach/types.ts";
+import { generatedStoreDir } from "../teach/skill-store.ts";
+import { runSkillsCommand } from "../teach/skill-controls.ts";
 import { isSubagentEnvelope, responseText } from "../host/envelope.ts";
 import { decideUplift, overMaxCharsNotice } from "../uplift/detect.ts";
-import type { SkillInvocation } from "../uplift/skill.ts";
+import { parseSlashCommand, type SkillInvocation } from "../uplift/skill.ts";
 import { runUplift } from "../uplift/run.ts";
 import { pruneSessionsBestEffort } from "../retention/prune.ts";
 import { type LockOptions, withFileLock, writeFileAtomic } from "./atomic.ts";
@@ -2427,4 +2429,22 @@ export function runCompactionReset(
 	} catch (cause) {
 		log(`recall compaction reset failed: ${cause instanceof Error ? cause.name : "error"}`);
 	}
+}
+
+/**
+ * `/ultrathink-skills [list | disable <name> | delete <name>]` on the Claude host: the reply text, or undefined when the
+ * prompt is not this command. It runs only with recall.enabled, as the recall commands do; with it off the reply says so
+ * and the store is not touched. It manages generated skills and never generates one.
+ */
+export async function runSkillsPrompt(
+	prompt: string,
+	deps: { config: UltrathinkConfig; stateDir: string },
+): Promise<string | undefined> {
+	const command = parseSlashCommand(prompt);
+	const name = command?.name.toLowerCase();
+	if (name !== "ultrathink-skills" && name !== "ultrathink:ultrathink-skills") return undefined;
+	if (!deps.config.recallSettings.recall.enabled) {
+		return "Recall is off: set recall.enabled to use /ultrathink-skills.";
+	}
+	return runSkillsCommand(command?.args ?? "", { storeDir: generatedStoreDir(deps.stateDir) });
 }

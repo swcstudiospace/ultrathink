@@ -8,6 +8,7 @@
 import { claudeConfigPaths, loadConfig, type UltrathinkConfig } from "../config.ts";
 import { displayId, formatModelSelection, OPAQUE_MODEL } from "../claude/output.ts";
 import { LockTimeoutError, type LockOptions } from "../claude/atomic.ts";
+import { runSkillsPrompt } from "../claude/hook.ts";
 import {
 	armSkipOnce,
 	type ControlState,
@@ -51,7 +52,7 @@ import { graphSketch } from "../think/graph.ts";
 import { lastSkipLine } from "./skip.ts";
 import { grokUserQuery, parseSlashCommand } from "./skill.ts";
 
-export type UltrathinkVerb = "quick" | "skip" | "off" | "on" | "track" | "status";
+export type UltrathinkVerb = "quick" | "skip" | "off" | "on" | "track" | "status" | "skills";
 
 export const ULTRATHINK_VERBS: readonly UltrathinkVerb[] = [
 	"quick",
@@ -60,6 +61,7 @@ export const ULTRATHINK_VERBS: readonly UltrathinkVerb[] = [
 	"on",
 	"track",
 	"status",
+	"skills",
 ];
 
 export interface UltrathinkCommand {
@@ -424,6 +426,15 @@ async function controlText(args: string[], input: ControlInput): Promise<string>
 				default:
 					return "Usage: grok [status | engine auto|claude|grok|muse | login | check]";
 			}
+		case "skills": {
+			// Generated skills live in Claude's state dir; the reply is runSkillsPrompt's text.
+			if (host !== "claude-code") return "/ultrathink-skills runs on Claude Code only.";
+			const rest = args
+				.filter((arg) => arg.trim())
+				.slice(1)
+				.join(" ");
+			return (await runSkillsPrompt(`/ultrathink-skills ${rest}`, { config, stateDir })) ?? USAGE;
+		}
 		default:
 			return USAGE;
 	}

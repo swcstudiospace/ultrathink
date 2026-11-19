@@ -33,7 +33,7 @@ export interface ClaudeCodeAdapterOptions {
 }
 
 /** Engine verbs accepted by `bin/ultrathink`. Each one is exposed as `ultrathink-<verb>`. */
-const VERBS = ["quick", "skip", "off", "on", "track", "status"] as const;
+const VERBS = ["quick", "skip", "off", "on", "track", "status", "skills"] as const;
 
 const COMMANDS: ReadonlyMap<string, string> = new Map(
 	VERBS.map((verb) => [`ultrathink-${verb}`, verb]),

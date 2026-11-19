@@ -1392,6 +1392,7 @@ const COMMANDS: Record<UltrathinkVerb, string> = {
 		"Send <message> to the agent as typed: no plan, no Graph of Thought, no Linear/Notion rows",
 	skip: "Do not plan the next message",
 	off: "Turn planning off for Omp on this machine until turned on",
+	skills: "[list | disable <name> | delete <name>]: manage the generated skills",
 	on: "Turn planning back on for Omp on this machine",
 	track: "on|off: keep planning but start or stop creating Linear/Notion rows",
 	status: "Show the current ultrathink state",

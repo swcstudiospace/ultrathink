@@ -104,7 +104,7 @@ const HOSTS: Record<string, HostSpec> = {
 	},
 };
 
-const VERBS: readonly string[] = ["quick", "skip", "off", "on", "track", "status"];
+const VERBS: readonly string[] = ["quick", "skip", "off", "on", "track", "status", "skills"];
 
 const RAW_FLAG = "--raw";
 
