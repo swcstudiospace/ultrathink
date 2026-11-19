@@ -56,6 +56,11 @@ interface Checkpoint {
 	readonly record: PrdRecord;
 }
 
+/** Effective execution wave of one PRD: the explicit `wave` when set, otherwise its CoT `step` (see `PrdRequest`). */
+export function waveOf(request: PrdRequest): number {
+	return request.wave ?? request.step;
+}
+
 /** Hash of everything one PRD is generated from; a checkpoint is reused only while it still matches. */
 export function inputHash(request: PrdRequest, salt = ""): string {
 	return sha256Hex(
@@ -66,6 +71,7 @@ export function inputHash(request: PrdRequest, salt = ""): string {
 			request.graphId,
 			request.nodeId,
 			request.step,
+			waveOf(request),
 			request.title,
 			request.thought,
 		]),
@@ -131,10 +137,13 @@ function classify(error: unknown, now?: number): FailureVerdict {
 }
 
 /**
- * Writes every PRD of `requests` with a bounded worker pool. Each finished PRD is checkpointed atomically before it is
- * counted, so a killed run keeps everything it finished; a rerun with the same `checkpointDir` reuses each PRD whose
- * input hash is unchanged and writes the rest. One PRD failing never stops the others: it is recorded as `failed`
- * (the caller's gate decides what a partial run means). On abort, PRDs that never started are `skipped`.
+ * Writes every PRD of `requests` in wave order: all PRDs of one wave (see `waveOf`) settle before the next wave
+ * starts, while a wave's PRDs run in parallel up to `concurrency`. Within a wave the input order is kept, and the
+ * returned records always follow the input order, however the waves interleaved. Each finished PRD is checkpointed
+ * atomically before it is counted, so a killed run keeps everything it finished; a rerun with the same
+ * `checkpointDir` reuses each PRD whose input hash is unchanged and writes the rest. One PRD failing never stops
+ * the others: it is recorded as `failed` (the caller's gate decides what a partial run means). On abort, PRDs that
+ * never started are `skipped`.
  */
 export async function runTot(options: RunTotOptions): Promise<TotManifest> {
 	const { requests, checkpointDir, signal } = options;
@@ -176,11 +185,11 @@ export async function runTot(options: RunTotOptions): Promise<TotManifest> {
 			settle(index, "resumed", saved);
 			return;
 		}
-		emit("started", request.key);
+		emit("started", request.key, { wave: waveOf(request) });
 		try {
 			const { value, attempts } = await withRetry(
 				(attempt) => {
-					if (attempt > 1) emit("retry", request.key, { attempt });
+					if (attempt > 1) emit("retry", request.key, { attempt, wave: waveOf(request) });
 					return options.generate(request, signal);
 				},
 				policy,
@@ -223,16 +232,28 @@ export async function runTot(options: RunTotOptions): Promise<TotManifest> {
 		}
 	};
 
-	let cursor = 0;
-	const worker = async (): Promise<void> => {
-		for (;;) {
-			if (signal?.aborted) return;
-			const index = cursor++;
-			if (index >= total) return;
-			await processOne(index);
-		}
-	};
-	await Promise.all(Array.from({ length: Math.min(concurrency, total) }, worker));
+	// Wave order: group indexes by wave ascending, keeping input order inside each wave. A wave's pool drains fully
+	// before the next wave starts; results stay indexed by input position, so `records` follows the input order.
+	const waves = new Map<number, number[]>();
+	for (const [index, request] of requests.entries()) {
+		const wave = waveOf(request);
+		const group = waves.get(wave);
+		if (group === undefined) waves.set(wave, [index]);
+		else group.push(index);
+	}
+	for (const [, group] of [...waves.entries()].sort((a, b) => a[0] - b[0])) {
+		if (signal?.aborted) break;
+		let cursor = 0;
+		const worker = async (): Promise<void> => {
+			for (;;) {
+				if (signal?.aborted) return;
+				const index = group[cursor++];
+				if (index === undefined) return;
+				await processOne(index);
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(concurrency, group.length) }, worker));
+	}
 
 	for (const [index, request] of requests.entries()) {
 		if (results[index] === undefined) {

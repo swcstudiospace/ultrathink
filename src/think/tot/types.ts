@@ -7,6 +7,8 @@ export interface PrdRequest {
 	readonly graphId: string;
 	readonly nodeId: string;
 	readonly step: number;
+	/** Execution wave: all PRDs of one wave finish before the next wave starts; parallel inside a wave. Defaults to `step`. */
+	readonly wave?: number;
 	readonly title: string;
 	readonly thought: string;
 }
@@ -95,6 +97,8 @@ export type TotProgressKind = "resumed" | "started" | "retry" | "generated" | "f
 export interface TotProgress {
 	readonly kind: TotProgressKind;
 	readonly key: string;
+	/** Wave the PRD belongs to (effective wave, defaulting to the step). */
+	readonly wave?: number;
 	/** Items settled so far (resumed, generated, failed and skipped). */
 	readonly done: number;
 	readonly total: number;
