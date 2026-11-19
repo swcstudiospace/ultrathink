@@ -57,6 +57,13 @@ export function planKey(input: {
 
 export function savePlan(stateDir: string, plan: StoredPlan): void {
 	if (!KEY_PATTERN.test(plan.key)) throw new Error("plan key must be url-safe");
+	if ((plan.planId === undefined) !== (plan.planHash === undefined))
+		throw new Error("planId and planHash must be provided together");
+	if (plan.planId !== undefined && plan.planHash !== undefined) {
+		const expectedHash = planGateHash(plan.text);
+		if (plan.planHash !== expectedHash || plan.planId !== `plan-${expectedHash.slice(0, 12)}`)
+			throw new Error("planId and planHash do not match the plan text");
+	}
 	const dir = join(stateDir, "plans");
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	pruneExpired(stateDir, dir, Date.now());

@@ -97,6 +97,14 @@ describe("savePlan and loadPlan", () => {
 		expect(loadPlan(dir, plan.key)).toEqual(plan);
 	});
 
+	test("savePlan refuses a record with only one identity field", () => {
+		const text = "# Plan\n- step one";
+		const planHash = planGateHash(text);
+		const plan = samplePlan({ text, planId: `plan-${planHash.slice(0, 12)}` });
+		expect(() => savePlan(dir, plan)).toThrow("planId and planHash must be provided together");
+		expect(loadPlan(dir, plan.key)).toBe("absent");
+	});
+
 	test("reads a record whose identity fields are not strings as unreadable", () => {
 		const plan = samplePlan();
 		writeRaw(

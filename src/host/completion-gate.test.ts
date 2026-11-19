@@ -823,6 +823,9 @@ describe("Plan gate review fixes (round 4)", () => {
 		// A bare ROADMAP line anywhere fails, even if another ROADMAP line is qualified.
 		const mixed = CHECKLIST_PLAN.replace("ROADMAP wave 1.", "ROADMAP\nROADMAP wave 1.");
 		expect(validatePlanChecklist(mixed).problems).toContain("ROADMAP consistency missing");
+		// Lowercase roadmap mentions count too.
+		const lowerBare = CHECKLIST_PLAN.replace("ROADMAP wave 1.", "roadmap\nROADMAP wave 1.");
+		expect(validatePlanChecklist(lowerBare).problems).toContain("ROADMAP consistency missing");
 		// No qualified ROADMAP line anywhere still fails.
 		expect(validatePlanChecklist(CHECKLIST_PLAN.replace("ROADMAP wave 1", "ROADMAP")).problems).toContain(
 			"ROADMAP consistency missing",

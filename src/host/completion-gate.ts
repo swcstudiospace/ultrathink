@@ -928,7 +928,7 @@ export function validatePlanChecklist(
 	}
 	if (!/\bSPE-\d+\b/.test(body)) problems.push("referenced Linear issues missing");
 	// ROADMAP consistency: every ROADMAP line must name a wave/ordering/order/consistency reference.
-	const roadmapLines = body.split("\n").filter((line) => /ROADMAP/.test(line));
+	const roadmapLines = body.split("\n").filter((line) => /ROADMAP/i.test(line));
 	const roadmapConsistent =
 		roadmapLines.length > 0 &&
 		roadmapLines.every((line) => /\b(?:wave|ordering|order|consistency|consistent)\b/i.test(line));
