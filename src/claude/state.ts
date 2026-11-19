@@ -647,7 +647,7 @@ export interface RecallStateRecord {
  * scope of the last planned prompt, and what the last recall pass did.
  */
 /** A TodoWrite todo's lifecycle: `pending` (not started), `in_progress` (the active step), `completed` (done). */
-export type TodoStatus = "pending" | "in_progress" | "completed";
+type TodoStatus = "pending" | "in_progress" | "completed";
 
 /**
  * One todo of a stored TodoWrite snapshot. `content` is the step's stable identity across snapshots: a reorder
