@@ -1966,7 +1966,7 @@ describe("completion gate (Omp before_agent_start)", () => {
 		expect(sent).toEqual([]);
 	});
 
-	test("a partial plan (fewer nodes than planned) is held with nothing applied until the user answers proceed", async () => {
+	test("a partial plan (fewer nodes than planned) is held with nothing applied, and a later prompt never releases it", async () => {
 		const view = viewOf(2);
 		const { run, sent, emit } = setup(async () => ({ context: planXml(1), view }), 1_000);
 		const held = await run();
@@ -1977,18 +1977,10 @@ describe("completion gate (Omp before_agent_start)", () => {
 			}),
 		});
 		expect(JSON.stringify(held)).not.toContain("BUILD_PROMPT");
-		// Anything but the explicit word is a new prompt, not a confirmation.
+		// A later prompt is a new submission: it never releases the held plan.
 		emit("turn_start");
-		expect(await run("proceed")).toEqual(planMsg(planXml(1), view));
+		expect(await run("proceed")).toEqual(held);
 		expect(sent).toEqual([]);
-	});
-
-	test("allowPartialSync releases a partial plan without a confirmation", async () => {
-		const view = viewOf(2);
-		const { run } = setup(async () => ({ context: planXml(1), view }), 1_000, {
-			gate: { allowPartialSync: true },
-		});
-		expect(await run()).toEqual(planMsg(planXml(1), view));
 	});
 
 	describe("Tree-of-Thought PRDs feed the gate", () => {
@@ -2023,7 +2015,7 @@ describe("completion gate (Omp before_agent_start)", () => {
 			expect(await run()).toEqual(planMsg(planXml(2), view));
 		});
 
-		test("a failed PRD holds the session until the user confirms; nothing is applied meanwhile", async () => {
+		test("a failed PRD holds the session, and a later prompt never releases the plan; nothing is applied meanwhile", async () => {
 			const view = viewOf(2);
 			const prd = outcome(2, 1, { synced: 2, pending: 0, failed: 1 });
 			const { run, sent, emit } = setup(async () => ({ context: planXml(2), view, prd }), 1_000);
@@ -2036,7 +2028,7 @@ describe("completion gate (Omp before_agent_start)", () => {
 			});
 			expect(JSON.stringify(held)).not.toContain("BUILD_PROMPT");
 			emit("turn_start");
-			expect(await run("proceed")).toEqual(planMsg(planXml(2), view));
+			expect(await run("proceed")).toEqual(held);
 			expect(sent).toEqual([]);
 		});
 
@@ -2052,23 +2044,31 @@ describe("completion gate (Omp before_agent_start)", () => {
 			});
 		});
 
-		test("allowPartialSync is the only way a failed PRD starts the session unconfirmed", async () => {
+		test("ULTRATHINK_GATE_ALLOW_PARTIAL is ignored: a failed PRD never starts the session unconfirmed", async () => {
 			const view = viewOf(2);
 			const prd = outcome(2, 1, { synced: 2, pending: 0, failed: 1 });
 			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000, {
-				gate: { allowPartialSync: true },
+				env: { read: () => ({ ...process.env, ULTRATHINK_GATE_ALLOW_PARTIAL: "1" }) },
 			});
-			expect(await run()).toEqual(planMsg(planXml(2), view));
+			expect(await run()).toEqual({
+				message: expect.objectContaining({
+					customType: "ultrathink-pending",
+					content: expect.stringContaining("1 PRDs failed"),
+				}),
+			});
 		});
 
 		test("a PRD refusal names its reason in a warning notice", async () => {
 			const view = viewOf(2);
-			const prd = { ...outcome(0, 3, { synced: 0, pending: 0, failed: 0 }), error: "PRD_NO_PRICE" };
+			const prd = {
+				...outcome(0, 3, { synced: 0, pending: 0, failed: 0 }),
+				error: "PRD_NO_SELECTED_MODEL",
+			};
 			const notices: string[] = [];
 			const ctx = { ui: { notify: (text: string) => void notices.push(text) } };
 			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000, {}, ctx);
 			await run();
-			expect(notices).toContain("Tree-of-Thought PRDs did not run: PRD_NO_PRICE");
+			expect(notices).toContain("Tree-of-Thought PRDs did not run: PRD_NO_SELECTED_MODEL");
 		});
 
 		test("a PRD outcome without an error raises no Tree-of-Thought notice", async () => {
@@ -2096,9 +2096,9 @@ describe("completion gate (Omp before_agent_start)", () => {
 		});
 	});
 
-	test("a cut-off plan is unusable: it is never injected, and proceed starts the session without it", async () => {
+	test("a cut-off plan is unusable: it is never injected or released, and a later prompt does not start the session with it", async () => {
 		const cut = planXml(2).replace("</BUILD_PROMPT>", "");
-		const { run, emit } = setup(async () => cut, 1_000, { gate: { allowPartialSync: true } });
+		const { run, sent, emit } = setup(async () => cut, 1_000);
 		const held = await run();
 		expect(held).toEqual({
 			message: expect.objectContaining({
@@ -2108,33 +2108,26 @@ describe("completion gate (Omp before_agent_start)", () => {
 		});
 		expect(JSON.stringify(held)).not.toContain("SYSTEM_ROLE");
 		emit("turn_start");
-		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
-		expect(await run("proceed")).toEqual(
-			planMsg(planFailedNotice("the plan was unusable and was not applied")),
-		);
+		expect(await run("proceed")).toEqual(held);
+		expect(sent).toEqual([]);
 	});
 
-	test("with a dialog a partial plan asks before it starts: no keeps the hold, yes releases the plan", async () => {
+	test("a partial plan never opens a confirmation: it is held, the user is warned, and no dialog is offered", async () => {
 		const view = viewOf(2);
-		const noHost = dialogCtx();
-		const declined = setup(async () => ({ context: planXml(1), view }), 1_000, {}, noHost.ctx);
-		const pending = Promise.resolve(declined.run());
-		await until(() => noHost.dialogs.length === 1);
-		expect(noHost.dialogs[0]?.title).toContain("incomplete");
-		noHost.dialogs[0]?.answer(false);
-		expect(await pending).toEqual({
+		const host = dialogCtx();
+		const { run, sent } = setup(async () => ({ context: planXml(1), view }), 1_000, {}, host.ctx);
+		expect(await run()).toEqual({
 			message: expect.objectContaining({
 				customType: "ultrathink-pending",
 				content: gateHoldPartial("1 of 2 nodes", true),
 			}),
 		});
-
-		const yesHost = dialogCtx();
-		const accepted = setup(async () => ({ context: planXml(1), view }), 1_000, {}, yesHost.ctx);
-		const pendingYes = Promise.resolve(accepted.run());
-		await until(() => yesHost.dialogs.length === 1);
-		yesHost.dialogs[0]?.answer(true);
-		expect(await pendingYes).toEqual(planMsg(planXml(1), view));
+		expect(host.dialogs).toEqual([]);
+		expect(host.notices).toContainEqual({
+			text: gateHoldPartial("1 of 2 nodes", true),
+			level: "warning",
+		});
+		expect(sent).toEqual([]);
 	});
 
 	test("a partial plan that finishes after a no-dialog hold is shown, never sent as a turn-starting aside", async () => {

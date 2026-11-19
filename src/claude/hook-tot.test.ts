@@ -196,8 +196,8 @@ function world(
 
 const input: PromptSubmitInput = { session_id: "s1", cwd: "/repo", prompt: "add a widget" };
 
-function gateFor(context: string, prd: PrdOutcome, allowPartialSync = false): CompletionGate {
-	const gate = new CompletionGate({ inactivityMs: 0, allowPartialSync });
+function gateFor(context: string, prd: PrdOutcome): CompletionGate {
+	const gate = new CompletionGate({ inactivityMs: 0 });
 	gate.complete({
 		text: context,
 		expected: { nodes: NODES, issues: NODES, subIssues: 50, prds: prd.manifest.total },
@@ -236,13 +236,8 @@ describe("Tree-of-Thought stage through the hook and the gate", () => {
 
 		const gate = gateFor(context, prd);
 		expect(gate.state).toBe("partial_failure");
-		expect(gate.release()).toMatchObject({ ok: false, reason: "needs_confirmation" });
+		expect(gate.release()).toMatchObject({ ok: false, reason: "not_ready" });
 		expect(gate.released).toBe(false);
-		// An explicit allowance (or a confirmation) is the only way a partial plan starts the session.
-		expect(gateFor(context, prd, true).release()).toMatchObject({
-			ok: true,
-			state: "partial_failure",
-		});
 
 		// Retry: the checkpoints hold PRDs 1-36 (and the rest); only the failed one is written again.
 		expect(readdirSync(join(w.deps.stateDir, "tot", plan?.graphId ?? "")).length).toBe(50);

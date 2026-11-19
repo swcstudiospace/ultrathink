@@ -527,13 +527,6 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"Window of the completion gate watchdog in milliseconds: the gate fails loudly when planning shows no progress for this long. 0 disables the watchdog; a value that is not a number from 0 up means 1800000; larger values are cut to 2147483647.",
 		{ default: "1800000", min: 0, max: 2147483647 },
 	),
-	row(
-		"plugin",
-		"gate",
-		"string",
-		"ULTRATHINK_GATE_ALLOW_PARTIAL",
-		"1, on, true or yes (any case) lets a partial plan start the Omp session without a confirmation; otherwise a partial plan needs an explicit yes. Off by default.",
-	),
 
 	// Hosted service (names and kinds only; the service keeps its own loader, services/ultrathink/config/config.ts).
 	row(

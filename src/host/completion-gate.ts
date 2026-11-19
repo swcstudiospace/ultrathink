@@ -6,8 +6,9 @@
  *
  * The gate never starts anything itself. A host stages artifacts into it while a planner runs, the gate validates
  * them, and the host asks `release()` for the content to inject. `release()` hands the staged content over exactly
- * once, and only from `ready` (or from `partial_failure` when partial sync is allowed or the user confirmed it).
- * Nothing staged is readable any other way, so no half-built plan can reach a prompt.
+ * once, and only from `ready`: a session starts only when the whole plan is ready. A partial plan is reported with
+ * the problems that keep it from being whole, and it is never released. Nothing staged is readable any other way,
+ * so no half-built plan can reach a prompt.
  *
  * States: `generating` -> `validating` -> `ready` | `partial_failure` | `failed_or_cancelled`.
  *
@@ -60,7 +61,7 @@ interface GateArtifacts {
 }
 
 interface GateProblem {
-	/** `fatal`: the plan is unusable. `partial`: usable but incomplete; releasing it needs a decision. */
+	/** `fatal`: the plan is unusable. `partial`: usable but incomplete; the gate reports it and never releases it. */
 	readonly severity: "fatal" | "partial";
 	readonly code: string;
 	readonly detail: string;
@@ -245,8 +246,6 @@ const PLATFORM_TIMERS: GateTimers = {
 interface CompletionGateOptions {
 	/** Inactivity window in ms; 0 disables the watchdog. Default `DEFAULT_GATE_INACTIVITY_MS`. */
 	readonly inactivityMs?: number;
-	/** A partial plan may be released without an explicit confirmation. Default false. */
-	readonly allowPartialSync?: boolean;
 	readonly timers?: GateTimers;
 	readonly validate?: (artifacts: GateArtifacts) => GateVerdict;
 	/** Called once, loudly, when the watchdog failed the gate; the host must stop the planner and tell the user. */
@@ -262,13 +261,13 @@ export interface GateProgress {
 type GateRelease =
 	| {
 			readonly ok: true;
-			readonly state: "ready" | "partial_failure";
+			readonly state: "ready";
 			readonly text: string;
 			readonly problems: readonly GateProblem[];
 	  }
 	| {
 			readonly ok: false;
-			readonly reason: "not_ready" | "needs_confirmation" | "already_released" | "failed";
+			readonly reason: "not_ready" | "already_released" | "failed";
 			readonly detail: string;
 	  };
 
@@ -292,7 +291,6 @@ export class CompletionGate {
 	readonly #listeners = new Set<(progress: GateProgress) => void>();
 	readonly #settled = Promise.withResolvers<GateOutcome>();
 	readonly #inactivityMs: number;
-	readonly #allowPartialSync: boolean;
 	readonly #timers: GateTimers;
 	readonly #validate: (artifacts: GateArtifacts) => GateVerdict;
 	readonly #onStall: ((reason: string) => void) | undefined;
@@ -300,7 +298,6 @@ export class CompletionGate {
 	constructor(options: CompletionGateOptions = {}) {
 		const window = options.inactivityMs ?? DEFAULT_GATE_INACTIVITY_MS;
 		this.#inactivityMs = Number.isFinite(window) && window > 0 ? Math.min(window, MAX_TIMER_MS) : 0;
-		this.#allowPartialSync = options.allowPartialSync === true;
 		this.#timers = options.timers ?? PLATFORM_TIMERS;
 		this.#validate = options.validate ?? ((artifacts) => validateArtifacts(artifacts));
 		this.#onStall = options.onStall;
@@ -396,32 +393,28 @@ export class CompletionGate {
 	}
 
 	/**
-	 * The single atomic release. It returns the staged text exactly once: from `ready`, or from `partial_failure`
-	 * when `allowPartialSync` is set or `confirmPartial` is true. Any other call changes nothing and says why.
+	 * The single atomic release: it returns the staged text exactly once, and only from `ready`. A partial plan
+	 * reports what is missing and stays unreleased; any other call changes nothing and says why.
 	 */
-	release(options: { readonly confirmPartial?: boolean } = {}): GateRelease {
+	release(): GateRelease {
 		if (this.#released)
 			return { ok: false, reason: "already_released", detail: "the plan was already released" };
 		const staged = this.#staged;
 		const verdict = this.#verdict;
 		if (this.#state === "failed_or_cancelled")
 			return { ok: false, reason: "failed", detail: this.#reason || "the plan failed" };
-		if (this.#state !== "ready" && this.#state !== "partial_failure")
+		if (this.#state === "partial_failure")
+			return {
+				ok: false,
+				reason: "not_ready",
+				detail: `the plan is incomplete: ${describe(verdict?.problems ?? [])}`,
+			};
+		if (this.#state !== "ready")
 			return { ok: false, reason: "not_ready", detail: `the plan is still ${this.#state}` };
 		if (!staged || !verdict)
 			return { ok: false, reason: "failed", detail: "no validated artifacts are staged" };
-		if (
-			this.#state === "partial_failure" &&
-			!this.#allowPartialSync &&
-			options.confirmPartial !== true
-		)
-			return {
-				ok: false,
-				reason: "needs_confirmation",
-				detail: describe(verdict.problems),
-			};
 		this.#released = true;
-		return { ok: true, state: this.#state, text: staged.text, problems: verdict.problems };
+		return { ok: true, state: "ready", text: staged.text, problems: verdict.problems };
 	}
 
 	#current(): GateOutcome {
