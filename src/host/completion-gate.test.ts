@@ -956,4 +956,106 @@ describe("Plan gate review fixes (round 9)", () => {
 		expect(progress.some((entry) => entry.state === "ready")).toBe(true);
 	});
 });
+describe("Plan gate review fixes (round 10)", () => {
+	const REPLACEMENT_PLAN = CHECKLIST_PLAN.replace("ship the plan gate", "ship the replacement gate");
+
+	test("(1) valid candidates revive from partial_failure and planning through waiting_for_plan to ready", () => {
+		const partial = new CompletionGate({ inactivityMs: 0 });
+		const first = partial.submitPlan(CHECKLIST_PLAN);
+		expect(first).toBeDefined();
+		expect(partial.beginExecution()).toBe(true);
+		expect(partial.beginValidation()).toBe(true);
+		expect(partial.tryTransition("partial_failure")).toBe(true);
+		const revived = partial.submitPlan(REPLACEMENT_PLAN);
+		expect(revived).toBeDefined();
+		expect(partial.state).toBe("ready");
+		expect(partial.planHash).toBe(revived!.planHash);
+		expect(partial.planHash).not.toBe(first!.planHash);
+		expect(partial.transitions.map((t) => `${t.from}->${t.to}:${t.accepted}`).slice(-3)).toEqual([
+			"partial_failure->waiting_for_plan:true",
+			"waiting_for_plan->plan_validated:true",
+			"plan_validated->ready:true",
+		]);
+
+		const planning = new CompletionGate({ inactivityMs: 0 });
+		expect(planning.tryTransition("discovering")).toBe(true);
+		expect(planning.tryTransition("discussing")).toBe(true);
+		expect(planning.tryTransition("planning")).toBe(true);
+		const accepted = planning.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		expect(planning.state).toBe("ready");
+		expect(planning.planHash).toBe(accepted!.planHash);
+		expect(planning.transitions.map((t) => `${t.from}->${t.to}:${t.accepted}`).slice(-3)).toEqual([
+			"planning->waiting_for_plan:true",
+			"waiting_for_plan->plan_validated:true",
+			"plan_validated->ready:true",
+		]);
+	});
+
+	test("(2) valid candidates revive from discovering and discussing by walking the forward chain to ready", () => {
+		const discovering = new CompletionGate({ inactivityMs: 0 });
+		expect(discovering.tryTransition("discovering")).toBe(true);
+		const accepted = discovering.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		expect(discovering.state).toBe("ready");
+		expect(discovering.planHash).toBe(accepted!.planHash);
+		expect(discovering.transitions.map((t) => `${t.from}->${t.to}:${t.accepted}`).slice(-5)).toEqual([
+			"discovering->discussing:true",
+			"discussing->planning:true",
+			"planning->waiting_for_plan:true",
+			"waiting_for_plan->plan_validated:true",
+			"plan_validated->ready:true",
+		]);
+
+		const discussing = new CompletionGate({ inactivityMs: 0 });
+		expect(discussing.tryTransition("discovering")).toBe(true);
+		expect(discussing.tryTransition("discussing")).toBe(true);
+		const revived = discussing.submitPlan(REPLACEMENT_PLAN);
+		expect(revived).toBeDefined();
+		expect(discussing.state).toBe("ready");
+		expect(discussing.planHash).toBe(revived!.planHash);
+		expect(discussing.transitions.map((t) => `${t.from}->${t.to}:${t.accepted}`).slice(-4)).toEqual([
+			"discussing->planning:true",
+			"planning->waiting_for_plan:true",
+			"waiting_for_plan->plan_validated:true",
+			"plan_validated->ready:true",
+		]);
+	});
+
+	test("(3) ready/executing/validating/complete/failed still reject replacement plans loudly and keep the original", () => {
+		const setup = (target: GateState): { gate: CompletionGate; hash: string | undefined; progress: GateProgress[] } => {
+			const gate = new CompletionGate({ inactivityMs: 0 });
+			const first = gate.submitPlan(CHECKLIST_PLAN);
+			expect(first).toBeDefined();
+			if (target === "executing" || target === "validating" || target === "complete") expect(gate.beginExecution()).toBe(true);
+			if (target === "validating" || target === "complete") expect(gate.beginValidation()).toBe(true);
+			if (target === "complete") {
+				gate.recordValidationEvidence("tests green");
+				expect(gate.completeExecution()).toBe(true);
+			}
+			const progress: GateProgress[] = [];
+			gate.onProgress((entry) => progress.push(entry));
+			return { gate, hash: gate.planHash, progress };
+		};
+		for (const target of ["ready", "executing", "validating", "complete"] as const) {
+			const { gate, hash, progress } = setup(target);
+			expect(gate.state).toBe(target);
+			expect(gate.submitPlan(REPLACEMENT_PLAN)).toBeUndefined();
+			expect(gate.state).toBe(target);
+			expect(gate.planHash).toBe(hash);
+			expect(gate.transitions.at(-1)).toMatchObject({ accepted: false, from: target, to: "plan_validated" });
+			expect(progress.some((entry) => entry.label.includes("rejected") && entry.label.includes("plan_validated") && entry.label.includes(target))).toBe(true);
+		}
+
+		const failed = new CompletionGate({ inactivityMs: 0 });
+		expect(failed.tryTransition("failed_or_cancelled")).toBe(true);
+		const progress: GateProgress[] = [];
+		failed.onProgress((entry) => progress.push(entry));
+		expect(failed.submitPlan(CHECKLIST_PLAN)).toBeUndefined();
+		expect(failed.state).toBe("failed_or_cancelled");
+		expect(failed.plan).toBeUndefined();
+		expect(failed.transitions.at(-1)).toMatchObject({ accepted: false, from: "failed_or_cancelled", to: "plan_validated" });
+		expect(progress.some((entry) => entry.label.includes("rejected") && entry.label.includes("plan_validated") && entry.label.includes("failed_or_cancelled"))).toBe(true);
+	});
+});
 

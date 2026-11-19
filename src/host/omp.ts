@@ -3155,7 +3155,16 @@ export function createOmpExtension(
 			}
 			if (gate.state === "waiting_for_plan")
 				return { kind: "hold", text: gate.blocked ? gateWaitingBlocked(gate.blockReason) : GATE_WAITING };
-			if (gate.state === "plan_validated") gate.tryTransition("ready", "omp", "auto-use validated plan");
+			if (gate.state === "plan_validated") {
+				const transitioned = gate.tryTransition("ready", "omp", "auto-use validated plan");
+				if (!transitioned) {
+					const rejected = gate.transitions.at(-1);
+					const detail = rejected
+						? `the plan transition ${rejected.from} -> ${rejected.to} was rejected: ${rejected.reason} (the plan is still ${gate.state})`
+						: `the plan is still ${gate.state}`;
+					return { kind: "notice", text: planFailedNotice(detail) };
+				}
+			}
 			if (gate.state !== "ready")
 				return { kind: "notice", text: planFailedNotice(`the plan is still ${gate.state}`) };
 			const released = gate.release();

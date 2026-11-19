@@ -509,8 +509,11 @@ export class CompletionGate {
 	 * Submit a candidate plan. Returns the plan when it validates and its transition is accepted
 	 * (hash computed, gate auto-transitions plan_validated -> ready without manual restart); else
 	 * undefined. An invalid candidate quarantines to waiting_for_plan and clears any prior plan.
-	 * A valid candidate in ready/executing/validating/complete is not accepted: the rejected
-	 * transitions are logged and the original plan/state are kept, never overwritten.
+	 * A valid candidate in ready/executing/validating/complete/failed_or_cancelled is not accepted:
+	 * the rejected transitions are logged, a rejection is emitted, and the original plan/state
+	 * are kept, never overwritten. A valid candidate from generating, partial_failure or planning
+	 * routes through waiting_for_plan (the permitted chain) before plan_validated; from
+	 * discovering/discussing it first walks discovering->discussing->planning->waiting_for_plan.
 	 */
 	submitPlan(text: string | undefined, options: { actor?: string; stale?: boolean; version?: string } = {}): PlanGatePlan | undefined {
 		const actor = options.actor ?? "planner";
@@ -533,19 +536,39 @@ export class CompletionGate {
 			return undefined;
 		}
 		const plan = buildPlanGatePlan(text ?? "", options.version);
-		// The public table no longer has generating -> plan_validated, so a valid plan submitted
-		// from generating routes through waiting_for_plan (the permitted chain) before it can
-		// enter plan_validated. The pending record lets tryTransition accept that one entry;
-		// without it, the same edge is rejected. #plan is only set once plan_validated accepts,
-		// and ready then requires that record, so the chain cannot be entered empty.
+		// The public table has no skip edge into plan_validated, so a valid plan submitted from
+		// generating/partial_failure/planning routes through waiting_for_plan (the permitted
+		// chain) before it can enter plan_validated, and from discovering/discussing it first
+		// walks the forward chain to waiting_for_plan. The pending record is only set after the
+		// waiting entry (which centralizes quarantine and clears any pending record), so
+		// tryTransition accepts that one entry; without it, the same edge is rejected. #plan is
+		// only set once plan_validated accepts, and ready then requires that record, so the
+		// chain cannot be entered empty. ready/executing/validating/complete/failed_or_cancelled
+		// fall through to the direct attempt below, which the table rejects (logged + emitted).
 		let accepted = false;
 		if (this.#state === "plan_validated") {
 			this.#pendingPlan = plan;
 			accepted = true;
-		} else if (this.#state === "generating") {
+		} else if (this.#state === "generating" || this.#state === "partial_failure" || this.#state === "planning") {
 			// Route through waiting_for_plan first: that entry centralizes quarantine and
 			// clears any pending record, so the pending record is only set after it.
 			if (this.enterWaitingForPlan(actor, "plan submitted: routing via waiting_for_plan")) {
+				this.#pendingPlan = plan;
+				accepted = this.tryTransition("plan_validated", actor, "plan checklist passed");
+			}
+		} else if (this.#state === "discovering" || this.#state === "discussing") {
+			// No skip to waiting_for_plan from discovering/discussing: walk each permitted
+			// forward edge, then the waiting edge. Any failed hop aborts (logged + emitted below).
+			const chain: readonly GateState[] =
+				this.#state === "discovering" ? ["discussing", "planning", "waiting_for_plan"] : ["planning", "waiting_for_plan"];
+			let routed = true;
+			for (const step of chain) {
+				if (!this.tryTransition(step, actor, "plan submitted: routing via waiting_for_plan")) {
+					routed = false;
+					break;
+				}
+			}
+			if (routed) {
 				this.#pendingPlan = plan;
 				accepted = this.tryTransition("plan_validated", actor, "plan checklist passed");
 			}
