@@ -3147,8 +3147,11 @@ export function createOmpExtension(
 			| { kind: "notice"; text: string }
 			| { kind: "none" };
 		const gateDelivery = (flight: Flight, gate: CompletionGate): GateDelivery => {
-			if (flight.releasedText !== undefined)
+			if (flight.releasedText !== undefined) {
+				if (flight.releasedPlan && flight.lastDeliveredPlanHash === flight.releasedPlan.planHash) return { kind: "none" };
+				if (!flight.releasedPlan && flight.lastDeliveredPlanText === flight.releasedText) return { kind: "none" };
 				return { kind: "plan", text: flight.releasedText, ...flight.releasedPlan };
+			}
 			if (gate.state === "failed_or_cancelled") {
 				// A plan was produced but is unusable (for example cut off): it is never injected or released.
 				if (gate.verdict) return { kind: "hold", text: gateHoldPartial(gate.reason, false) };
