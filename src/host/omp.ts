@@ -463,6 +463,9 @@ export const gateHoldPartial = (detail: string, usable: boolean): string =>
 /** Gate hold while waiting_for_plan: Ultrathink waits; a late valid Plan auto-resumes and is used automatically. */
 export const GATE_WAITING =
 	"STOP. Ultrathink is waiting for the phase Plan: it is missing, stale, unparseable or failing the checklist (objective, scope, named surfaces, acceptance, out-of-scope, dependencies, ordering, referenced Linear issues, ROADMAP). Do not act yet. Bounded polling is running; when a valid Plan lands it is hashed and used automatically as execution context (no manual restart).";
+/** Gate hold once bounded polling is exhausted (`gate.blocked`): names the block reason; polling has stopped and a valid Plan no longer auto-resumes until reset/manual action. */
+export const gateWaitingBlocked = (blockReason: string): string =>
+	`STOP. Ultrathink is waiting for the phase Plan: it is missing, stale, unparseable or failing the checklist (objective, scope, named surfaces, acceptance, out-of-scope, dependencies, ordering, referenced Linear issues, ROADMAP). Do not act yet. Polling has stopped (blocked): ${blockReason}. A late valid Plan will not be hashed and used automatically; valid Plan auto-resume is unavailable until the gate is reset or you act manually (for example re-send the prompt to plan again).`;
 
 /** The inactivity watchdog ended planning: shown loudly, and the request continues as written. */
 export const gateStalled = (reason: string): string =>
@@ -3147,7 +3150,8 @@ export function createOmpExtension(
 				const missing = (gate.verdict?.problems ?? []).map((problem) => problem.detail).join("; ");
 				return { kind: "hold", text: gateHoldPartial(missing, true) };
 			}
-			if (gate.state === "waiting_for_plan") return { kind: "hold", text: GATE_WAITING };
+			if (gate.state === "waiting_for_plan")
+				return { kind: "hold", text: gate.blocked ? gateWaitingBlocked(gate.blockReason) : GATE_WAITING };
 			if (gate.state === "plan_validated") gate.tryTransition("ready", "omp", "auto-use validated plan");
 			if (gate.state !== "ready")
 				return { kind: "notice", text: planFailedNotice(`the plan is still ${gate.state}`) };

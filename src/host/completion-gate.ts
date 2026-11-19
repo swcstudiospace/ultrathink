@@ -460,6 +460,9 @@ export class CompletionGate {
 		const entry: GateTransition = { timestamp: this.#now(), actor, from, to, reason, accepted: ok };
 		this.#transitions.push(entry);
 		if (!ok) return false;
+		// A new execution/validation cycle must not inherit evidence from a prior cycle:
+		// after ready->executing->validating, complete requires evidence recorded in this cycle.
+		if (to === "executing" || to === "validating") this.#validationEvidence = undefined;
 		this.#state = to;
 		this.#emit(entry.reason || `${from} -> ${to}`);
 		return true;
@@ -759,24 +762,30 @@ function describe(problems: readonly GateProblem[]): string {
 	return ordered.map((problem) => problem.detail).join("; ");
 }
 
-/** Allowed hard-state-machine edges: the spec chain discovering->discussing->planning->waiting_for_plan->
- * plan_validated->ready->executing->validating->complete, plus legacy generating (the entry state, which may
- * enter discovering) and terminal failed_or_cancelled. No backward or skip edges: executing is ready-only and
- * complete is validating-only (plus evidence). `waiting_for_plan` self-quarantine is idempotent. The sole
- * backward exception is quarantine: plan_validated/ready may fall back to waiting_for_plan so a rejected
- * Plan candidate clears the prior plan instead of executing on it; executing/validating have no such edge. */
+/** Allowed hard-state-machine edges: the strict spec chain
+ * discovering->discussing->planning->waiting_for_plan->plan_validated->ready->executing->validating->complete,
+ * plus legacy generating (the entry state, which may enter discovering, waiting_for_plan for an invalid first
+ * candidate, or plan_validated for a directly submitted valid Plan, or terminal failed_or_cancelled) and terminal
+ * failed_or_cancelled. No skip edges: discovering/discussing/planning cannot jump to plan_validated, ready
+ * cannot jump to validating (it must pass through executing), and validating cannot go back to ready.
+ * `waiting_for_plan` self-quarantine is idempotent. The sole backward exceptions are quarantine:
+ * plan_validated/ready may fall back to waiting_for_plan so a rejected Plan candidate clears the prior plan
+ * instead of executing on it; executing/validating have no such edge. validating may also branch to
+ * partial_failure (validation found the plan incomplete), and partial_failure may fall back to waiting_for_plan
+ * for a late valid Plan. Legacy `complete()` bypasses this table by direct assignment, so removing
+ * generating->validating does not break it. */
 export function planGateAllowed(from: GateState): ReadonlySet<GateState> {
 	const table: Record<string, readonly GateState[]> = {
-		discovering: ["discussing", "waiting_for_plan", "plan_validated", "failed_or_cancelled"],
-		discussing: ["planning", "waiting_for_plan", "plan_validated", "failed_or_cancelled"],
-		planning: ["waiting_for_plan", "plan_validated", "failed_or_cancelled"],
+		discovering: ["discussing", "failed_or_cancelled"],
+		discussing: ["planning", "failed_or_cancelled"],
+		planning: ["waiting_for_plan", "failed_or_cancelled"],
 		waiting_for_plan: ["waiting_for_plan", "plan_validated", "failed_or_cancelled"],
 		plan_validated: ["ready", "waiting_for_plan", "failed_or_cancelled"],
-		generating: ["discovering", "validating", "partial_failure", "failed_or_cancelled", "waiting_for_plan", "plan_validated"],
-		validating: ["ready", "partial_failure", "failed_or_cancelled", "complete"],
-		ready: ["executing", "validating", "failed_or_cancelled", "waiting_for_plan"],
+		generating: ["discovering", "waiting_for_plan", "plan_validated", "failed_or_cancelled"],
+		validating: ["partial_failure", "failed_or_cancelled", "complete"],
+		ready: ["executing", "failed_or_cancelled", "waiting_for_plan"],
 		executing: ["validating", "failed_or_cancelled"],
-		partial_failure: ["failed_or_cancelled", "waiting_for_plan"],
+		partial_failure: ["waiting_for_plan", "failed_or_cancelled"],
 		failed_or_cancelled: [],
 		complete: [],
 	};

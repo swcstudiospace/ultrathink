@@ -6,6 +6,7 @@ import {
 	CompletionGate,
 	DEFAULT_GATE_INACTIVITY_MS,
 	type GateProgress,
+	type GateState,
 	type GateTimers,
 	validateArtifacts,
 	validatePlanChecklist,
@@ -658,5 +659,69 @@ describe("Plan gate review fixes (round 2)", () => {
 		const composed = record ? `${releasedText}\n\n${record}` : releasedText;
 		expect(composed).toContain(accepted!.planHash);
 		expect(composed).toContain(accepted!.planId);
+	});
+});
+describe("Plan gate review fixes (round 3)", () => {
+	test("(1) hardened table: ready cannot beginValidation, validating cannot go ready, generating cannot jump to validating, no skip to plan_validated", () => {
+		// ready must pass through executing before validating.
+		const ready = new CompletionGate({ inactivityMs: 0 });
+		expect(ready.submitPlan(CHECKLIST_PLAN)).toBeDefined();
+		expect(ready.state).toBe("ready");
+		expect(ready.beginValidation()).toBe(false);
+		expect(ready.state).toBe("ready");
+		expect(ready.transitions.at(-1)).toMatchObject({ accepted: false, from: "ready", to: "validating" });
+
+		// generating (legacy entry) cannot jump straight to validating; legacy complete() bypasses the
+		// table by direct assignment and is covered elsewhere.
+		const generating = new CompletionGate({ inactivityMs: 0 });
+		expect(generating.state).toBe("generating");
+		expect(generating.tryTransition("validating")).toBe(false);
+		expect(generating.state).toBe("generating");
+
+		// validating cannot go back to ready.
+		const validating = new CompletionGate({ inactivityMs: 0 });
+		expect(validating.submitPlan(CHECKLIST_PLAN)).toBeDefined();
+		expect(validating.beginExecution()).toBe(true);
+		expect(validating.beginValidation()).toBe(true);
+		expect(validating.tryTransition("ready")).toBe(false);
+		expect(validating.state).toBe("validating");
+
+		// discovering/discussing/planning cannot skip to plan_validated; they must walk the chain.
+		const chains: readonly (readonly GateState[])[] = [
+			["discovering"],
+			["discovering", "discussing"],
+			["discovering", "discussing", "planning"],
+		];
+		for (const path of chains) {
+			const gate = new CompletionGate({ inactivityMs: 0 });
+			for (const step of path) expect(gate.tryTransition(step)).toBe(true);
+			expect(gate.state).toBe(path.at(-1));
+			expect(gate.tryTransition("plan_validated")).toBe(false);
+			expect(gate.state).toBe(path.at(-1));
+		}
+	});
+
+	test("(2) entering executing/validating clears prior-cycle validation evidence", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		expect(gate.submitPlan(CHECKLIST_PLAN)).toBeDefined();
+		expect(gate.beginExecution()).toBe(true);
+		expect(gate.beginValidation()).toBe(true);
+		gate.recordValidationEvidence("first cycle green");
+		expect(gate.hasValidationEvidence).toBe(true);
+		// Side-step to partial_failure, quarantine back to waiting, then a late valid Plan revives to ready.
+		expect(gate.tryTransition("partial_failure")).toBe(true);
+		expect(gate.enterWaitingForPlan()).toBe(true);
+		expect(gate.submitPlan(CHECKLIST_PLAN)).toBeDefined();
+		expect(gate.state).toBe("ready");
+		// New cycle: executing clears the first cycle's evidence, so complete is rejected until
+		// fresh evidence is recorded in this cycle's validating.
+		expect(gate.beginExecution()).toBe(true);
+		expect(gate.hasValidationEvidence).toBe(false);
+		expect(gate.beginValidation()).toBe(true);
+		expect(gate.hasValidationEvidence).toBe(false);
+		expect(gate.completeExecution()).toBe(false);
+		gate.recordValidationEvidence("second cycle green");
+		expect(gate.completeExecution()).toBe(true);
+		expect(gate.state).toBe("complete");
 	});
 });
