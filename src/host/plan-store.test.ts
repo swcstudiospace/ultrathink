@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claimPlan, loadPlan, planKey, savePlan, type StoredPlan } from "./plan-store.ts";
+import { planGateHash } from "./completion-gate.ts";
 
 const input = {
 	sessionId: "session-1",
@@ -88,7 +89,9 @@ describe("savePlan and loadPlan", () => {
 	});
 
 	test("round trips a gate-released plan with its validated identity", () => {
-		const plan = samplePlan({ planId: "plan-1", planHash: "abc123" });
+		const text = "# Plan\n- step one";
+		const planHash = planGateHash(text);
+		const plan = samplePlan({ text, planId: `plan-${planHash.slice(0, 12)}`, planHash });
 		savePlan(dir, plan);
 		// The identity rides alongside the text, which is never altered.
 		expect(loadPlan(dir, plan.key)).toEqual(plan);
@@ -107,6 +110,58 @@ describe("savePlan and loadPlan", () => {
 			}),
 		);
 		expect(loadPlan(dir, plan.key)).toBe("unreadable");
+	});
+ 
+	test("reads a record whose planHash does not match the text as unreadable", () => {
+		const plan = samplePlan();
+		const planHash = planGateHash(plan.text);
+		writeRaw(
+			plan.key,
+			JSON.stringify({
+				key: plan.key,
+				text: plan.text,
+				view: plan.view,
+				createdAt: plan.createdAt,
+				planId: `plan-${planHash.slice(0, 12)}`,
+				planHash: "0".repeat(64),
+			}),
+		);
+		expect(loadPlan(dir, plan.key)).toBe("unreadable");
+	});
+
+	test("reads a record whose planId is not derived from the text hash as unreadable", () => {
+		const plan = samplePlan();
+		const planHash = planGateHash(plan.text);
+		writeRaw(
+			plan.key,
+			JSON.stringify({
+				key: plan.key,
+				text: plan.text,
+				view: plan.view,
+				createdAt: plan.createdAt,
+				planId: `plan-${"0".repeat(12)}`,
+				planHash,
+			}),
+		);
+		expect(loadPlan(dir, plan.key)).toBe("unreadable");
+	});
+
+	test("reads a record with only one identity field as unreadable", () => {
+		const plan = samplePlan();
+		const planHash = planGateHash(plan.text);
+		for (const identity of [{ planId: `plan-${planHash.slice(0, 12)}` }, { planHash }]) {
+			writeRaw(
+				plan.key,
+				JSON.stringify({
+					key: plan.key,
+					text: plan.text,
+					view: plan.view,
+					createdAt: plan.createdAt,
+					...identity,
+				}),
+			);
+			expect(loadPlan(dir, plan.key)).toBe("unreadable");
+		}
 	});
 
 	test("returns 'absent' for a missing key", () => {

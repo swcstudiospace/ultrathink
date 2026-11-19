@@ -18,6 +18,7 @@
  */
 import { createHash } from "node:crypto";
 import type { TotManifest } from "../think/tot/types.ts";
+import type { SyncSummary } from "../track/prd-types.ts";
 import { checkUpliftXml } from "../uplift/xml.ts";
 
 export type GateState =
@@ -474,6 +475,11 @@ export class CompletionGate {
 		// after ready->executing->validating, complete requires evidence recorded in this cycle.
 		if (to === "executing" || to === "validating") this.#validationEvidence = undefined;
 		this.#state = to;
+		if (from === "waiting_for_plan" && to !== "waiting_for_plan") {
+			this.#blocked = false;
+			this.#blockReason = "";
+			this.#stopPolling();
+		}
 		if (to === "waiting_for_plan") {
 			// Centralized quarantine: every accepted entry into waiting_for_plan drops any
 			// prior plan/pending record, so plan_validated/ready guards below (which
@@ -549,6 +555,7 @@ export class CompletionGate {
 		}
 		if (!accepted) {
 			this.#pendingPlan = undefined;
+			this.#emit(`plan rejected: valid candidate cannot enter plan_validated from ${this.#state} (never silent)`);
 			return undefined;
 		}
 		// Automatic use: validated means ready; no manual restart is required.

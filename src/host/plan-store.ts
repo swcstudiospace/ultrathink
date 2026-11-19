@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { errorCode } from "../claude/atomic.ts";
+import { planGateHash } from "./completion-gate.ts";
 
 export interface StoredPlan {
 	key: string;
@@ -189,6 +190,14 @@ function parseRecord(value: unknown, expectedKey: string): StoredPlan | undefine
 		(planHash !== undefined && typeof planHash !== "string")
 	)
 		return undefined;
+	// The gate always stores both fields together, so a lone field is not a valid identity.
+	if ((planId !== undefined) !== (planHash !== undefined)) return undefined;
+	if (planId !== undefined && planHash !== undefined) {
+		// Records are untrusted on read: never let a stored identity claim the text is gate-released unless it
+		// actually hashes to that text and the id is derived from the hash.
+		const hash = planGateHash(text);
+		if (planHash !== hash || planId !== `plan-${hash.slice(0, 12)}`) return undefined;
+	}
 	return {
 		key,
 		text,

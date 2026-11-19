@@ -922,4 +922,38 @@ describe("Plan gate review fixes (round 7)", () => {
 		expect(gate.blockReason).toContain("blocked");
 	});
 });
+describe("Plan gate review fixes (round 9)", () => {
+	test("(1) blocked gate clears blocked/blockReason when a valid plan leaves waiting_for_plan", () => {
+		const clock = fakeClock();
+		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers, pollIntervalMs: 1_000, maxPollAttempts: 2 });
+		expect(gate.enterWaitingForPlan()).toBe(true);
+		expect(gate.pollOnce()).toBeUndefined();
+		expect(gate.pollOnce()).toBeUndefined();
+		expect(gate.blocked).toBe(true);
+		expect(gate.blockReason).toContain("blocked");
+		expect(clock.armed()).toBe(0);
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		expect(gate.state).toBe("ready");
+		expect(gate.blocked).toBe(false);
+		expect(gate.blockReason).toBe("");
+		expect(clock.armed()).toBe(0);
+	});
+
+	test("(2) valid candidate rejected by state emits a progress notification naming rejection and current state", () => {
+		const clock = fakeClock();
+		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers });
+		const first = gate.submitPlan(CHECKLIST_PLAN);
+		expect(first).toBeDefined();
+		expect(gate.state).toBe("ready");
+		const progress: GateProgress[] = [];
+		gate.onProgress((entry) => progress.push(entry));
+		const rejected = gate.submitPlan(CHECKLIST_PLAN, { version: "2" });
+		expect(rejected).toBeUndefined();
+		expect(gate.state).toBe("ready");
+		expect(gate.planHash).toBe(first!.planHash);
+		expect(progress.some((entry) => entry.label.includes("rejected") && entry.label.includes("plan_validated") && entry.label.includes("ready"))).toBe(true);
+		expect(progress.some((entry) => entry.state === "ready")).toBe(true);
+	});
+});
 
