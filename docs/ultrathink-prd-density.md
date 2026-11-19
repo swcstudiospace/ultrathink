@@ -19,18 +19,28 @@ Sub-issue census range: SPE-35053..SPE-35081+ (all Backlog, team Spectrum Web Co
 Graph fit: parents + steps named above; full per-issue enumeration requires
 `linear list_issues` with `parentId` per parent — **blocked** (see evidence).
 
-## N4 local deliverables (this lane)
+## N4 local working artifacts (NOT tracked repo deliverables — outside this PR)
 
-- `.planning/templates/codeblocked-prd.md` — gsd-prd fenced template: identity
-  first line `PRD-ID | Parent | Version | Hash`, fixed 12 headings in order
-  (Objective; Current State; Scope / Out of Scope; Named Surfaces;
-  Data/API Contracts; Dependencies; Implementation Steps; Validation/Test
-  Plan; Acceptance Criteria; Risks; Rollback/Degradation; Traceability),
-  idempotent hash/no-op/supersede rules, sync direction (Linear =
-  state/labels/completion; Notion = prompt/planning; only URLs, status
-  summary, Hash flow), round-trip verification.
-- `.planning/prd-density.md` — density definition and math (below).
-- `.planning/sync-queue.md` — queued inventory, 48 rows, 0 applied.
+The following are local, git-ignored workspace working artifacts under
+`.planning/` (which is git-ignored except `ROADMAP.md`, `STATE.md`,
+`PHASES-INVENTORY.md`). They are **not** in this PR and are **not** claimed
+as tracked repo files; no statement below asserts they exist in the repo.
+Their rules are summarized inline so this committed doc stands on its own:
+
+- Local-only template working copy (`.planning/templates/codeblocked-prd.md` in
+  the workspace): gsd-prd fenced template: identity first line `PRD-ID |
+  Parent | Version | Hash`, fixed 12 headings in order (Objective; Current
+  State; Scope / Out of Scope; Named Surfaces; Data/API Contracts;
+  Dependencies; Implementation Steps; Validation/Test Plan; Acceptance
+  Criteria; Risks; Rollback/Degradation; Traceability), idempotent
+  hash/no-op/supersede rules, sync direction (Linear = state/labels/completion;
+  Notion = prompt/planning; only URLs, status summary, Hash flow), round-trip
+  verification.
+- Local-only density definition (`.planning/prd-density.md` in the workspace):
+  see Density math below, which is the operative inline definition.
+- Local-only sync queue (`.planning/sync-queue.md` in the workspace): queued
+  inventory, 48 rows, 0 applied; rows stay queued (no live Linear/Notion
+  writes in N4).
 
 ## Density math
 
@@ -45,14 +55,17 @@ Denominator and queue are spec-range only. Parent mapping verified only for
 SPE-35054..SPE-35056 (n4 steps) and SPE-35075..SPE-35081 (n7 steps); all other
 rows mark parent/Notion link `unverified — fill on integration`. Census
 expansion is blocked-on-integration; no IDs/titles invented beyond the range.
-Superseded old template fragment removed; canonical template is
-`.planning/templates/codeblocked-prd.md`. Existing Linear description text and
-the graph/node/step footer remain preserved by rule (append, never replace).
+The superseded old template fragment is removed; the local working-copy
+template described above is a git-ignored workspace artifact, not a tracked
+repo file. Existing Linear description text and the graph/node/step footer
+remain preserved by rule (append, never replace).
 
 ## N4 evidence (local-only, this lane)
 
-- Created: `.planning/templates/codeblocked-prd.md`,
-  `.planning/prd-density.md`, `.planning/sync-queue.md` (48 queued rows).
+- Local git-ignored workspace artifacts authored (not committed, not tracked,
+  not in this PR): `.planning/templates/codeblocked-prd.md`,
+  `.planning/prd-density.md`, `.planning/sync-queue.md` (48 queued rows, in the
+  workspace only).
 - No live Linear/Notion transport attempted (q3 local-only); no IDs, titles,
   or parent mappings invented beyond the spec range SPE-35034..SPE-35081.
 - No tests/lint/typecheck/formatters run; no commit (per assignment).

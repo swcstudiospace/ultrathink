@@ -429,9 +429,11 @@ export class CompletionGate {
 		return this.#validationEvidence !== undefined;
 	}
 
-	/** Record for STATE.md / SUMMARY / Linear PRD / Notion prompt. Empty until a plan validates. */
+	/** Record for STATE.md / SUMMARY / Linear PRD / Notion prompt. Empty until a plan validates, and empty
+	 * whenever staged artifacts are present: `release()` then hands over the staged text, so a `#plan`
+	 * id/hash would misattribute that content. Only a pure plan gate (no staged artifacts) records. */
 	planRecord(): string {
-		if (!this.#plan) return "";
+		if (!this.#plan || this.#staged) return "";
 		return `Plan ${this.#plan.planId} @ ${this.#plan.planHash} (v${this.#plan.version})`;
 	}
 

@@ -62,23 +62,31 @@ export function waveOf(request: PrdRequest): number {
 }
 
 /**
- * Hash of everything one PRD is generated from; a checkpoint is reused only while it still matches. The wave is
- * deliberately excluded: it is scheduling (execution order), not PRD content, so a wave change must not
- * invalidate an already-generated PRD, and checkpoints written before waves existed keep matching.
+ * Hash of everything one PRD is generated from; a checkpoint is reused only while it still matches.
+ *
+ * The explicit wave IS content-bearing: the generator's `userPrompt` emits a `wave="..."` attribute iff
+ * `request.wave !== undefined`, so two requests differing only in an explicit wave produce different prompts
+ * and must not share a checkpoint. The wave is therefore appended as the final canonical element — but only
+ * when defined. When it is absent the generator emits nothing extra, so the hashed JSON array stays
+ * byte-identical to the pre-wave format and existing version-1 checkpoints keep matching (no envelope bump
+ * or migration needed: `loadCheckpoint`'s hash-equality check is the acceptance gate, and it accepts a
+ * legacy checkpoint exactly in the no-wave case). A legacy checkpoint reused under an explicit wave has a
+ * different hash and is regenerated, as its prompt differs. An explicit wave equal to `step` still differs
+ * from an absent wave, because the prompt gains the extra attribute.
  */
 export function inputHash(request: PrdRequest, salt = ""): string {
-	return sha256Hex(
-		JSON.stringify([
-			PRD_TEMPLATE_VERSION,
-			salt,
-			request.key,
-			request.graphId,
-			request.nodeId,
-			request.step,
-			request.title,
-			request.thought,
-		]),
-	);
+	const base: readonly unknown[] = [
+		PRD_TEMPLATE_VERSION,
+		salt,
+		request.key,
+		request.graphId,
+		request.nodeId,
+		request.step,
+		request.title,
+		request.thought,
+	];
+	const canonical = request.wave === undefined ? base : [...base, request.wave];
+	return sha256Hex(JSON.stringify(canonical));
 }
 
 /** The checkpoint file of one key: a readable prefix plus a hash, so distinct keys never collide. */

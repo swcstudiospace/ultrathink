@@ -618,3 +618,45 @@ describe("Plan gate review fixes (round 1)", () => {
 		);
 	});
 });
+
+describe("Plan gate review fixes (round 2)", () => {
+	test("(1) staged+plan coexistence: released staged text carries no #plan record", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		gate.stage({ text: plan(), expected: FULL });
+		expect(gate.complete().state).toBe("ready");
+		// Quarantine then a late valid Plan leaves #staged/#verdict in place alongside #plan.
+		expect(gate.enterWaitingForPlan()).toBe(true);
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		expect(gate.state).toBe("ready");
+		expect(gate.plan).toBeDefined();
+		// Staged artifacts are the released authority, so no plan attribution may be appended.
+		expect(gate.planRecord()).toBe("");
+		const released = gate.release();
+		expect(released.ok).toBe(true);
+		const releasedText = released.ok ? released.text : "";
+		expect(releasedText).toBe(plan());
+		// The omp.ts composition: `record ? `${text}\n\n${record}` : text`.
+		const record = gate.planRecord();
+		const composed = record ? `${releasedText}\n\n${record}` : releasedText;
+		expect(composed).toBe(plan());
+		expect(composed).not.toContain(accepted!.planHash);
+		expect(composed).not.toContain(accepted!.planId);
+	});
+
+	test("(2) a pure plan gate still records its plan id/hash", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		expect(gate.planRecord()).toContain(accepted!.planId);
+		expect(gate.planRecord()).toContain(accepted!.planHash);
+		const released = gate.release();
+		expect(released.ok).toBe(true);
+		const releasedText = released.ok ? released.text : "";
+		expect(releasedText).toContain("Objective: ship the plan gate");
+		const record = gate.planRecord();
+		const composed = record ? `${releasedText}\n\n${record}` : releasedText;
+		expect(composed).toContain(accepted!.planHash);
+		expect(composed).toContain(accepted!.planId);
+	});
+});

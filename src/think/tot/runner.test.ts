@@ -39,6 +39,22 @@ const prd = (request: PrdRequest): GeneratedPrd => ({
 	attempts: 1,
 });
 
+/** The pre-wave input hash: the canonical array without any wave element. No-wave requests must keep it. */
+function legacyPreWaveHash(request: PrdRequest): string {
+	return sha256Hex(
+		JSON.stringify([
+			PRD_TEMPLATE_VERSION,
+			"",
+			request.key,
+			request.graphId,
+			request.nodeId,
+			request.step,
+			request.title,
+			request.thought,
+		]),
+	);
+}
+
 /** Backoff that costs nothing and records what it was asked to wait. */
 function seams(): { sleep: (ms: number) => Promise<void>; random: () => number; waits: number[] } {
 	const waits: number[] = [];
@@ -188,35 +204,64 @@ describe("runTot: checkpoints", () => {
 		expect(inputHash(request, "model-a")).not.toBe(inputHash(request, "model-b"));
 	});
 
-	test("the input hash does not cover the execution wave", () => {
+	test("the input hash covers the explicit execution wave", () => {
 		const [request] = makeRequests(1);
 		if (request === undefined) throw new Error("no request");
-		// Wave is scheduling, not PRD content: changing it must not change the hash, so checkpoints written
-		// before waves existed still match and a rerun resumes them instead of regenerating.
-		expect(inputHash({ ...request, wave: 1 })).toBe(inputHash({ ...request, wave: 99 }));
-		expect(inputHash({ ...request, wave: 99 })).toBe(inputHash(request));
+		// The generator emits wave="..." iff request.wave is set, so an explicit wave changes the prompt and
+		// must change the hash — including when it equals `step`, where the prompt still gains the attribute.
+		expect(inputHash({ ...request, wave: 1 })).not.toBe(inputHash({ ...request, wave: 99 }));
+		expect(inputHash({ ...request, wave: 99 })).not.toBe(inputHash(request));
+		expect(inputHash({ ...request, wave: request.step })).not.toBe(inputHash(request));
+		expect(inputHash({ ...request, wave: 7 })).toBe(inputHash({ ...request, wave: 7 }));
 	});
 
-	test("a checkpoint written with the pre-wave hash format is resumed", async () => {
+	test("the input hash without a wave matches the pre-wave hash format", () => {
+		const [request] = makeRequests(1);
+		if (request === undefined) throw new Error("no request");
+		// No wave is set, so the generator emits no wave attribute and the canonical array is unchanged:
+		// checkpoints written before waves existed keep matching.
+		expect(inputHash(request)).toBe(legacyPreWaveHash(request));
+		expect(inputHash({ ...request, wave: 7 })).not.toBe(legacyPreWaveHash(request));
+	});
+
+	test("a checkpoint written with the pre-wave hash format is resumed when no wave is set", async () => {
+		const dir = makeDir();
+		const [request] = makeRequests(1);
+		if (request === undefined) throw new Error("no request");
+		const markdown = "# Pre-existing PRD\n";
+		const legacy = legacyPreWaveHash(request);
+		expect(legacy).toBe(inputHash(request));
+		const record = {
+			key: request.key,
+			hash: sha256Hex(markdown),
+			markdown,
+			status: "generated",
+			model: "m-1",
+			fallback: false,
+			attempts: 1,
+		};
+		writeFileSync(checkpointPath(dir, request.key), JSON.stringify({ version: 1, inputHash: legacy, record }));
+		const calls: string[] = [];
+		const manifest = await runTot({
+			requests: [request],
+			checkpointDir: dir,
+			generate: async (r) => {
+				calls.push(r.key);
+				return prd(r);
+			},
+		});
+		expect(calls).toEqual([]);
+		expect(manifest.records).toEqual([record]);
+	});
+
+	test("a pre-wave checkpoint is not reused when an explicit wave is set", async () => {
 		const dir = makeDir();
 		const [request] = makeRequests(1);
 		if (request === undefined) throw new Error("no request");
 		const waved = { ...request, wave: 7 };
 		const markdown = "# Pre-existing PRD\n";
-		// The pre-wave hash: the content array without any wave element.
-		const legacy = sha256Hex(
-			JSON.stringify([
-				PRD_TEMPLATE_VERSION,
-				"",
-				waved.key,
-				waved.graphId,
-				waved.nodeId,
-				waved.step,
-				waved.title,
-				waved.thought,
-			]),
-		);
-		expect(legacy).toBe(inputHash(waved));
+		const legacy = legacyPreWaveHash(waved);
+		expect(legacy).not.toBe(inputHash(waved));
 		const record = {
 			key: waved.key,
 			hash: sha256Hex(markdown),
@@ -236,8 +281,28 @@ describe("runTot: checkpoints", () => {
 				return prd(r);
 			},
 		});
-		expect(calls).toEqual([]);
-		expect(manifest.records).toEqual([record]);
+		// The prompt under wave 7 carries wave="7" and differs from the pre-wave prompt, so the legacy
+		// checkpoint must be regenerated rather than resumed.
+		expect(calls).toEqual([waved.key]);
+		expect(manifest.generated).toBe(1);
+		expect(manifest.records[0]?.markdown).toBe(prd(waved).markdown);
+	});
+
+	test("a checkpoint with an explicit wave is resumed for the same wave, not for another", async () => {
+		const dir = makeDir();
+		const [request] = makeRequests(1);
+		if (request === undefined) throw new Error("no request");
+		const waved = { ...request, wave: 7 };
+		await runTot({ requests: [waved], checkpointDir: dir, generate: async (r) => prd(r) });
+		let calls = 0;
+		const generate = async (r: PrdRequest) => {
+			calls++;
+			return prd(r);
+		};
+		await runTot({ requests: [waved], checkpointDir: dir, generate });
+		expect(calls).toBe(0);
+		await runTot({ requests: [{ ...waved, wave: 8 }], checkpointDir: dir, generate });
+		expect(calls).toBe(1);
 	});
 
 	test("a changed salt regenerates everything", async () => {
