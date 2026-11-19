@@ -1757,6 +1757,9 @@ export function createOmpExtension(
 			releasedText?: string;
 			/** Validated identity of the gate-released plan text; kept with `releasedText` for re-delivery. */
 			releasedPlan?: { planId: string; planHash: string };
+			/** Last gate-released plan already delivered to the model/inline, for duplicate suppression after quarantine. */
+			lastDeliveredPlanText?: string;
+			lastDeliveredPlanHash?: string;
 			/** Start order; only the latest flight writes to the bar store. */
 			generation: number;
 			settled: boolean;
@@ -3162,6 +3165,8 @@ export function createOmpExtension(
 				flight.gateWaiting = true;
 				// A quarantine revoked the prior release: a revised Plan may be delivered again.
 				flight.gateAsideDelivered = false;
+				if (flight.releasedText !== undefined) flight.lastDeliveredPlanText = flight.releasedText;
+				if (flight.releasedPlan) flight.lastDeliveredPlanHash = flight.releasedPlan.planHash;
 				flight.releasedText = undefined;
 				flight.releasedPlan = undefined;
 				flight.deliveredInline = false;
@@ -3188,6 +3193,15 @@ export function createOmpExtension(
 			// appended into the plan body, so re-hashing the body still verifies.
 			const text = released.text;
 			const identity = gate.getExecutionContext();
+			if (identity && flight.lastDeliveredPlanHash === identity.planHash) {
+				flight.releasedText = text;
+				flight.releasedPlan = { planId: identity.planId, planHash: identity.planHash };
+				return { kind: "none" };
+			}
+			if (!identity && text === flight.lastDeliveredPlanText) {
+				flight.releasedText = text;
+				return { kind: "none" };
+			}
 			flight.releasedText = text;
 			if (identity) flight.releasedPlan = { planId: identity.planId, planHash: identity.planHash };
 			saveReleased(flight, text, identity ?? undefined);
@@ -3458,6 +3472,8 @@ export function createOmpExtension(
 						flight.gateWaiting = true;
 						// A quarantine revoked the prior release: a revised Plan may be delivered again.
 						flight.gateAsideDelivered = false;
+						if (flight.releasedText !== undefined) flight.lastDeliveredPlanText = flight.releasedText;
+						if (flight.releasedPlan) flight.lastDeliveredPlanHash = flight.releasedPlan.planHash;
 						flight.releasedText = undefined;
 						flight.releasedPlan = undefined;
 						flight.deliveredInline = false;
@@ -3917,7 +3933,6 @@ export function createOmpExtension(
 			flight.noticed = true;
 			const recovery = recoverPlan(flight);
 			if (recovery.kind === "recovered") {
-				flight.releasedText = recovery.text;
 				if (recovery.planId && recovery.planHash) flight.releasedPlan = { planId: recovery.planId, planHash: recovery.planHash };
 				flight.deliveredInline = true;
 				barWrite(flight.generation, () => store.delivered("inline", recovery.view, now()));
