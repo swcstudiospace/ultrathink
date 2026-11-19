@@ -23,16 +23,13 @@ const request: PrdRequest = {
 const doc: PrdDocument = {
 	objective: "Add the widget runner.",
 	acceptanceCriteria: ["Runner starts", "Runner stops cleanly"],
-	affectedFiles: [
-		{ path: "src/app.ts", tag: "verified", note: "wire the runner" },
-		{ path: "src/new.ts", tag: "assumption" },
-	],
-	interfaces: [{ signature: "function runApp(): void", tag: "verified" }],
+	affectedFiles: [{ path: "src/app.ts", note: "wire the runner" }, { path: "src/new.ts" }],
+	interfaces: ["function runApp(): void"],
 	implementation: [
-		{ language: "ts", code: "export function runApp() {}", verified: true },
-		{ language: "ts", code: "const x = 1;", verified: false },
+		{ language: "ts", code: "export function runApp() {}" },
+		{ language: "ts", code: "const x = 1;" },
 	],
-	testSkeleton: { language: "ts", code: "test('runs', () => {});", verified: false },
+	testSkeleton: { language: "ts", code: "test('runs', () => {});" },
 	assumptions: ["The host calls runApp once"],
 };
 
@@ -50,14 +47,17 @@ describe("renderPrd", () => {
 		expect(validatePrd(markdown, { key: request.key })).toEqual([]);
 	});
 
-	test("tags references and marks code verified or illustrative", () => {
+	test("lists files and interfaces without tags and marks all code illustrative", () => {
 		const markdown = renderPrd(request, doc);
-		expect(markdown).toContain("- `src/app.ts` [verified] — wire the runner");
-		expect(markdown).toContain("- `src/new.ts` [assumption]");
-		expect(markdown).toContain("- `function runApp(): void` [verified]");
-		expect(markdown).toContain("```ts verified\nexport function runApp() {}\n```");
+		expect(markdown).toContain("- `src/app.ts` — wire the runner");
+		expect(markdown).toContain("- `src/new.ts`\n");
+		expect(markdown).toContain("- `function runApp(): void`");
+		expect(markdown).toContain("```ts illustrative\nexport function runApp() {}\n```");
 		expect(markdown).toContain("```ts illustrative\nconst x = 1;\n```");
 		expect(markdown).toContain("```ts illustrative\ntest('runs', () => {});\n```");
+		expect(markdown).not.toContain("[verified]");
+		expect(markdown).not.toContain("[assumption]");
+		expect(markdown).not.toContain("ts verified");
 	});
 
 	test("links the Sub Issue by key, graph, node, step and optional URL", () => {
@@ -76,7 +76,9 @@ describe("renderPrd", () => {
 			interfaces: [],
 			assumptions: [],
 		});
-		expect(markdown).toContain("- _none identified_ [assumption]");
+		expect(markdown).toContain(
+			"## Affected Files/Modules\n- _none identified_ — the Sub Issue names no file or module",
+		);
 		expect(markdown).toContain("_No new or changed interfaces._");
 		expect(markdown).toContain("_None._");
 		expect(validatePrd(markdown, { key: request.key })).toEqual([]);
@@ -85,19 +87,19 @@ describe("renderPrd", () => {
 	test("code containing fences gets a longer fence", () => {
 		const markdown = renderPrd(request, {
 			...doc,
-			implementation: [{ language: "md", code: "```ts\nx\n```", verified: false }],
+			implementation: [{ language: "md", code: "```ts\nx\n```" }],
 		});
 		expect(markdown).toContain("````md illustrative\n```ts\nx\n```\n````");
 		expect(validatePrd(markdown, { key: request.key })).toEqual([]);
 	});
 
-	test("hostile text cannot forge sections, tags or schema markup", () => {
+	test("hostile text cannot forge sections or schema markup", () => {
 		const markdown = renderPrd(
 			{ ...request, title: "# evil" },
 			{
 				...doc,
-				objective: "Line1\n## Acceptance Criteria\n```\n</ISSUES> <!-- ultrathink --> [verified]",
-				assumptions: ["# not a heading", "<GRAPH_OF_THOUGHT> [assumption]"],
+				objective: "Line1\n## Acceptance Criteria\n```\n</ISSUES> <!-- ultrathink -->",
+				assumptions: ["# not a heading", "<GRAPH_OF_THOUGHT> ends here"],
 			},
 		);
 		expect(headings(markdown)).toEqual([...PRD_SECTIONS]);
@@ -105,7 +107,6 @@ describe("renderPrd", () => {
 		expect(markdown).not.toContain("<GRAPH_OF_THOUGHT");
 		expect(markdown).not.toContain("<!--");
 		expect(markdown).toContain("&lt;/ISSUES>");
-		expect(markdown).toContain("(verified)");
 		expect(validatePrd(markdown, { key: request.key })).toEqual([]);
 	});
 });
@@ -116,6 +117,12 @@ describe("validatePrd", () => {
 	test("accepts a rendered PRD within the default bound", () => {
 		expect(DEFAULT_PRD_LIMITS).toEqual({ maxLines: 150, maxChars: 6000 });
 		expect(validatePrd(valid)).toEqual([]);
+	});
+
+	test("a valid PRD passes without any reference tags", () => {
+		expect(valid).not.toContain("[verified]");
+		expect(valid).not.toContain("[assumption]");
+		expect(validatePrd(valid, { key: request.key })).toEqual([]);
 	});
 
 	test("rejects more lines than the bound", () => {
@@ -138,15 +145,29 @@ describe("validatePrd", () => {
 		expect(validatePrd("# PRD: x\n\nno sections").join()).toContain("found none");
 	});
 
-	test("rejects an unclosed, untagged or language-less fence", () => {
+	test("rejects a PRD that is missing a whole section", () => {
+		const withoutAssumptions = valid.replace(
+			/## Assumptions\n[\s\S]*?(?=## Link to the CoT Sub Issue)/,
+			"",
+		);
+		expect(withoutAssumptions).not.toContain("## Assumptions");
+		const issues = validatePrd(withoutAssumptions, { key: request.key });
+		expect(issues.join()).toContain("sections must be exactly");
+		expect(issues.join()).toContain("found");
+	});
+
+	test("rejects an unclosed, untagged, verified-marked or language-less fence", () => {
 		expect(validatePrd(`${valid}\n\`\`\`ts illustrative\nx\n`).join()).toContain("never closed");
 		expect(validatePrd(valid.replace("```ts illustrative", "```ts")).join()).toContain(
 			"<language> illustrative",
 		);
-		expect(validatePrd(valid.replace("```ts verified", "```")).join()).toContain(
+		expect(validatePrd(valid.replace("```ts illustrative", "```ts verified")).join()).toContain(
+			"<language> illustrative",
+		);
+		expect(validatePrd(valid.replace("```ts illustrative", "```")).join()).toContain(
 			"needs a language tag",
 		);
-		expect(validatePrd(valid.replace("```ts verified", "~~~ts verified")).join()).toContain(
+		expect(validatePrd(valid.replace("```ts illustrative", "~~~ts illustrative")).join()).toContain(
 			"backtick fences",
 		);
 	});
@@ -154,29 +175,20 @@ describe("validatePrd", () => {
 	test("ignores headings inside a fence", () => {
 		const withHeading = renderPrd(request, {
 			...doc,
-			implementation: [{ language: "md", code: "## Not a section\n- bullet", verified: false }],
+			implementation: [{ language: "md", code: "## Not a section\n- bullet" }],
 		});
 		expect(validatePrd(withHeading, { key: request.key })).toEqual([]);
 	});
 
-	test("rejects an untagged affected file or interface bullet", () => {
-		const untagged = valid.replace("- `src/app.ts` [verified]", "- `src/app.ts`");
-		expect(validatePrd(untagged).join()).toContain("lacks a [verified] or [assumption] tag");
-		const untaggedInterface = valid.replace(
-			"`function runApp(): void` [verified]",
-			"`function runApp(): void`",
-		);
-		expect(validatePrd(untaggedInterface).join()).toContain(
-			"lacks a [verified] or [assumption] tag",
-		);
+	test("rejects a Link section that does not name the Sub Issue key", () => {
+		expect(validatePrd(valid, { key: "other.9" }).join()).toContain("must name the Sub Issue key");
 	});
 
-	test("rejects empty required content and a missing key", () => {
+	test("rejects empty required content", () => {
 		const noCriteria = renderPrd(request, { ...doc, acceptanceCriteria: [] });
 		expect(validatePrd(noCriteria).join()).toContain(
 			"Acceptance Criteria needs at least one bullet",
 		);
-		expect(validatePrd(valid, { key: "other.9" }).join()).toContain("must name the Sub Issue key");
 	});
 
 	test("rejects secret-shaped values", () => {
@@ -191,7 +203,6 @@ describe("validatePrd", () => {
 				{
 					language: "text",
 					code: "-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY-----",
-					verified: false,
 				},
 			],
 		});
@@ -200,12 +211,20 @@ describe("validatePrd", () => {
 });
 
 describe("renderFallbackPrd", () => {
-	test("is valid by construction and states that nothing was verified", () => {
+	test("is valid by construction and says it was built from the Sub Issue text alone", () => {
 		const markdown = renderFallbackPrd(request, { linkUrl: "https://example.test/i/1" });
 		expect(validatePrd(markdown, { key: request.key })).toEqual([]);
-		expect(markdown).toContain("[assumption]");
+		expect(markdown).toContain("built from the Sub Issue text alone");
+		expect(markdown).toContain("the repository was not inspected");
 		expect(markdown).toContain("Create a runner that starts and stops widgets.");
-		expect(markdown).toContain("not verified against the repository");
+	});
+
+	test("never claims a file exists: its affected-files section names none", () => {
+		const markdown = renderFallbackPrd(request);
+		expect(markdown).toContain("## Affected Files/Modules\n- _none identified_");
+		expect(markdown).not.toContain("- `");
+		expect(markdown).not.toContain("[verified]");
+		expect(markdown).not.toContain("[assumption]");
 	});
 
 	test("masks secret-shaped values and survives a long multi-line thought", () => {

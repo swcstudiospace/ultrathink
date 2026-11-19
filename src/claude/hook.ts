@@ -1933,10 +1933,8 @@ export async function runPromptSubmit(
 								? { provider: deps.modelResolution.provider }
 								: {}),
 						},
-						...(deps.surface !== undefined && isHostId(deps.surface) ? { host: deps.surface } : {}),
 						seams: deps.tot,
 						stateDir: deps.stateDir,
-						cwd,
 						signal: lifetime,
 						log,
 					});

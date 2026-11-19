@@ -11,11 +11,11 @@ import { join } from "node:path";
 import { defaultConfig, type UltrathinkConfig } from "../config.ts";
 import { CompletionGate } from "../host/completion-gate.ts";
 import { graphJson, UPLIFT } from "../test.helpers.ts";
-import type { ProjectFacts } from "../think/tot/index.ts";
 import type { PrdOutcome, TotSeams } from "../think/tot/stage.ts";
 import type { ToolCaller } from "../track/create.ts";
 import type { Tracker } from "../track/gateway.ts";
 import type { IssueRef, TrackingRefs, TrackPlan } from "../track/types.ts";
+import type { ClaudeCompleter } from "./complete.ts";
 import {
 	type HookDeps,
 	type PromptSubmitInput,
@@ -108,21 +108,12 @@ function fakeLinear(): FakeLinear {
 	return fake;
 }
 
-const FACTS: ProjectFacts = {
-	root: "/repo",
-	files: new Set(["src/app.ts"]),
-	dirs: new Set(["src"]),
-	symbols: new Map([["runApp", ["src/app.ts"]]]),
-	truncated: false,
-	denied: 0,
-};
-
 const DRAFT = JSON.stringify({
 	objective: "Wire the runner.",
 	acceptanceCriteria: ["It runs"],
 	affectedFiles: [{ path: "src/app.ts" }],
-	interfaces: [{ signature: "function runApp(): void", symbol: "runApp" }],
-	implementation: [{ language: "ts", code: "runApp();", references: ["runApp"] }],
+	interfaces: ["function runApp(): void"],
+	implementation: [{ language: "ts", code: "runApp();" }],
 	testSkeleton: { language: "ts", code: "test('x', () => {});" },
 	assumptions: [],
 });
@@ -163,22 +154,23 @@ function world(
 	};
 	const tot: TotSeams = {
 		open: () => ({ linear: linear.caller }),
-		facts: FACTS,
-		complete: async ({ user }) => {
-			const key = user.match(/<SUB_ISSUE key="([^"]+)"/)?.[1] ?? "?";
-			asked.push(key);
-			if (key === state.failKey && !state.healed) throw new Error("simulated generation failure");
-			return DRAFT;
-		},
-		canPickModelPerCall: false,
 		retry: { maxAttempts: 1, baseMs: 1, capMs: 1 },
 		retrySeams: { sleep: async () => undefined },
 		sync: { sleep: async () => undefined, retryPolicy: { maxAttempts: 1, baseMs: 1, capMs: 1 } },
 	};
+	const planCall = planner();
+	const complete: ClaudeCompleter = async (system, user) => {
+		if (!user.includes("<SUB_ISSUE key=")) return planCall(system, user);
+		const key = user.match(/<SUB_ISSUE key="([^"]+)"/)?.[1] ?? "?";
+		asked.push(key);
+		if (key === state.failKey && !state.healed) throw new Error("simulated generation failure");
+		return DRAFT;
+	};
+
 	const deps: HookDeps = {
 		config,
 		control: {},
-		complete: planner(),
+		complete,
 		engine: "claude:claude-haiku-5-5",
 		stateDir,
 		git: () => ({ repo: "acme/widgets", branch: "feat/widget" }),

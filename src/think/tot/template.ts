@@ -7,7 +7,7 @@ import { defangMarkup } from "./escape.ts";
 import type { PrdCodeBlock, PrdDocument, PrdLimits, PrdRequest } from "./types.ts";
 
 /** Bump when the rendered shape changes: it is part of every checkpoint's input hash. */
-export const PRD_TEMPLATE_VERSION = 2;
+export const PRD_TEMPLATE_VERSION = 3;
 
 /** A PRD this long is a design essay, not a hand-off for one Sub Issue. */
 export const DEFAULT_PRD_LIMITS: PrdLimits = { maxLines: 150, maxChars: 6000 };
@@ -27,11 +27,10 @@ export const PRD_SECTIONS = [
 
 type PrdSectionTitle = (typeof PRD_SECTIONS)[number];
 
-const CODE_MARKERS = ["illustrative", "verified"] as const;
+const CODE_MARKER = "illustrative";
 const LANGUAGE = /^[A-Za-z0-9_+#.-]+$/;
-const TAG = /\[(?:verified|assumption)\]/;
 const ILLUSTRATIVE_NOTE =
-	"_Code blocks are illustrative unless tagged verified against the repository._";
+	"_Code blocks are illustrative: they were not checked against the repository._";
 
 export function sha256Hex(text: string): string {
 	return createHash("sha256").update(text).digest("hex");
@@ -39,7 +38,7 @@ export function sha256Hex(text: string): string {
 
 /**
  * One line of untrusted text for the template: whitespace collapsed, fences and a leading heading/quote mark neutralized,
- * and no spoofed `[verified]` / `[assumption]` tag, so model or repository text can never forge structure.
+ * so model or Sub Issue text can never forge structure.
  */
 function inline(text: string, max: number): string {
 	const flat = text
@@ -47,7 +46,6 @@ function inline(text: string, max: number): string {
 		.trim()
 		.replace(/`{3,}/g, "'''")
 		.replace(/~{3,}/g, "---")
-		.replace(/\[(verified|assumption)\]/gi, "($1)")
 		.replace(/^[#>]/, "\\$&");
 	return clip(flat, max).text;
 }
@@ -61,8 +59,7 @@ function renderCode(block: PrdCodeBlock): string[] {
 	const longestRun = Math.max(0, ...(block.code.match(/`+/g) ?? []).map((run) => run.length));
 	const fence = "`".repeat(Math.max(3, longestRun + 1));
 	const language = block.language.replace(/[^A-Za-z0-9_+#.-]/g, "") || "text";
-	const marker = block.verified ? "verified" : "illustrative";
-	return [`${fence}${language} ${marker}`, block.code.replace(/\s+$/, ""), fence];
+	return [`${fence}${language} ${CODE_MARKER}`, block.code.replace(/\s+$/, ""), fence];
 }
 
 export interface RenderOptions {
@@ -88,17 +85,17 @@ export function renderPrd(
 	section(
 		"Affected Files/Modules",
 		doc.affectedFiles.length === 0
-			? ["- _none identified_ [assumption] — no file or module was found for this step"]
+			? ["- _none identified_ — the Sub Issue names no file or module"]
 			: doc.affectedFiles.map(
 					(file) =>
-						`- \`${span(file.path, 200)}\` [${file.tag}]${file.note ? ` — ${inline(file.note, 200)}` : ""}`,
+						`- \`${span(file.path, 200)}\`${file.note ? ` — ${inline(file.note, 200)}` : ""}`,
 				),
 	);
 	section(
 		"Interfaces/Signatures",
 		doc.interfaces.length === 0
 			? ["_No new or changed interfaces._"]
-			: doc.interfaces.map((item) => `- \`${span(item.signature, 240)}\` [${item.tag}]`),
+			: doc.interfaces.map((signature) => `- \`${span(signature, 240)}\``),
 	);
 	section("Implementation Shape", [
 		ILLUSTRATIVE_NOTE,
@@ -145,12 +142,11 @@ export function renderFallbackPrd(source: PrdRequest, options: RenderOptions = {
 				{
 					language: "text",
 					code: `No code was drafted for this step. Follow the CoT step:\n${clip(request.thought.replace(/\s+/g, " ").trim(), 1200).text}`,
-					verified: false,
 				},
 			],
-			testSkeleton: { language: "text", code: `Verify: ${title}`, verified: false },
+			testSkeleton: { language: "text", code: `Verify: ${title}` },
 			assumptions: [
-				"This PRD was built from the Sub Issue text alone, without a model-written draft: files, interfaces and scope are not verified against the repository.",
+				"This PRD was built from the Sub Issue text alone: the repository was not inspected, so no file, interface or scope in it is confirmed.",
 			],
 		},
 		options,
@@ -215,14 +211,8 @@ function fenceIssues(fences: readonly Fence[]): string[] {
 		const [language, marker, ...rest] = fence.info.split(/\s+/).filter(Boolean);
 		if (language === undefined || !LANGUAGE.test(language)) {
 			issues.push(`line ${fence.line}: code fence needs a language tag (for example \`ts\`)`);
-		} else if (
-			marker === undefined ||
-			!(CODE_MARKERS as readonly string[]).includes(marker) ||
-			rest.length > 0
-		) {
-			issues.push(
-				`line ${fence.line}: code fence info must be "<language> illustrative" or "<language> verified"`,
-			);
+		} else if (marker !== CODE_MARKER || rest.length > 0) {
+			issues.push(`line ${fence.line}: code fence info must be "<language> illustrative"`);
 		}
 	}
 	return issues;
@@ -240,17 +230,12 @@ function sectionIssues(scanned: Scan, key: string | undefined): string[] {
 		);
 		return issues;
 	}
-	const [objective, criteria, affected, interfaces, , , , link, blocked] = scanned.sections;
+	const [objective, criteria, affected, , , , , link, blocked] = scanned.sections;
 	if (objective?.body.join("").trim() === "") issues.push("Objective is empty");
 	if (bullets(criteria?.body ?? []).length === 0)
 		issues.push("Acceptance Criteria needs at least one bullet");
-	const affectedBullets = bullets(affected?.body ?? []);
-	if (affectedBullets.length === 0) issues.push("Affected Files/Modules needs at least one bullet");
-	for (const line of [...affectedBullets, ...bullets(interfaces?.body ?? [])]) {
-		if (!TAG.test(line)) {
-			issues.push(`bullet lacks a [verified] or [assumption] tag: ${clip(line, 80).text}`);
-		}
-	}
+	if (bullets(affected?.body ?? []).length === 0)
+		issues.push("Affected Files/Modules needs at least one bullet");
 	const inSection = (section: number): number =>
 		scanned.fences.filter((fence) => fence.section === section).length;
 	if (inSection(4) === 0) issues.push("Implementation Shape needs at least one fenced code block");
@@ -271,8 +256,8 @@ export interface ValidateOptions {
 }
 
 /**
- * Every reason `markdown` is not an acceptable PRD; empty when it is: fixed sections in order, tagged references,
- * balanced and language-tagged fences, within the length bound, and free of secret-shaped values.
+ * Every reason `markdown` is not an acceptable PRD; empty when it is: fixed sections in order, balanced and
+ * language-tagged fences, a Link section naming the Sub Issue key, within the length bound, and free of secret-shaped values.
  */
 export function validatePrd(markdown: string, options: ValidateOptions = {}): string[] {
 	const limits = options.limits ?? DEFAULT_PRD_LIMITS;

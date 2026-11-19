@@ -19,7 +19,7 @@ type Json = Record<string, unknown>;
 
 const MAX_PARSE_MESSAGE_CHARS = 160;
 const MAX_VALUE_CHARS = 80;
-const MODELS_KEYS = ["hosts", "providerDefaults", "tot"] as const;
+const MODELS_KEYS = ["hosts", "providerDefaults"] as const;
 const HOST_OVERRIDE_KEYS = ["provider", "model"] as const;
 const BACKEND_SECTIONS = ["hindsight", "ragflow", "substrate"] as const;
 
@@ -286,15 +286,13 @@ function checkModels(out: Collector, value: unknown, effective: Json): void {
 				}
 			}
 		} else if (key === "tot") {
-			if (!isPlainObject(section)) {
-				out.add(
-					"warn",
-					"wrong-type",
-					"models.tot",
-					`models.tot ignored: expected object, got ${kindOf(section)}`,
-					`File: ${out.layer.path}`,
-				);
-			}
+			out.add(
+				"warn",
+				"ignored",
+				"models.tot",
+				"models.tot is no longer read: Tree-of-Thought uses the selected model",
+				`File: ${out.layer.path}`,
+			);
 		} else {
 			unknownName(out, "key", `models.${key}`, MODELS_KEYS, "models");
 		}

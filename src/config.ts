@@ -23,7 +23,7 @@ import type { HostId } from "./host/types.ts";
 import { type LegacyRoute, ROUTE_DEFAULT_MODELS } from "./route-defaults.ts";
 import { readJson } from "./shared.ts";
 import { asRecord } from "./config/fields.ts";
-import { defaultTotModels, mergeModels, providerDictionary } from "./config/models.ts";
+import { mergeModels, providerDictionary } from "./config/models.ts";
 import { mergeClaude } from "./config/claude.ts";
 import { mergeGrok } from "./config/grok.ts";
 import { mergeMuse } from "./config/muse.ts";
@@ -195,18 +195,6 @@ export interface HostModelOverride {
 }
 
 /**
- * Cheapest-model routing for the Tree-of-Thought PRD stage (`models.tot`). `model` is the user's explicit override ("" =
- * none). `candidates` maps a provider family to its ordered cheapest-first model ids and doubles as the allowlist; the
- * built-in lists come from `TOT_PRD_CANDIDATES`. `breakerThreshold` is the number of consecutive cheap-model failures
- * after which the whole stage runs on the selected model. GoT and CoT never read any of it.
- */
-export interface TotModelsConfig {
-	model: string;
-	candidates: Record<string, readonly string[]>;
-	breakerThreshold: number;
-}
-
-/**
  * The Tree-of-Thought PRD stage (`think.tot`): one PRD per CoT Sub Issue, written after the tracker rows exist and synced
  * into them. `enabled` left unset follows tracking (on when tracking produced rows, so off when tracking is off); an
  * explicit boolean wins. `concurrency` is the PRDs written at once (1-16); `maxPrdChars` and `maxPrdLines` bound one PRD.
@@ -229,7 +217,6 @@ export type ThinkSettings = ThinkConfig & { tot: TotConfig };
 export interface ModelsConfig {
 	hosts: Partial<Record<HostId, HostModelOverride>>;
 	providerDefaults: Record<string, string>;
-	tot: TotModelsConfig;
 }
 
 /** Where an effective legacy route model came from: the route-default map, a nonblank file-layer pin, or a file-layer blank. */
@@ -325,7 +312,7 @@ export function defaultConfig(): UltrathinkConfig {
 		swarm: { ...DEFAULT_SWARM_CONFIG },
 		ui: { ...DEFAULT_UI_CONFIG },
 		recallSettings: defaultRecallSettings(),
-		models: { hosts: {}, providerDefaults: providerDictionary({}), tot: defaultTotModels() },
+		models: { hosts: {}, providerDefaults: providerDictionary({}) },
 		modelProvenance: { claude: "route-default", grok: "route-default", muse: "route-default" },
 	};
 }

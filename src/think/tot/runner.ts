@@ -35,7 +35,7 @@ const MAX_ERROR_CHARS = 300;
 
 export interface RunTotOptions {
 	readonly requests: readonly PrdRequest[];
-	/** Writes one PRD (typically `generatePrd` bound to a model, the facts and a fallback). */
+	/** Writes one PRD (typically `generatePrd` bound to a model and a fallback). */
 	readonly generate: (request: PrdRequest, signal?: AbortSignal) => Promise<GeneratedPrd>;
 	/** Absolute directory for the per-PRD checkpoints and the manifest. */
 	readonly checkpointDir: string;
