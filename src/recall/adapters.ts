@@ -14,6 +14,7 @@ import {
 	type PanelItem,
 	type PanelSurface,
 	PREVIEW_MAX_CHARS,
+	clipPanelText,
 	panelTriggerFromPlanner,
 	sanitizePanelText,
 	withPanelMeta,
@@ -60,6 +61,9 @@ function lessonItem(row: LessonRow): PanelItem {
 export interface ProducerInvocation {
 	trigger: RecallEvent["trigger"];
 	startedAt: number;
+	/** The query the lookup ran on, when the caller has it. Sanitized into the envelope's preview. */
+	query?: string | undefined;
+	filters?: readonly string[] | undefined;
 }
 
 /** A pointer to the record a lookup read: its kind and the record's own names or ids, never the record's content. */
@@ -67,22 +71,30 @@ function recordRef(kind: string, values: readonly string[]): string | undefined 
 	return values.length > 0 ? `${kind}:${values.join(",")}` : undefined;
 }
 
+/** The query and filters a producer's lookup ran with, when the producer has them. Absent fields fall back to the invocation's. */
+interface ProducerRequest {
+	query?: string | undefined;
+	filters?: readonly string[] | undefined;
+}
+
 /**
- * Attach an invocation's metadata to a producer's envelope. The surface is the producer's own source; the request has
- * no query or filters, since the lookup record keeps neither. Without an invocation the envelope is returned unchanged.
+ * Attach an invocation's metadata to a producer's envelope. The surface is the producer's own source. The request's query
+ * and filters win; without them the invocation's are used, and without either the request is empty. Without an invocation
+ * the envelope is returned unchanged.
  */
 function withInvocation(
 	panel: PanelEnvelope,
 	surface: PanelSurface,
 	invocation: ProducerInvocation | undefined,
 	rawRef: string | undefined,
+	request: ProducerRequest = {},
 ): PanelEnvelope {
 	if (invocation === undefined) return panel;
 	return withPanelMeta(panel, {
 		surface,
 		trigger: panelTriggerFromPlanner(invocation.trigger),
-		query: "",
-		filters: [],
+		query: request.query ?? invocation.query ?? "",
+		filters: [...(request.filters ?? invocation.filters ?? [])],
 		startedAt: invocation.startedAt,
 		rawRef,
 	});
@@ -155,8 +167,8 @@ export function momentsLookupToPanel(
 /**
  * Map one skills lookup record onto a panel envelope.
  * - `used`: a row with `injected` is a pointer item (its description as the preview, its target in the match reason). A
- *   row without it (a draft, which is not installed) is excluded as filtered and never returned. When no row is injected
- *   the envelope is empty with reason filtered.
+ *   row without it (a draft or a disabled skill, which is not installed) is excluded as filtered and never returned, carrying
+ *   its manifest status. When no row is injected the envelope is empty with reason filtered.
  *   The record's names are never shown: only its rows are, so a skill the record does not list (a disabled one never
  *   reaches the record) is absent.
  * - `none` is empty (no_match). `off` is empty (gate_off). `error` is an error envelope, classed unclassified.
@@ -175,9 +187,15 @@ function skillsPanel(lookup: SkillsLookup): PanelEnvelope {
 			const items: PanelItem[] = [];
 			const excluded: ExcludedRow[] = [];
 			for (const row of lookup.rows) {
-				if (!row.injected)
-					excluded.push({ ref: sanitizePanelText(row.name, REF_MAX_CHARS), reason: "filtered" });
-				else
+				if (!row.injected) {
+					// A draft or disabled skill carries its manifest status, so the panel can tell the two apart.
+					const status = sanitizePanelText(row.status, TITLE_MAX_CHARS);
+					excluded.push({
+						ref: sanitizePanelText(row.name, REF_MAX_CHARS),
+						reason: "filtered",
+						...(status === "" ? {} : { status }),
+					});
+				} else
 					items.push({
 						id: `skill:${row.target}:${row.name}`,
 						title: sanitizePanelText(row.name, TITLE_MAX_CHARS),
@@ -212,13 +230,17 @@ export interface SubstrateBriefInput {
 	text: string;
 	state: "complete" | "degraded" | "snapshot" | "none";
 	reason?: string;
+	/** The substrate request's query, as the caller sent it. Absent: the invocation's query, else none. */
+	query?: string | undefined;
+	/** The substrate request's filters (its repo, branch and surface scope), one label each. Absent: the invocation's. */
+	filters?: readonly string[] | undefined;
 }
 
 const BRIEF_TITLE = "Substrate brief";
 const BRIEF_MATCH_REASON = "Cross-agent brief for this repository";
 const BRIEF_REF = "substrate_brief:brief";
 
-function briefItem(preview: string): PanelItem {
+function briefItem(preview: string, size: number): PanelItem {
 	return {
 		id: "substrate_brief:brief",
 		title: BRIEF_TITLE,
@@ -226,6 +248,7 @@ function briefItem(preview: string): PanelItem {
 		source: { kind: "substrate_brief", ref: "brief" },
 		timestamp: null,
 		matchReason: BRIEF_MATCH_REASON,
+		size,
 		itemStatus: "returned",
 	};
 }
@@ -239,6 +262,7 @@ function briefItem(preview: string): PanelItem {
  * - `degraded` and `snapshot` with text are partial (remainder truncated): the same item, and the live brief as a missing
  *   row (source_unavailable).
  * - Any state with text that is empty once sanitized is empty (no_match).
+ * - Text past PREVIEW_MAX_CHARS is cut; the cut is reported as a trimmed_budget row with its character count.
  */
 function briefPanel(input: SubstrateBriefInput): PanelEnvelope {
 	if (input.state === "none") {
@@ -251,16 +275,21 @@ function briefPanel(input: SubstrateBriefInput): PanelEnvelope {
 				return errorEnvelope(input.reason, "Substrate brief lookup failed.");
 		}
 	}
-	const preview = sanitizePanelText(input.text, PREVIEW_MAX_CHARS);
-	if (preview === "") return emptyEnvelope("no_match");
-	const items = [briefItem(preview)];
+	const clip = clipPanelText(input.text, PREVIEW_MAX_CHARS);
+	if (clip.text === "") return emptyEnvelope("no_match");
+	const items = [briefItem(clip.text, clip.size)];
+	// The cut is reported, never silent: the row names how many characters the preview left out.
+	const excluded: ExcludedRow[] =
+		clip.trimmed > 0
+			? [{ ref: "brief", reason: "trimmed_budget", trimmedChars: clip.trimmed }]
+			: [];
 	if (input.state === "complete")
-		return { status: "success", items, excluded: [], missing: [], stages: [] };
+		return { status: "success", items, excluded, missing: [], stages: [] };
 	return {
 		status: "partial",
 		remainder: "truncated",
 		items,
-		excluded: [],
+		excluded,
 		missing: [{ ref: "brief", reason: "source_unavailable" }],
 		stages: [],
 	};
@@ -271,5 +300,8 @@ export function substrateBriefToPanel(
 	input: SubstrateBriefInput,
 	invocation?: ProducerInvocation,
 ): PanelEnvelope {
-	return withInvocation(briefPanel(input), "substrate", invocation, BRIEF_REF);
+	return withInvocation(briefPanel(input), "substrate", invocation, BRIEF_REF, {
+		query: input.query,
+		filters: input.filters,
+	});
 }

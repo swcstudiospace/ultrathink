@@ -130,4 +130,20 @@ describe("buildTurnPanels: one envelope per supplied lookup", () => {
 		expect(Object.keys(panels ?? {})).toEqual(["substrate"]);
 		expect(panels?.substrate).toMatchObject({ status: "success" });
 	});
+
+	test("a moments lookup is one teachable_moment panel; omitting it yields no moments envelope", () => {
+		const withMoments = buildTurnPanels({ moments: lessons([row()]) }, settings(true), {
+			trigger: "explicit",
+			startedAt: 1_000,
+		});
+		expect(Object.keys(withMoments ?? {})).toEqual(["moments"]);
+		expect(withMoments?.moments).toMatchObject({ surface: "teachable_moment" });
+
+		const without = buildTurnPanels({ skills: skills([skillRow()]) }, settings(true), {
+			trigger: "explicit",
+			startedAt: 1_000,
+		});
+		expect(Object.keys(without ?? {})).toEqual(["skills"]);
+		expect(without?.moments).toBeUndefined();
+	});
 });

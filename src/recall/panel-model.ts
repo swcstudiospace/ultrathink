@@ -83,6 +83,8 @@ export interface PanelItem {
 	timestamp: number | null;
 	matchReason: string;
 	score?: PanelScore;
+	/** Characters of the item's full sanitized text before the preview cap. Set where the unit can be trimmed (the Substrate brief). */
+	size?: number;
 	itemStatus: PanelItemStatus;
 }
 
@@ -91,6 +93,10 @@ interface PanelExcluded {
 	reason: PanelExcludedReason;
 	/** The candidate's score when it has one, kept visible so an exclusion can be judged (e.g. below_floor). */
 	score?: PanelScore;
+	/** The manifest status of a generated skill (draft, disabled, ...), sanitized. Set on a skill row excluded as filtered. */
+	status?: string;
+	/** Characters the display cap cut from the unit. Set on a trimmed_budget row. */
+	trimmedChars?: number;
 }
 
 interface PanelMissing {
@@ -202,31 +208,53 @@ const ENTITIES: Record<string, string> = {
 };
 
 /** Escape code points one at a time until the next one would overflow `limit`. Never splits an entity. */
-function takeEscaped(text: string, limit: number): { out: string; complete: boolean } {
+function takeEscaped(
+	text: string,
+	limit: number,
+): { out: string; consumed: number; complete: boolean } {
 	let out = "";
+	let consumed = 0;
 	for (const ch of text) {
 		const piece = ENTITIES[ch] ?? ch;
-		if (out.length + piece.length > limit) return { out, complete: false };
+		if (out.length + piece.length > limit) return { out, consumed, complete: false };
 		out += piece;
+		consumed += 1;
 	}
-	return { out, complete: true };
+	return { out, consumed, complete: true };
+}
+
+/** A value clipped for display: the escaped text, its size in sanitized characters, and how many of those the cap cut. */
+export interface ClippedText {
+	text: string;
+	size: number;
+	trimmed: number;
 }
 
 /**
- * Make untrusted text safe for a panel: line breaks become spaces, control and bidi-override characters are removed,
- * whitespace runs collapse, markup characters are escaped, and the result is at most `maxChars` long. A cut result
- * ends in an ellipsis that counts toward the cap. Non-string input yields "".
+ * Make untrusted text safe for a panel and clip it to `maxChars`, reporting what the clip cut. Line breaks become
+ * spaces, control and bidi-override characters are removed, whitespace runs collapse, and markup characters are escaped.
+ * `size` counts the sanitized characters (code points, unescaped) before the cap; `trimmed` counts the ones the cap
+ * left out, so a clipped text is never silent about it. A cut text ends in an ellipsis that counts toward the cap.
+ * Non-string input yields an empty clip.
  */
-export function sanitizePanelText(value: unknown, maxChars: number): string {
-	if (typeof value !== "string" || maxChars < 1) return "";
+export function clipPanelText(value: unknown, maxChars: number): ClippedText {
+	if (typeof value !== "string") return { text: "", size: 0, trimmed: 0 };
 	const cleaned = value
 		.replace(LINE_BREAKS, " ")
 		.replace(CONTROL_CHARS, "")
 		.replace(RUN_OF_SPACE, " ")
 		.trim();
+	const size = Array.from(cleaned).length;
+	if (maxChars < 1) return { text: "", size, trimmed: size };
 	const whole = takeEscaped(cleaned, maxChars);
-	if (whole.complete) return whole.out;
-	return `${takeEscaped(cleaned, maxChars - 1).out}${ELLIPSIS}`;
+	if (whole.complete) return { text: whole.out, size, trimmed: 0 };
+	const cut = takeEscaped(cleaned, maxChars - 1);
+	return { text: `${cut.out}${ELLIPSIS}`, size, trimmed: size - cut.consumed };
+}
+
+/** The escaped text of `clipPanelText`, capped to `maxChars`. */
+export function sanitizePanelText(value: unknown, maxChars: number): string {
+	return clipPanelText(value, maxChars).text;
 }
 
 function emptyReasonForNone(reasonCode: KnowledgeReason | undefined): PanelEmptyReason {

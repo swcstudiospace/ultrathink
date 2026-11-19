@@ -347,6 +347,7 @@ describe("substrateBriefToPanel", () => {
 		source: { kind: "substrate_brief" as const, ref: "brief" },
 		timestamp: null,
 		matchReason: "Cross-agent brief for this repository",
+		size: 25,
 		itemStatus: "returned" as const,
 	};
 
@@ -486,5 +487,149 @@ describe("producer metadata: surface and trigger on the envelope", () => {
 			surface: "teachable_moment",
 			trigger: "explicit_request",
 		});
+	});
+});
+
+describe("substrateBriefToPanel: unit size and trimmed budget", () => {
+	const text = (value: string, over: Partial<SubstrateBriefInput> = {}): SubstrateBriefInput => ({
+		text: value,
+		state: "complete",
+		...over,
+	});
+
+	test("an item's size is the character length of its sanitized text, before escaping", () => {
+		expect(listed(substrateBriefToPanel(text("<b>x</b>"))).items[0]?.size).toBe(8);
+		expect(listed(substrateBriefToPanel(text("  a \n b  "))).items[0]?.size).toBe(3);
+	});
+
+	test("a brief within the preview cap is not cut and has no trimmed row", () => {
+		const panel = listed(substrateBriefToPanel(text("a".repeat(PREVIEW_MAX_CHARS))));
+		expect(panel.items[0]?.preview).toBe("a".repeat(PREVIEW_MAX_CHARS));
+		expect(panel.excluded).toEqual([]);
+	});
+
+	test("a brief past the preview cap is cut, and a trimmed_budget row names the characters left out", () => {
+		const panel = listed(substrateBriefToPanel(text("a".repeat(300))));
+		expect(panel.items[0]).toMatchObject({
+			preview: `${"a".repeat(PREVIEW_MAX_CHARS - 1)}…`,
+			size: 300,
+		});
+		expect(panel.excluded).toEqual([{ ref: "brief", reason: "trimmed_budget", trimmedChars: 21 }]);
+	});
+
+	test("the trimmed count is in source characters, not escaped output", () => {
+		// Each `<` escapes to four characters; 69 of them fit the 279-character cut, so 131 of 200 are trimmed.
+		const panel = listed(substrateBriefToPanel(text("<".repeat(200))));
+		expect(panel.excluded).toEqual([{ ref: "brief", reason: "trimmed_budget", trimmedChars: 131 }]);
+	});
+
+	test("a degraded brief past the cap is partial and carries the trimmed row beside the missing live brief", () => {
+		expect(
+			listed(substrateBriefToPanel(text("a".repeat(300), { state: "degraded" }))),
+		).toMatchObject({
+			status: "partial",
+			excluded: [{ ref: "brief", reason: "trimmed_budget", trimmedChars: 21 }],
+			missing: [{ ref: "brief", reason: "source_unavailable" }],
+		});
+	});
+});
+
+describe("substrateBriefToPanel: request query and filters", () => {
+	const INVOCATION = { trigger: "uncertainty" as const, startedAt: 1_000 };
+
+	test("the substrate request's query and filters are the envelope's request preview", () => {
+		expect(
+			substrateBriefToPanel(
+				{
+					text: "Brief",
+					state: "complete",
+					query: "fix the lockfile",
+					filters: ["repo:agent-substrate", "surface:claude-code"],
+				},
+				INVOCATION,
+			),
+		).toMatchObject({
+			request: {
+				source: "substrate",
+				queryPreview: "fix the lockfile",
+				filters: ["repo:agent-substrate", "surface:claude-code"],
+				startedAt: 1_000,
+			},
+		});
+	});
+
+	test("the request's query wins over the invocation's; the invocation's fills in when the request has none", () => {
+		expect(
+			substrateBriefToPanel(
+				{ text: "Brief", state: "complete", query: "from the request" },
+				{ ...INVOCATION, query: "from the invocation", filters: ["branch:main"] },
+			),
+		).toMatchObject({
+			request: { queryPreview: "from the request", filters: ["branch:main"] },
+		});
+		expect(
+			substrateBriefToPanel(
+				{ text: "Brief", state: "complete" },
+				{ ...INVOCATION, query: "from the invocation", filters: ["branch:main"] },
+			),
+		).toMatchObject({
+			request: { queryPreview: "from the invocation", filters: ["branch:main"] },
+		});
+	});
+
+	test("a long query is capped to PREVIEW_MAX_CHARS in the request preview", () => {
+		const panel = substrateBriefToPanel(
+			{ text: "Brief", state: "complete", query: "q".repeat(PREVIEW_MAX_CHARS + 10) },
+			INVOCATION,
+		);
+		const preview = panel.request?.queryPreview ?? "";
+		expect(preview.length).toBe(PREVIEW_MAX_CHARS);
+		expect(preview.endsWith("…")).toBe(true);
+	});
+
+	test("without an invocation the envelope carries no request, whatever query the input names", () => {
+		expect(
+			substrateBriefToPanel({ text: "Brief", state: "complete", query: "x" }),
+		).not.toHaveProperty("request");
+	});
+});
+
+describe("skillsLookupToPanel: excluded status", () => {
+	test("a draft and a disabled skill are excluded as filtered, each with its own status", () => {
+		const panel = skillsLookupToPanel(
+			skills([
+				skillRow(),
+				skillRow({ name: "draft-one", target: "drafts", injected: false, status: "draft" }),
+				skillRow({ name: "off-one", target: "drafts", injected: false, status: "disabled" }),
+			]),
+		);
+		expect(listed(panel).excluded).toEqual([
+			{ ref: "draft-one", reason: "filtered", status: "draft" },
+			{ ref: "off-one", reason: "filtered", status: "disabled" },
+		]);
+	});
+
+	test("a lookup whose only skill is disabled is empty with reason filtered and the disabled status", () => {
+		expect(
+			skillsLookupToPanel(
+				skills([
+					skillRow({ name: "off-one", target: "drafts", injected: false, status: "disabled" }),
+				]),
+			),
+		).toEqual({
+			status: "empty",
+			reason: "filtered",
+			items: [],
+			excluded: [{ ref: "off-one", reason: "filtered", status: "disabled" }],
+			missing: [],
+			stages: [],
+		});
+	});
+
+	test("an excluded row with no status from its record carries no status key", () => {
+		const panel = skillsLookupToPanel(
+			skills([skillRow({ name: "lesson-draft", target: "drafts", injected: false })]),
+		);
+		expect(listed(panel).excluded[0]).not.toHaveProperty("status");
 	});
 });

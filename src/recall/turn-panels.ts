@@ -1,13 +1,14 @@
 /**
- * The information panels one prompt's plan carries (SPE-34395): the knowledge, lessons, skills and Substrate brief lookups the
- * planner already made, mapped to panel envelopes. Off unless `panels.informationPanels` is set, so the plan
- * view is unchanged by default. Pure: the caller passes the lookups it holds; nothing is fetched here.
+ * The information panels one prompt's plan carries (SPE-34395): the knowledge, lessons, skills, teachable moments and
+ * Substrate brief lookups the planner already made, mapped to panel envelopes. Off unless `panels.informationPanels` is
+ * set, so the plan view is unchanged by default. Pure: the caller passes the lookups it holds; nothing is fetched here.
  */
 import type { KnowledgeLookup } from "../greptile/knowledge.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
 import {
 	type ProducerInvocation,
 	lessonsLookupToPanel,
+	momentsLookupToPanel,
 	skillsLookupToPanel,
 	type SubstrateBriefInput,
 	substrateBriefToPanel,
@@ -29,6 +30,7 @@ interface TurnLookups {
 	knowledge?: KnowledgeLookup;
 	lessons?: LessonsLookup;
 	skills?: SkillsLookup;
+	moments?: LessonsLookup;
 	substrate?: SubstrateBriefInput;
 }
 
@@ -48,6 +50,12 @@ export function buildTurnPanels(
 			invocation,
 		);
 	if (lookups.skills) panels.skills = skillsLookupToPanel(lookups.skills, invocation);
+	if (lookups.moments)
+		panels.moments = momentsLookupToPanel(
+			lookups.moments,
+			settings.recall.relevanceFloor.lessons,
+			invocation,
+		);
 	if (lookups.substrate) panels.substrate = substrateBriefToPanel(lookups.substrate, invocation);
 	return Object.keys(panels).length > 0 ? panels : undefined;
 }
