@@ -48,6 +48,7 @@ When the user types one of these, relay the reason and the alternative in one or
 | `/ultrathink-kickoff`, `/ultrathink-sync`, `/ultrathink-ship` | it needs git, a shell and the user's tracker or pull-request credentials | run it in Claude Code, Omp, Grok Build, Hermes or Muse with the plugin |
 | `/ultrathink-teach`, `/ultrathink-teach-admin`, `/ultrathink-learn`, `/ultrathink-lessons` | Teachable Moments state lives on the host | use it in a plugin host |
 | `/ultrathink-decisions`, `/ultrathink-hindsight`, `/ultrathink-engine`, `/ultrathink-protocol` | it is an operator control for a plugin host's own planner | use it in a plugin host |
+| `/ultrathink-skills` | it manages skills generated on the local host, and the connector has no skill store | run it in Claude Code, Omp, Grok Build, Hermes or Muse with the plugin |
 | `/ultrathink-hitl` | clarifying questions are part of every plan result | read the plan's questions |
 | `/ultrathink-cursor` | it is a Cursor host command, and the connector has no Cursor session to run it in | run it in Cursor with the ultrathink plugin installed |
 

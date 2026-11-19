@@ -157,6 +157,7 @@ describe("the catalog over the real repository files", () => {
 				"ultrathink-kickoff",
 				"ultrathink-sync",
 				"ultrathink-ship",
+				"ultrathink-skills",
 				"ultrathink-teach",
 				"ultrathink-teach-admin",
 				"ultrathink-learn",
