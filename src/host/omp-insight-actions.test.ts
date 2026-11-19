@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
 	existsSync,
@@ -22,6 +22,7 @@ import {
 	type RetainOutcome,
 } from "../hindsight/types.ts";
 import { captureMoment } from "../teach/capture.ts";
+import * as teachCli from "../teach/cli.ts";
 import { renderSkillDraft } from "../teach/promote.ts";
 import { openStore, storeDir } from "../teach/store.ts";
 import {
@@ -496,5 +497,27 @@ describe("installInsightSkill", () => {
 		const again = await installInsightSkill(preview, true, h.runtime);
 		expect(again.status).toBe("refused");
 		expect(h.store.get(moment.id)?.status).toBe("promoted");
+	});
+
+	test("the Omp install dispatches promote with the previewed fingerprint", async () => {
+		const h = harness();
+		const { moment, preview } = await previewed(h);
+		const dispatch = spyOn(teachCli, "runTeachCommand");
+		const result = await installInsightSkill(preview, true, h.runtime);
+		const argvs = dispatch.mock.calls.map(([argv]) => argv);
+		dispatch.mockRestore();
+		expect(result.status).toBe("ok");
+		expect(argvs).toEqual([
+			[
+				"promote",
+				moment.id,
+				"--target",
+				"omp",
+				"--install",
+				"--expect-fingerprint",
+				preview.fingerprint,
+				"--json",
+			],
+		]);
 	});
 });

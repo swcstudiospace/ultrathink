@@ -22,6 +22,7 @@ import type {
 	RecallHit,
 	RetainItem,
 } from "../hindsight/types.ts";
+import { fingerprintOf } from "../shared.ts";
 import { readActivity } from "./activity.ts";
 import { runTeachCommand } from "./cli.ts";
 import type { CommandDeps } from "./cli.ts";
@@ -1260,6 +1261,75 @@ describe("promote", () => {
 		}
 		expect((await run(["promote", "nope0001"])).code).toBe(1);
 		expect(store().get("feed0001-a")?.status).toBe("confirmed");
+	});
+
+	test("--expect-fingerprint installs only the draft that was reviewed", async () => {
+		seed(playbook());
+		const reviewed = json(await run(["promote", "feed0001", "--json"]));
+		const fingerprint = fingerprintOf((reviewed.draft as Json).content as string);
+		const result = await run([
+			"promote",
+			"feed0001",
+			"--install",
+			"--expect-fingerprint",
+			fingerprint,
+			"--json",
+		]);
+		expect(result.code).toBe(0);
+		const body = json(result);
+		const outcome = body.outcome as Json;
+		expect(outcome).toMatchObject({ target: "claude", action: "created" });
+		expect(existsSync(outcome.path as string)).toBe(true);
+		expect(body.promoted).toEqual(["feed0001-a"]);
+		expect(store().get("feed0001-a")?.status).toBe("promoted");
+	});
+
+	test("--expect-fingerprint refuses a draft changed after review and installs nothing", async () => {
+		seed(playbook());
+		const reviewed = json(await run(["promote", "feed0001", "--json"]));
+		const fingerprint = fingerprintOf((reviewed.draft as Json).content as string);
+		store().put({ ...playbook(), body: "Run bun run build after the lockfile is pinned." });
+		const result = await run([
+			"promote",
+			"feed0001",
+			"--install",
+			"--expect-fingerprint",
+			fingerprint,
+			"--json",
+		]);
+		expect(result.code).toBe(1);
+		expect(json(result)).toEqual({
+			ok: false,
+			error: "draft changed since the reviewed preview; nothing installed. Preview again.",
+		});
+		expect(existsSync(join(root, "claude", "skills"))).toBe(false);
+		expect(store().get("feed0001-a")?.status).toBe("confirmed");
+	});
+
+	test("--expect-fingerprint is refused with --due or --mark-promoted and must be a sha256 digest", async () => {
+		seed(playbook());
+		const fingerprint = "a".repeat(64);
+		const cases: string[][] = [
+			["promote", "--due", "--expect-fingerprint", fingerprint],
+			[
+				"promote",
+				"feed0001",
+				"--mark-promoted",
+				"--skill",
+				"ok-name",
+				"--target",
+				"omp",
+				"--expect-fingerprint",
+				fingerprint,
+			],
+			["promote", "feed0001", "--install", "--expect-fingerprint", "not-a-digest"],
+		];
+		for (const argv of cases) {
+			const result = await run(argv);
+			expect({ argv, code: result.code }).toEqual({ argv, code: 2 });
+		}
+		expect(store().get("feed0001-a")?.status).toBe("confirmed");
+		expect(existsSync(join(root, "claude", "skills"))).toBe(false);
 	});
 
 	test("explicit promote renders the draft and does not call Jev", async () => {
