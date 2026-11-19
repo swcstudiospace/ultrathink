@@ -1195,6 +1195,25 @@ function panelSectionRows(
 	}
 	return rows;
 }
+/**
+ * The collapsed recall card's one-line summary. Producers send it as the message content ("Recall: knowledge
+ * success, lessons empty"); when a card arrives without that line, the summary is derived from the panel statuses
+ * instead, so the collapsed card never renders blank. Whitespace is collapsed to keep it to one line. Text status
+ * labels (not colour) carry the state: the host passes only `options.expanded` and a theme to this renderer, so it
+ * cannot detect keyboard focus, motion preference or contrast itself — expansion stays host-owned, the card adds no
+ * animation of its own (the live bar/graph own the reduced-motion behaviour), and colours go through `paint` tokens.
+ */
+function recallSummaryLine(content: unknown, details: Record<string, unknown>): string {
+	if (typeof content === "string" && content.trim() !== "")
+		return content.replace(/\s+/g, " ").trim();
+	const parts: string[] = [];
+	for (const key of Object.keys(PANEL_LABELS) as Array<keyof TurnPanels>) {
+		const panel = details[key];
+		if (isRecord(panel) && typeof panel.status === "string")
+			parts.push(`${PANEL_LABELS[key]}: ${panel.status}`);
+	}
+	return parts.length > 0 ? `Recall: ${parts.join(", ")}` : "Recall: no panels";
+}
 
 export function registerUltrathinkRenderers(pi: {
 	registerMessageRenderer(type: string, renderer: Renderer): void;
@@ -1285,14 +1304,21 @@ export function registerUltrathinkRenderers(pi: {
 			return undefined;
 		}
 	});
-	pi.registerMessageRenderer(RECALL_TYPE, (message, _options, theme) => {
-		// details are untrusted session data: anything that is not a panel record falls back to Omp's default card
+	pi.registerMessageRenderer(RECALL_TYPE, (message, options, theme) => {
+		// details are untrusted session data: anything that is not a panel record falls back to Omp's default card.
+		// Collapsed shows the one-line summary; expanded shows the full panel rows. The host owns the toggle.
 		try {
 			const { details } = message;
 			if (!isRecord(details)) return undefined;
 			const p = paint(theme);
 			const label = p.fg("customMessageLabel", p.bold(RECALL_TYPE));
-			return card((room) => [label, ...panelSectionRows(details, undefined, room)], p, {
+			if (options.expanded) {
+				return card((room) => [label, ...panelSectionRows(details, undefined, room)], p, {
+					border: "borderMuted",
+					padY: 0,
+				});
+			}
+			return card(() => [label, p.fg("muted", recallSummaryLine(message.content, details))], p, {
 				border: "borderMuted",
 				padY: 0,
 			});
