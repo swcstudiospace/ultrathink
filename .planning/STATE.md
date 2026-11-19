@@ -3,15 +3,15 @@ gsd_state_version: "1.0"
 milestone: v1.24
 milestone_name: Phase lifecycle design and remaining-work decomposition
 status: in_progress
-stopped_at: v1.24 verification refresh complete: phases 109 and 113 passed; 110-112 and 114 human_needed, deferred to the owner; 48 Codeblocked PRDs published on Linear SPE-35034-SPE-35081 and linked to the tracked Notion Uplifted Prompts
-last_updated: "2026-11-18T05:39:59.000Z"
-state_head: 49374976071dbe29b1e3646cb7132905714b048c
+stopped_at: Completed 113-decomposition-task-matrix verification refresh at 03ec003
+last_updated: "2026-11-19T20:50:30.229Z"
+state_head: 5f5de692710c6614522eb235dd2383c956d833ff
 progress:
-  total_phases: 5
+  total_phases: 6
   completed_phases: 2
-  total_plans: 5
+  total_plans: 0
   completed_plans: 5
-  percent: 40
+  percent: 33
 last_activity: 2026-11-18
 implementation_head: bab5a83 (local and pushed candidate; not integrated or deployed)
 implementation_branch: gsd/remove-cimd-phases
@@ -49,6 +49,11 @@ v1.22 (historical): phases reference graph from ultrathink (e.g. Run record 2026
 - Final local gate: 3430 pass / 3 existing skips / 0 fail, TypeScript and both bridges (Prime 11/11); focused 131/131. Execution duration and billing totals were not recorded.
 
 :
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 113 P01 | 5m | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -71,6 +76,7 @@ v1.22 approved 2026-10-31 (settled; do not re-ask):
 
 Historical: verified v1.8 decisions and the W01 proof correction remain in `PROJECT.md` and `milestones/v1.8-phases/`.
 - [Phase 108]: Tab6a (graphId assoc + ToT PRD + Omp gate + GSD 18 adapters) marked complete for v1.23 via doc reconciliation in STATE/ROADMAP/v1.23-plugin-portability.md; gsd-n6-18-plugin-connection example; no new phases
+- [Phase 110]: Phase 113 re-verified passed at 03ec003 (digest 6820502c); PHASE-114 row added to matrix; residual N5 records PHASE-114 executable-bucket misclassification vs STATE deferred status
 
 ### Pending Todos
 
@@ -108,7 +114,7 @@ Items acknowledged and deferred at milestone close, most recent first:
 **v1.23 Tab6a reconciliation (2026-11-17):** Tab6a (graphId association, ToT PRD, Omp gate, GSD 18 adapters) marked complete. No new deferred items; prior plugin gaps now covered by Tab6a GoT + v1.23 milestone doc updates. See updated Graph Association and .planning/milestones/v1.23-plugin-portability.md. gsd-n6-18-plugin-connection referenced.
 
 Last session: 2026-11-17T00:16:29.779Z
-Stopped at: Tab6a v1.23 reconciliation complete (no phase)
+Stopped at: Completed 113-decomposition-task-matrix verification refresh at 03ec003
 Resume file: None
 
 ## Run record 2026-10-28 (v1.20 close, override_closeout)
@@ -597,3 +603,8 @@ Phases 109 to 113 are approved. Verification by read-only GSD verifiers on 2026-
 
 Correction (2026-11-17, later the same day): the statement "v1.24 has no phases" above is superseded. Phases 109 to 113 were approved; see the active milestone v1.24 block.
 
+## Session
+
+**Last session:** 2026-11-19T20:50:29.016Z
+**Stopped at:** Completed 113-decomposition-task-matrix verification refresh at 03ec003
+**Resume file:** None

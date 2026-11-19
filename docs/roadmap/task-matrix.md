@@ -30,6 +30,7 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 | PHASE-111 | phase | Audit gate and owner override record | Verified human_needed on 2026-11-18 at origin/main 99ce989. The three in-repo criteria are met on a production path: the close refusal and owner-override record (PR #162) and HTIL entries. Deferred: verification_deferred_human, resume with `/gsd:verify-work 111`; the owner identity policy and a live HTIL check need the owner, and the milestone-complete gate is in gsd-core | deferred | external | PHASE-110 | PHASE-110; missing: owner human verification of phase 111 must pass (currently: Verified human_needed on 2026-11-18 at origin/main 99ce989. The three in-repo criteria are met on a production path: the close refusal and owner-override record (PR #162) and HTIL entries. Deferred: verification_deferred_human, resume with `/gsd:verify-work 111`; the owner identity policy and a live HTIL check need the owner, and the milestone-complete gate is in gsd-core) | - | - | SomeRandmGuyy | not in sources | R:83 | - |
 | PHASE-112 | phase | Single guarded writer for STATE and ROADMAP | Complete at origin/main c3348a2. Criteria 1 and 2 are met in-repo: a four-process contention test, and a contract that matches the writer. Criterion 3, the writer in gsd-core (out of repo), now refuses a write when the file changed since it was read (ConcurrentWriteError); a throwaway check showed a normal write, a refused write after an external change, and no lock left behind; no committed test covers it. Residual: the migration rollback in gsd-core roadmap-upgrade.cjs (lines 2113-2116) can rewrite its snapshot over that external change; not changed. Deferred: verification_deferred_human, resume with `/gsd:verify-work 112` | closed | - | PHASE-109 | PHASE-109 | - | - | SomeRandmGuyy | not in sources | R:93 | - |
 | PHASE-113 | phase | Decomposition task matrix | Verified 2026-11-18: passed 3/3 success criteria on origin/main a95752c (`phases/113-decomposition-task-matrix/VERIFICATION.md`). The earlier gaps_found (generator classified every Backlog bullet as blocked, stale header, stale row statuses) was closed by PR #171 and PR #173. Matrix regenerated with `bun run matrix`. Residual limits N1 to N4 are recorded in that file; N1 lists human-deferred phases 110 and 112 under Executable now | closed | - | - | none | - | - | SomeRandmGuyy | not in sources | R:103 | - |
+| PHASE-114 | phase | Tree-of-Thought PRDs on the selected model, in the uplifted XML | Implemented on origin/main `99780d6` through PRs #232, #233, #235, #236 and #237; 6 of 7 success criteria verified by merged code and tests. Criterion 7 (a finished Sub Issue closes its Linear issue and its Notion step row) is not verified: no end-to-end run, Notion returned `403 restricted_resource`. Evidence: `milestones/v1.24-phases/114-tree-of-thought-prds-on-the-selected-model-placed-inside-the/114-VERIFICATION.md`. Human verification pending: run one Sub Issue through to closure once Notion is restored. Forty-eight Codeblocked PRDs are published on Linear SPE-35034–SPE-35081 and linked to the tracked Notion Uplifted Prompts (see `docs/ultrathink-prd-density.md`); publishing does not close criterion 7 | executable | G0 | - | none | none | - | not in sources | not in sources | R:113 | - |
 | BACKLOG-01 | backlog | Do not auto-run `graphify extract`. | backlog | constraint | - | - | none | - | - | not in sources | not in sources | R:45 | - |
 | BACKLOG-02 | backlog | Do not inject `cache_control` until a captured Anthropic payload proves the field. | backlog | constraint | - | - | none | - | - | not in sources | not in sources | R:46 | - |
 | BACKLOG-03 | backlog | Do not spend tokens on keep-warm. | backlog | constraint | - | - | none | - | - | not in sources | not in sources | R:47 | - |
@@ -55,14 +56,15 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 | DEFERRED-110 | deferred | Phase 110 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 110` (verification_deferred_human, S:189) | - | S:189 | not in sources | /gsd:verify-work 110 | S:189 | - |
 | DEFERRED-111 | deferred | Phase 111 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 111` (verification_deferred_human, S:190) | - | S:190 | not in sources | /gsd:verify-work 111 | S:190 | - |
 | DEFERRED-112 | deferred | Phase 112 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 112` (verification_deferred_human, S:191) | - | S:191 | not in sources | /gsd:verify-work 112 | S:191 | - |
-| DEFERRED-108 | deferred | Phase 108 verification | accepted_tech_debt | closed | - | - | none | - | S:192, I:16 | not in sources | not in sources | S:192 | I:16 |
-| DEFERRED-104 | deferred | Phase 104 verification | withdrawn | closed | - | - | none | - | S:193, I:24 | not in sources | not in sources | S:193 | I:24 |
+| DEFERRED-114 | deferred | Phase 114 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 114` (verification_deferred_human, S:192) | - | S:192 | not in sources | /gsd:verify-work 114 | S:192 | - |
+| DEFERRED-108 | deferred | Phase 108 verification | accepted_tech_debt | closed | - | - | none | - | S:193, I:16 | not in sources | not in sources | S:193 | I:16 |
+| DEFERRED-104 | deferred | Phase 104 verification | withdrawn | closed | - | - | none | - | S:194, I:24 | not in sources | not in sources | S:194 | I:24 |
 | DEFERRED-81 | deferred | Phase 81 verification | gaps_found (owner waiver 2026-10-26 (v1.16 phase 81); scheduled for v1.21 test determinism under load) | blocked | external | - | none; missing: phase 81 gaps_found with no resume command (S:102): owner decision or verification evidence required | - | S:102 | not in sources | not in sources | S:102 | - |
 | DEFERRED-12 | deferred | Phase 12 verification | gaps_found | blocked | external | - | none; missing: phase 12 gaps_found with no resume command (S:106): owner decision or verification evidence required | - | S:106 | not in sources | not in sources | S:106 | - |
 
 ## Executable now
 
-None.
+- PHASE-114 (G0)
 
 ## Blocked
 
@@ -84,6 +86,7 @@ None.
 - DEFERRED-110 (blocked): human verification pending: run `/gsd:verify-work 110` (verification_deferred_human, S:189)
 - DEFERRED-111 (blocked): human verification pending: run `/gsd:verify-work 111` (verification_deferred_human, S:190)
 - DEFERRED-112 (blocked): human verification pending: run `/gsd:verify-work 112` (verification_deferred_human, S:191)
+- DEFERRED-114 (blocked): human verification pending: run `/gsd:verify-work 114` (verification_deferred_human, S:192)
 - DEFERRED-81 (blocked): phase 81 gaps_found with no resume command (S:102): owner decision or verification evidence required
 - DEFERRED-12 (blocked): phase 12 gaps_found with no resume command (S:106): owner decision or verification evidence required
 
@@ -113,7 +116,7 @@ None.
 ## Conflicts
 
 - BACKLOG-JEV-03: own R:54 says closed ("superseded"); I:95 says open ("needs")
-- BACKLOG-CIMD: own R:57 says closed ("withdrawn"); S:240 says open ("needs", "need")
+- BACKLOG-CIMD: own R:57 says closed ("withdrawn"); S:241 says open ("needs", "need")
 - DEFERRED-76: own S:188 says open ("verification_deferred_human"); I:42 says closed ("passed")
-- DEFERRED-108: own S:192 says closed ("accepted_tech_debt"); I:16 says open ("needs", "pending")
-- DEFERRED-104: own S:193 says closed ("withdrawn"); S:214 says open ("human_needed", "verification_deferred_human")
+- DEFERRED-108: own S:193 says closed ("accepted_tech_debt"); I:16 says open ("needs", "pending")
+- DEFERRED-104: own S:194 says closed ("withdrawn"); S:215 says open ("human_needed", "verification_deferred_human")
