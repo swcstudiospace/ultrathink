@@ -507,3 +507,100 @@ describe("runTot: pool and retries", () => {
 		).rejects.toThrow("absolute");
 	});
 });
+describe("runTot: dependency-ready queue", () => {
+	function depRequests(): PrdRequest[] {
+		return [
+			{ ...makeRequests(1)[0]!, key: "b.1", nodeId: "b", blockedBy: ["a.1"] },
+			{ ...makeRequests(1)[0]!, key: "a.1", nodeId: "a" },
+			{ ...makeRequests(1)[0]!, key: "c.1", nodeId: "c" },
+		];
+	}
+
+	test("a step is generated only after its blockedBy PRD, and independent steps overlap", async () => {
+		const dir = makeDir();
+		const started: string[] = [];
+		const finished: string[] = [];
+		const events: string[] = [];
+		const manifest = await runTot({
+			requests: depRequests(),
+			checkpointDir: dir,
+			concurrency: 3,
+			generate: async (request) => {
+				started.push(request.key);
+				events.push(`start:${request.key}`);
+				if (request.key === "a.1") {
+					await tick();
+					await tick();
+				}
+				finished.push(request.key);
+				events.push(`finish:${request.key}`);
+				return prd(request);
+			},
+		});
+		expect(manifest).toMatchObject({ total: 3, generated: 3, failed: 0 });
+		// b.1 was listed first but starts only after its dependency; c.1 ran in parallel with a.1.
+		expect(started.slice(0, 2).sort()).toEqual(["a.1", "c.1"]);
+		expect(started.indexOf("b.1")).toBeGreaterThan(started.indexOf("a.1"));
+		expect(started.indexOf("b.1")).toBeGreaterThan(started.indexOf("c.1"));
+		expect(events.indexOf("start:b.1")).toBeGreaterThan(events.indexOf("finish:a.1"));
+		expect(finished.indexOf("a.1")).toBeLessThan(finished.indexOf("b.1"));
+		expect(finished.indexOf("c.1")).toBeLessThan(finished.indexOf("a.1"));
+	});
+
+	test("a dependent of a failed PRD is held, never generated", async () => {
+		const dir = makeDir();
+		const calls: string[] = [];
+		const manifest = await runTot({
+			requests: depRequests(),
+			checkpointDir: dir,
+			retry: { maxAttempts: 1, baseMs: 1, capMs: 1 },
+			generate: async (request) => {
+				calls.push(request.key);
+				if (request.key === "a.1") throw new Error("no provider");
+				return prd(request);
+			},
+		});
+		expect(manifest.generated).toBe(1);
+		expect(manifest.records.find((record) => record.key === "a.1")?.status).toBe("failed");
+		const held = manifest.records.find((record) => record.key === "b.1");
+		expect(held).toMatchObject({ status: "skipped" });
+		expect(held?.error).toContain("blocked by a.1");
+		expect(calls).not.toContain("b.1");
+	});
+
+	test("an unknown dependency and a dependency cycle are recorded failed, never generated", async () => {
+		const dir = makeDir();
+		const unknown = await runTot({
+			requests: [{ ...makeRequests(1)[0]!, key: "x.1", nodeId: "x", blockedBy: ["ghost.1"] }],
+			checkpointDir: dir,
+			generate: async (request) => prd(request),
+		});
+		expect(unknown.records[0]).toMatchObject({ status: "failed" });
+		expect(unknown.records[0]?.error).toContain("unknown dependency ghost.1");
+
+		const cyclic = await runTot({
+			requests: [
+				{ ...makeRequests(1)[0]!, key: "y.1", nodeId: "y", blockedBy: ["z.1"] },
+				{ ...makeRequests(1)[0]!, key: "z.1", nodeId: "z", blockedBy: ["y.1"] },
+			],
+			checkpointDir: dir,
+			generate: async (request) => prd(request),
+		});
+		expect(cyclic.records.every((record) => record.status === "failed")).toBe(true);
+		expect(cyclic.records[0]?.error).toContain("dependency cycle");
+	});
+
+	test("the input hash covers the dependency fingerprint, and edge-free hashes are unchanged", () => {
+		const [request] = makeRequests(1);
+		if (request === undefined) throw new Error("no request");
+		expect(inputHash(request)).toBe(legacyPreWaveHash(request));
+		expect(inputHash({ ...request, blockedBy: [] })).toBe(legacyPreWaveHash(request));
+		expect(inputHash({ ...request, blockedBy: ["a.1"] })).not.toBe(legacyPreWaveHash(request));
+		expect(inputHash({ ...request, blockedBy: ["a.1", "b.1"] })).toBe(
+			inputHash({ ...request, blockedBy: ["b.1", "a.1"] }),
+		);
+		expect(inputHash({ ...request, blocks: ["q.1"] })).not.toBe(
+			inputHash({ ...request, blockedBy: ["q.1"] }),
+		);
+	});
+});

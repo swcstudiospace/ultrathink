@@ -18,6 +18,8 @@ export interface LinearRow {
 	url: string;
 	title: string;
 	description: string;
+	/** The workflow state set by a closeout; unset until one runs. */
+	state?: string;
 }
 
 /**
@@ -44,6 +46,8 @@ export function statefulLinear(
 			}
 			if (typeof args.id === "string") {
 				const row = rows.find((entry) => entry.identifier === args.id);
+				// A closeout update (`save_issue` with a state field) lands on the row it names.
+				if (row && typeof args.state === "string") row.state = args.state;
 				return { issue: { id: row?.id, identifier: args.id, url: row?.url } };
 			}
 			const number = rows.length + 1;
@@ -73,6 +77,10 @@ export interface NotionRow {
 	/** The relation as it was sent: a JSON array of page urls. */
 	"Parent Item"?: string;
 	graphId: string;
+	/** Set by a closeout (`notion-update-page`); unset until one runs. */
+	Status?: string;
+	"Linear State"?: string;
+	Completed?: string;
 }
 
 const SCHEMA_PROPERTIES = [
@@ -121,6 +129,22 @@ export function statefulNotion(
 				return {
 					results: rows.filter((row) => row.graphId === params[0]).map((row) => ({ ...row })),
 				};
+			}
+			if (name === "notion-update-page") {
+				// A closeout update lands on the page it names: match by page id or url so a test can
+				// assert the step row it closed carries Status/Linear State Done and Completed.
+				const pageId = typeof args.page_id === "string" ? args.page_id : "";
+				const row = rows.find(
+					(entry) => entry.url === pageId || entry.url.endsWith(pageId.replaceAll("-", "")),
+				);
+				const props = args.properties as Record<string, unknown> | undefined;
+				if (row && props) {
+					if (typeof props.Status === "string") row.Status = props.Status;
+					if (typeof props["Linear State"] === "string")
+						row["Linear State"] = props["Linear State"];
+					if (typeof props.Completed === "string") row.Completed = props.Completed;
+				}
+				return { object: "page", id: row?.url ?? pageId };
 			}
 			creates++;
 			const pages = args.pages as Array<{ properties: Record<string, unknown> }>;

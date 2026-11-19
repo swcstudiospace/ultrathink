@@ -106,7 +106,7 @@ export const TRACKING_OFF_NOTE =
 
 /** Work order for the plan's Sub Issues in the tracked addendum: step order, one at a time, each closed before the next. */
 export const SUB_ISSUE_WORK_ORDER =
-	"Work the plan's Sub Issues in step order, one at a time. Each Sub Issue's PRD in the specification is its specification. Finish one Sub Issue (its change done and its tests passing) before starting the next. When a Sub Issue is finished, close its Notion step row and its Linear sub-issue as the ultrathink-sync skill describes, then move on. Do not start coding before kickoff returns.";
+	"Work the plan's Sub Issues in step order, one at a time. Each Sub Issue's PRD in the specification is its specification. Finish one Sub Issue (its change done and its tests passing) before starting the next. When a Sub Issue is finished, close it with closeSubIssue (src/track/gateway.ts): first its Linear sub-issue to Done, then its Notion step row to Done, only when the PRD is already present on both rows; leave the parent issue open. Do not start coding before kickoff returns.";
 
 /** Display markers of an unsafe provider or model id (the record's own convention, §9); an unsafe label shows the model one. */
 export const OPAQUE_PROVIDER = "<opaque-provider>";

@@ -55,6 +55,12 @@ export interface TrackPlan {
 	subIssues: SubIssueRow[];
 	linearIssues: LinearIssuePlan[];
 	linearSubIssues: LinearSubIssuePlan[];
+	/**
+	 * Published-Linear dependency edges between GoT nodes: a node's id maps to the ids of the nodes it is
+	 * `blockedBy`. The ToT stage releases a node's PRDs only once every PRD of each dependency node exists;
+	 * absent when the graph had no dependency edges, which keeps edge-free plans on the legacy queue.
+	 */
+	dependencies?: Record<string, readonly string[]>;
 	hitl: HitlPlan;
 }
 

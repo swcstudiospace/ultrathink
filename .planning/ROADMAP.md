@@ -22,7 +22,7 @@
 - Completed **v1.21 Pipeline resilience under load** — Phases 96–100, 46 requirements, 5 phases, 17 plans, tech debt accepted, 2026-10-29 — [roadmap](milestones/v1.21-ROADMAP.md), [requirements](milestones/v1.21-REQUIREMENTS.md), [audit](milestones/v1.21-MILESTONE-AUDIT.md). Shipped as PR #70 (`29142a1`, Greptile 5/5 in round 7, CI 11 of 11) and the test-only follow-up PR #71 (`d3cc069`, main CI green).
 - Completed **v1.22 CIMD and MCP stateless revision** — Phases 101–108, 30 requirements, tech debt accepted, 2026-11-12 — [roadmap](milestones/v1.22-ROADMAP.md), [requirements](milestones/v1.22-REQUIREMENTS.md), [audit](milestones/v1.22-MILESTONE-AUDIT.md). CIMD withdrawn by owner 2026-11-10; phase 107 is locally verified and not deployed; phase 108 and MCP-12/13 closed as accepted tech debt, no hosted evidence.
 - **Tab6a complete for v1.23** (graphId association, ToT PRD, Omp gate, GSD 18 adapters) — direct GoT execution (n2/n4/n6 waves, gsd-n6-18-plugin-connection example); no GSD phases. Recorded in .planning/milestones/v1.23-plugin-portability.md (updated), STATE.md Graph Association + Tab6a GoT close, docs/gsd-review.md. PhaseLoopState + <spec graph> for ToT PRDs. Plugin portability ACs remain partial (AC3/AC5).
-- **v1.24 Decompose work** (approved 2026-11-17; phases 109 to 113 in the active section below): SPE-10128 and SPE-7636. See milestones/v1.24-decompose-work.md.
+- **v1.24 Decompose work** (approved 2026-11-17; phases 109 to 114 in the active section below): SPE-10128 and SPE-7636. See milestones/v1.24-decompose-work.md. Forty-eight Codeblocked PRDs are published on Linear SPE-35034–SPE-35081 and linked to the tracked Notion Uplifted Prompts (see docs/ultrathink-prd-density.md). Phases 110, 111, 112 and 114 remain human_needed pending owner verification; phase 113 has passed.
 # 4 Tab6a todo items (n2 Omp gate, n4 ToT CodeBlockedPRD, n5 model routing for cheapest on ToT, n6 GSD 18 adapters+graph assoc) MARKED DONE 2026-11-17 (verification: targeted phase-loop/inventory/omp/codeblocked+plan green 10/30/9p; pipeline 41p after minimal runToT flags; GSD18 confirmed 18, graph threaded, ToT PRD attach post CoT). 
 Verification correction (2026-11-17): the "complete" and "MARKED DONE" claims above are superseded. Tab6a is implemented in the working tree, uncommitted and unshipped, with the review findings fixed and the Omp host suites at 235 of 235. See STATE.md (Tab6a close) for the open decisions.
 ## Completed Milestone: v1.22 CIMD and MCP stateless revision
@@ -58,7 +58,7 @@ Phases 101–108 (107 verified; 108 closed as accepted tech debt), 30 requiremen
 
 ## Active Milestone: v1.24 Phase lifecycle design and remaining-work decomposition
 
-Approved 2026-11-17; phase 109 complete; phases 110, 111 and 112 deferred for owner verification (verification_deferred_human); phase 113 in gap closure (PR #171). Requirements: `.planning/REQUIREMENTS.md`. Drafts: `.planning/v1.24-REQUIREMENTS-DRAFT.md`, `.planning/v1.24-ROADMAP-DRAFT.md`.
+Approved 2026-11-17; phase 109 complete; phase 113 passed 2026-11-18; phases 110, 111, 112 and 114 remain human_needed pending owner verification (verification_deferred_human). Forty-eight Codeblocked PRDs are published on Linear SPE-35034–SPE-35081 and linked to the tracked Notion Uplifted Prompts. Requirements: `.planning/REQUIREMENTS.md`. Drafts: `.planning/v1.24-REQUIREMENTS-DRAFT.md`, `.planning/v1.24-ROADMAP-DRAFT.md`.
 
 ### Phase 109: Design the phase lifecycle
 
@@ -109,3 +109,7 @@ Status: Verified 2026-11-18: passed 3/3 success criteria on origin/main a95752c 
 **Depends on:** none.
 **Owner:** SomeRandmGuyy
 **Success criteria:** every remaining phase and Backlog item has a row, each citing its source; the non-overlap check is recorded.
+
+### Phase 114: Tree-of-Thought PRDs on the selected model, in the uplifted XML
+
+Status: Implemented on origin/main `99780d6` through PRs #232, #233, #235, #236 and #237; 6 of 7 success criteria verified by merged code and tests. Criterion 7 (a finished Sub Issue closes its Linear issue and its Notion step row) is not verified: no end-to-end run, Notion returned `403 restricted_resource`. Evidence: `milestones/v1.24-phases/114-tree-of-thought-prds-on-the-selected-model-placed-inside-the/114-VERIFICATION.md`. Human verification pending: run one Sub Issue through to closure once Notion is restored. Forty-eight Codeblocked PRDs are published on Linear SPE-35034–SPE-35081 and linked to the tracked Notion Uplifted Prompts (see `docs/ultrathink-prd-density.md`); publishing does not close criterion 7.

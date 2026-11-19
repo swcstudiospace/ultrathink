@@ -3,7 +3,7 @@ gsd_state_version: "1.0"
 milestone: v1.24
 milestone_name: Phase lifecycle design and remaining-work decomposition
 status: in_progress
-stopped_at: v1.24 verification refresh complete: phases 109 and 113 passed; 110-112 human_needed, deferred to the owner
+stopped_at: v1.24 verification refresh complete: phases 109 and 113 passed; 110-112 and 114 human_needed, deferred to the owner; 48 Codeblocked PRDs published on Linear SPE-35034-SPE-35081 and linked to the tracked Notion Uplifted Prompts
 last_updated: "2026-11-18T05:39:59.000Z"
 state_head: 49374976071dbe29b1e3646cb7132905714b048c
 progress:
@@ -18,7 +18,7 @@ implementation_branch: gsd/remove-cimd-phases
 implementation_root: /root/src/worktrees/ultrathink-remove-cimd
 current_phase: 110
 current_phase_name: Persist and checkpoint the phase loop
-last_activity_desc: "v1.24: phases 109 and 113 passed (113 re-verified on origin/main a95752c); 110-112 human_needed and deferred; milestone lifecycle awaits owner"
+last_activity_desc: "v1.24: phases 109 and 113 passed (113 re-verified on origin/main a95752c); 110-112 and 114 human_needed and deferred; 48 Codeblocked PRDs published on Linear SPE-35034-SPE-35081 and linked to the tracked Notion Uplifted Prompts; milestone lifecycle awaits owner"
 ---
 
 # Project State
@@ -28,7 +28,7 @@ last_activity_desc: "v1.24: phases 109 and 113 passed (113 re-verified on origin
 See: .planning/PROJECT.md (updated 2026-10-31)
 
 **Core value:** Every non-trivial prompt is planned by the TypeScript ultrathink engine — on the model the session actually uses — then tracked in Notion and Linear before the agent does the work.
-**Current focus:** Owner-directed CIMD withdrawal and phase 108. Phases 104/105 are withdrawn, not completed; their historical records are archived. CIMD removal and phase 107 are locally verified but undeployed. DCR, the shared guard and independent phase 69 TLS/PKI remain.
+**Current focus:** v1.24 phase lifecycle and remaining-work decomposition. Forty-eight Codeblocked PRDs are published on Linear SPE-35034–SPE-35081 and linked to the tracked Notion Uplifted Prompts (see docs/ultrathink-prd-density.md). Phases 110, 111, 112 and 114 remain human_needed pending owner verification; phase 113 has passed. Phase 114 criterion 7 (close Linear issue and Notion step row end to end) is not verified — Notion returned 403 and no end-to-end run has passed.
 
 ## Current Position
 
@@ -189,6 +189,7 @@ Resume file: None
 | 110 | verification_deferred_human | /gsd:verify-work 110 |
 | 111 | verification_deferred_human | /gsd:verify-work 111 |
 | 112 | verification_deferred_human | /gsd:verify-work 112 |
+| 114 | verification_deferred_human | /gsd:verify-work 114 |
 | 108 | accepted_tech_debt | Owner closed v1.22 on 2026-11-12 without supplying live evidence (MCP-12/MCP-13 unverified against hosted; phase 107 not deployed). Not a verification pass. |
 | 104 | withdrawn | Owner withdrew phase 104 and its former verification gate; historical records are preserved in the withdrawal archive. |
 

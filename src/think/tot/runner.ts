@@ -74,6 +74,18 @@ function waveOf(request: PrdRequest): number {
  * different hash and is regenerated, as its prompt differs. An explicit wave equal to `step` still differs
  * from an absent wave, because the prompt gains the extra attribute.
  */
+/**
+ * The dependency fingerprint of a request: its `blockedBy` and `blocks` keys, each deduplicated and sorted.
+ * Empty when the request carries no dependency edge, so edge-free requests keep the pre-dependency hash format.
+ */
+function dependencyFingerprint(request: PrdRequest): string {
+	const side = (keys: readonly string[] | undefined): string =>
+		[...new Set(keys ?? [])].sort().join(",");
+	const blockedBy = side(request.blockedBy);
+	const blocks = side(request.blocks);
+	return blockedBy === "" && blocks === "" ? "" : `${blockedBy}->${blocks}`;
+}
+
 export function inputHash(request: PrdRequest, salt = ""): string {
 	const base: readonly unknown[] = [
 		PRD_TEMPLATE_VERSION,
@@ -85,7 +97,11 @@ export function inputHash(request: PrdRequest, salt = ""): string {
 		request.title,
 		request.thought,
 	];
-	const canonical = request.wave === undefined ? base : [...base, request.wave];
+	const canonical = [
+		...base,
+		...(request.wave === undefined ? [] : [request.wave]),
+		...[dependencyFingerprint(request)].filter((fingerprint) => fingerprint !== ""),
+	];
 	return sha256Hex(JSON.stringify(canonical));
 }
 
@@ -148,13 +164,15 @@ function classify(error: unknown, now?: number): FailureVerdict {
 }
 
 /**
- * Writes every PRD of `requests` in wave order: all PRDs of one wave (see `waveOf`) settle before the next wave
- * starts, while a wave's PRDs run in parallel up to `concurrency`. Within a wave the input order is kept, and the
- * returned records always follow the input order, however the waves interleaved. Each finished PRD is checkpointed
- * atomically before it is counted, so a killed run keeps everything it finished; a rerun with the same
- * `checkpointDir` reuses each PRD whose input hash is unchanged and writes the rest. One PRD failing never stops
- * the others: it is recorded as `failed` (the caller's gate decides what a partial run means). On abort, PRDs that
- * never started are `skipped`.
+ * Writes every PRD of `requests` in dependency-ready order: a step is generated only after every `blockedBy` PRD
+ * has been generated, while steps with no dependency edge run in parallel up to `concurrency`. When callers use
+ * explicit waves (see `waveOf`), the wave is an extra barrier: every earlier-wave step settles before a later
+ * wave is released. The input order is kept among ready steps, and the returned records always follow the input
+ * order, however the queue interleaved. Each finished PRD is checkpointed atomically before it is counted, so a
+ * killed run keeps everything it finished; a rerun with the same `checkpointDir` reuses each PRD whose input
+ * hash is unchanged and writes the rest. One PRD failing never stops the others: it is recorded as `failed`,
+ * and its dependents' steps are held (`skipped`) rather than generated on a missing PRD — a plan with any PRD
+ * missing is never emitted as usable. On abort, PRDs that never started are `skipped`.
  */
 export async function runTot(options: RunTotOptions): Promise<TotManifest> {
 	const { requests, checkpointDir, signal } = options;
@@ -243,28 +261,75 @@ export async function runTot(options: RunTotOptions): Promise<TotManifest> {
 		}
 	};
 
-	// Wave order only applies when callers use explicit waves. Legacy callers with no
-	// explicit wave keep one shared pool across all step values.
-	const waves = new Map<number, number[]>();
-	const useWaves = requests.some((request) => request.wave !== undefined);
+	// Dependency-ready scheduling: a step is released only once every `blockedBy` key has been generated;
+	// steps with no dependency edge are released together, up to `concurrency`. An explicit wave is an extra
+	// barrier: nothing of a later wave starts until every earlier-wave step has settled. A request whose
+	// `blockedBy` names a PRD outside the run (or a cycle) can never be released: it is recorded `failed`,
+	// never generated, so the run holds its dependents back and the plan is not released.
+	const indexByKey = new Map(requests.map((request, index) => [request.key, index] as const));
+	const settledIndex = (index: number): boolean => results[index] !== undefined;
+	const generatedIndex = (index: number): boolean => results[index]?.status === "generated";
+	const depsOf = (request: PrdRequest): readonly string[] => request.blockedBy ?? [];
 	for (const [index, request] of requests.entries()) {
-		const wave = useWaves ? waveOf(request) : 0;
-		const group = waves.get(wave);
-		if (group === undefined) waves.set(wave, [index]);
-		else group.push(index);
+		const missing = depsOf(request).filter((key) => !indexByKey.has(key));
+		if (missing.length > 0) {
+			settle(
+				index,
+				"failed",
+				failureRecord(request, "failed", 0, `unknown dependency ${missing.join(", ")}`),
+			);
+		}
 	}
-	for (const [, group] of [...waves.entries()].sort((a, b) => a[0] - b[0])) {
+	const useWaves = requests.some((request) => request.wave !== undefined);
+	while (true) {
 		if (signal?.aborted) break;
-		let cursor = 0;
-		const worker = async (): Promise<void> => {
-			for (;;) {
-				if (signal?.aborted) return;
-				const index = group[cursor++];
-				if (index === undefined) return;
-				await processOne(index);
+		const pending = requests
+			.map((_request, index) => index)
+			.filter((index) => !settledIndex(index));
+		if (pending.length === 0) break;
+		const ready = pending.filter((index) => {
+			const request = requests[index];
+			if (request === undefined) return false;
+			if (!depsOf(request).every((key) => generatedIndex(indexByKey.get(key) ?? -1))) return false;
+			if (!useWaves) return true;
+			return requests.every(
+				(other, otherIndex) => waveOf(other) >= waveOf(request) || settledIndex(otherIndex),
+			);
+		});
+		if (ready.length === 0) {
+			// Nothing can proceed: steps waiting on a non-generated dependency are held (`skipped`,
+			// never generated on a missing PRD); the rest form a cycle and are recorded `failed`.
+			let held = false;
+			for (const index of pending) {
+				const request = requests[index];
+				if (request === undefined) continue;
+				const unsatisfied = depsOf(request).find((key) => {
+					const dep = results[indexByKey.get(key) ?? -1];
+					return dep !== undefined && dep.status !== "generated";
+				});
+				if (unsatisfied !== undefined) {
+					held = true;
+					settle(
+						index,
+						"skipped",
+						failureRecord(request, "skipped", 0, `blocked by ${unsatisfied}`),
+					);
+				}
 			}
-		};
-		await Promise.all(Array.from({ length: Math.min(concurrency, group.length) }, worker));
+			if (!held) {
+				for (const index of pending) {
+					const request = requests[index];
+					if (request === undefined) continue;
+					settle(
+						index,
+						"failed",
+						failureRecord(request, "failed", 0, `dependency cycle at ${request.key}`),
+					);
+				}
+			}
+			continue;
+		}
+		await Promise.all(ready.slice(0, concurrency).map(processOne));
 	}
 
 	for (const [index, request] of requests.entries()) {
