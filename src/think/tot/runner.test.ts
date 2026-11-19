@@ -235,12 +235,15 @@ describe("runTot: checkpoints", () => {
 			key: request.key,
 			hash: sha256Hex(markdown),
 			markdown,
-			status: "generated",
+			status: "generated" as const,
 			model: "m-1",
 			fallback: false,
 			attempts: 1,
 		};
-		writeFileSync(checkpointPath(dir, request.key), JSON.stringify({ version: 1, inputHash: legacy, record }));
+		writeFileSync(
+			checkpointPath(dir, request.key),
+			JSON.stringify({ version: 1, inputHash: legacy, record }),
+		);
 		const calls: string[] = [];
 		const manifest = await runTot({
 			requests: [request],
@@ -266,12 +269,15 @@ describe("runTot: checkpoints", () => {
 			key: waved.key,
 			hash: sha256Hex(markdown),
 			markdown,
-			status: "generated",
+			status: "generated" as const,
 			model: "m-1",
 			fallback: false,
 			attempts: 1,
 		};
-		writeFileSync(checkpointPath(dir, waved.key), JSON.stringify({ version: 1, inputHash: legacy, record }));
+		writeFileSync(
+			checkpointPath(dir, waved.key),
+			JSON.stringify({ version: 1, inputHash: legacy, record }),
+		);
 		const calls: string[] = [];
 		const manifest = await runTot({
 			requests: [waved],

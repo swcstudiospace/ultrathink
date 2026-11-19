@@ -232,7 +232,11 @@ describe("CompletionGate", () => {
 		expect(gate.plan).toBeUndefined();
 		expect(gate.beginExecution()).toBe(false);
 		expect(gate.state).toBe("ready");
-		expect(gate.transitions.at(-1)).toMatchObject({ accepted: false, from: "ready", to: "executing" });
+		expect(gate.transitions.at(-1)).toMatchObject({
+			accepted: false,
+			from: "ready",
+			to: "executing",
+		});
 	});
 
 	test("quarantine resets the one-shot release so a revived plan can release", () => {
@@ -244,7 +248,9 @@ describe("CompletionGate", () => {
 		expect(gate.submitPlan("plain text, no checklist")).toBeUndefined();
 		expect(gate.state).toBe("waiting_for_plan");
 		expect(gate.released).toBe(false);
-		const revived = gate.submitPlan(CHECKLIST_PLAN.replace("ship the plan gate", "ship the revived gate"));
+		const revived = gate.submitPlan(
+			CHECKLIST_PLAN.replace("ship the plan gate", "ship the revived gate"),
+		);
 		expect(revived).toBeDefined();
 		expect(gate.release()).toMatchObject({ ok: true, state: "ready", text: revived!.text });
 		expect(gate.released).toBe(true);
@@ -470,7 +476,12 @@ describe("Plan gate (SPE-35029 design B)", () => {
 		// Executing before plan_validated is rejected, with actor/from/to/reason logged.
 		const early = new CompletionGate({ inactivityMs: 0 });
 		expect(early.tryTransition("executing", "tester", "too early")).toBe(false);
-		expect(early.transitions.at(-1)).toMatchObject({ accepted: false, actor: "tester", to: "executing", reason: "too early" });
+		expect(early.transitions.at(-1)).toMatchObject({
+			accepted: false,
+			actor: "tester",
+			to: "executing",
+			reason: "too early",
+		});
 
 		const gate = new CompletionGate({ inactivityMs: 0 });
 		expect(gate.enterWaitingForPlan()).toBe(true);
@@ -480,7 +491,10 @@ describe("Plan gate (SPE-35029 design B)", () => {
 		expect(gate.buildWorkerContexts(["w1"])).toBeUndefined();
 		expect(gate.getExecutionContext()).toBeUndefined();
 		expect(gate.release()).toMatchObject({ ok: false });
-		expect(gate.transitions.find((t) => t.to === "executing")).toMatchObject({ accepted: false, from: "waiting_for_plan" });
+		expect(gate.transitions.find((t) => t.to === "executing")).toMatchObject({
+			accepted: false,
+			from: "waiting_for_plan",
+		});
 		for (const t of gate.transitions) {
 			expect(typeof t.timestamp).toBe("number");
 			expect(typeof t.actor).toBe("string");
@@ -545,16 +559,25 @@ describe("Plan gate (SPE-35029 design B)", () => {
 		const contexts = gate.buildWorkerContexts(["w1", "w2", "w3"]);
 		expect(contexts).toHaveLength(3);
 		expect(new Set(contexts!.map((c) => c.planHash)).size).toBe(1);
-		expect(contexts![0].planHash).toBe(accepted!.planHash);
-		expect(contexts![0].planId).toBe(accepted!.planId);
-		expect(gate.getExecutionContext()).toMatchObject({ planId: accepted!.planId, planHash: accepted!.planHash });
+		expect(contexts?.at(0)?.planHash).toBe(accepted!.planHash);
+		expect(contexts?.at(0)?.planId).toBe(accepted!.planId);
+		expect(gate.getExecutionContext()).toMatchObject({
+			planId: accepted!.planId,
+			planHash: accepted!.planHash,
+		});
 		expect(gate.planRecord()).toContain(accepted!.planHash);
-		expect(gate.release()).toMatchObject({ ok: true, text: expect.stringContaining("Objective: ship the plan gate") });
+		expect(gate.release()).toMatchObject({
+			ok: true,
+			text: expect.stringContaining("Objective: ship the plan gate"),
+		});
 	});
 });
 
 describe("Plan gate review fixes (round 1)", () => {
-	const CHECKLIST_PLAN_V2 = CHECKLIST_PLAN.replace("ship the plan gate", "ship the replacement gate");
+	const CHECKLIST_PLAN_V2 = CHECKLIST_PLAN.replace(
+		"ship the plan gate",
+		"ship the replacement gate",
+	);
 
 	test("(1) a valid resubmission in ready/executing/validating keeps the original planHash", () => {
 		const gate = new CompletionGate({ inactivityMs: 0 });
@@ -572,7 +595,9 @@ describe("Plan gate review fixes (round 1)", () => {
 		expect(gate.submitPlan(CHECKLIST_PLAN_V2)).toBeUndefined();
 		expect(gate.state).toBe("validating");
 		expect(gate.planHash).toBe(accepted!.planHash);
-		expect(gate.transitions.filter((t) => t.to === "plan_validated" && !t.accepted).length).toBeGreaterThan(0);
+		expect(
+			gate.transitions.filter((t) => t.to === "plan_validated" && !t.accepted).length,
+		).toBeGreaterThan(0);
 	});
 
 	test("(2) an invalid candidate in ready/plan_validated quarantines to waiting and clears the prior plan", () => {
@@ -586,7 +611,9 @@ describe("Plan gate review fixes (round 1)", () => {
 		expect(gate.buildWorkerContexts(["w1"])).toBeUndefined();
 		expect(gate.getExecutionContext()).toBeUndefined();
 		expect(gate.beginExecution()).toBe(false);
-		expect(gate.transitions.find((t) => t.to === "waiting_for_plan" && t.from === "ready")).toMatchObject({ accepted: true });
+		expect(
+			gate.transitions.find((t) => t.to === "waiting_for_plan" && t.from === "ready"),
+		).toMatchObject({ accepted: true });
 		// A late valid Plan is quarantined-in, then auto-resumes to ready with its own hash.
 		const revived = gate.submitPlan(CHECKLIST_PLAN_V2);
 		expect(revived).toBeDefined();
@@ -605,7 +632,11 @@ describe("Plan gate review fixes (round 1)", () => {
 
 	test("(3) manual pollOnce and re-arming leave at most one poll timer", () => {
 		const clock = fakeClock();
-		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers, pollIntervalMs: 1_000 });
+		const gate = new CompletionGate({
+			inactivityMs: 0,
+			timers: clock.timers,
+			pollIntervalMs: 1_000,
+		});
 		expect(gate.enterWaitingForPlan()).toBe(true);
 		expect(clock.armed()).toBe(1);
 		gate.pollOnce();
@@ -623,7 +654,10 @@ describe("Plan gate review fixes (round 1)", () => {
 	test("(4) the checklist requires labeled non-empty values, SPE-<n> and ROADMAP wave/ordering", () => {
 		expect(validatePlanChecklist(CHECKLIST_PLAN)).toEqual({ ok: true, problems: [] });
 		// Bulleted and bold labels count as labeled values.
-		const bulleted = CHECKLIST_PLAN.replace("Objective: ship the plan gate.", "- **Objective:** ship the plan gate.");
+		const bulleted = CHECKLIST_PLAN.replace(
+			"Objective: ship the plan gate.",
+			"- **Objective:** ship the plan gate.",
+		);
 		expect(validatePlanChecklist(bulleted).problems).not.toContain("objective missing");
 		// Bare keywords with no `Label:` lines do not count.
 		const bare = plan().replace(
@@ -641,17 +675,21 @@ describe("Plan gate review fixes (round 1)", () => {
 		expect(bareVerdict.problems).toContain("ordering missing");
 		// A label with an empty value does not count.
 		const empty = CHECKLIST_PLAN.replace("Objective: ship the plan gate.", "Objective:");
+		expect(validatePlanChecklist(empty).problems).toContain("objective missing");
 		// A value on a later line does not satisfy a bare labeled line.
-		const split = CHECKLIST_PLAN.replace("Objective: ship the plan gate.", "Objective:\n\nAn unrelated line.");
+		const split = CHECKLIST_PLAN.replace(
+			"Objective: ship the plan gate.",
+			"Objective:\n\nAn unrelated line.",
+		);
 		expect(validatePlanChecklist(split).problems).toContain("objective missing");
 		// An explicit SPE-<n> reference is required.
-		expect(validatePlanChecklist(CHECKLIST_PLAN.replace("SPE-35029", "an issue")).problems).toContain(
-			"referenced Linear issues missing",
-		);
+		expect(
+			validatePlanChecklist(CHECKLIST_PLAN.replace("SPE-35029", "an issue")).problems,
+		).toContain("referenced Linear issues missing");
 		// ROADMAP alone, without a wave/ordering/consistency reference on its line, does not count.
-		expect(validatePlanChecklist(CHECKLIST_PLAN.replace("ROADMAP wave 1", "ROADMAP")).problems).toContain(
-			"ROADMAP consistency missing",
-		);
+		expect(
+			validatePlanChecklist(CHECKLIST_PLAN.replace("ROADMAP wave 1", "ROADMAP")).problems,
+		).toContain("ROADMAP consistency missing");
 	});
 });
 
@@ -683,7 +721,7 @@ describe("Plan gate review fixes (round 2)", () => {
 		expect(releasedText).not.toBe(plan());
 		// `released.text` is the delivered text; re-hashing it must match the workers' hash.
 		expect(planGateHash(releasedText)).toBe(accepted!.planHash);
-		for (const ctx of contexts) expect(planGateHash(releasedText)).toBe(ctx.planHash);
+		for (const ctx of contexts ?? []) expect(planGateHash(releasedText)).toBe(ctx.planHash);
 		expect(gate.planRecord()).toContain(accepted!.planId);
 		expect(gate.planRecord()).toContain(accepted!.planHash);
 		expect(releasedText).not.toContain(gate.planRecord());
@@ -714,7 +752,11 @@ describe("Plan gate review fixes (round 3)", () => {
 		expect(ready.state).toBe("ready");
 		expect(ready.beginValidation()).toBe(false);
 		expect(ready.state).toBe("ready");
-		expect(ready.transitions.at(-1)).toMatchObject({ accepted: false, from: "ready", to: "validating" });
+		expect(ready.transitions.at(-1)).toMatchObject({
+			accepted: false,
+			from: "ready",
+			to: "validating",
+		});
 
 		// generating (legacy entry) cannot jump straight to validating; legacy complete() bypasses the
 		// table by direct assignment and is covered elsewhere.
@@ -740,9 +782,10 @@ describe("Plan gate review fixes (round 3)", () => {
 		for (const path of chains) {
 			const gate = new CompletionGate({ inactivityMs: 0 });
 			for (const step of path) expect(gate.tryTransition(step)).toBe(true);
-			expect(gate.state).toBe(path.at(-1));
+			const last = path.at(-1)!;
+			expect(gate.state).toBe(last);
 			expect(gate.tryTransition("plan_validated")).toBe(false);
-			expect(gate.state).toBe(path.at(-1));
+			expect(gate.state).toBe(last);
 		}
 	});
 
@@ -830,9 +873,9 @@ describe("Plan gate review fixes (round 4)", () => {
 		const lowerBare = CHECKLIST_PLAN.replace("ROADMAP wave 1.", "roadmap\nROADMAP wave 1.");
 		expect(validatePlanChecklist(lowerBare).problems).toContain("ROADMAP consistency missing");
 		// No qualified ROADMAP line anywhere still fails.
-		expect(validatePlanChecklist(CHECKLIST_PLAN.replace("ROADMAP wave 1", "ROADMAP")).problems).toContain(
-			"ROADMAP consistency missing",
-		);
+		expect(
+			validatePlanChecklist(CHECKLIST_PLAN.replace("ROADMAP wave 1", "ROADMAP")).problems,
+		).toContain("ROADMAP consistency missing");
 	});
 });
 
@@ -850,11 +893,14 @@ describe("Plan gate review fixes (round 5)", () => {
 		const releasedText = released.ok ? released.text : "";
 		// The invariant: re-hashing the released text yields the hash workers were given.
 		expect(planGateHash(releasedText)).toBe(accepted!.planHash);
-		expect(planGateHash(releasedText)).toBe(gate.planHash);
+		expect(planGateHash(releasedText)).toBe(gate.planHash!);
 		for (const ctx of contextsBefore!) expect(planGateHash(releasedText)).toBe(ctx.planHash);
 		const contextsAfter = gate.buildWorkerContexts(["w1", "w2", "w3"]);
 		for (const ctx of contextsAfter!) expect(planGateHash(releasedText)).toBe(ctx.planHash);
-		expect(gate.getExecutionContext()).toMatchObject({ planHash: planGateHash(releasedText), text: releasedText });
+		expect(gate.getExecutionContext()).toMatchObject({
+			planHash: planGateHash(releasedText),
+			text: releasedText,
+		});
 		expect(gate.planRecord()).toContain(planGateHash(releasedText));
 		expect(releasedText).toBe(accepted!.text);
 		// The delivered text is `released.text` itself; no record is appended to it.
@@ -910,7 +956,11 @@ describe("Plan gate review fixes (round 7)", () => {
 		// The raw public edge (not enterWaitingForPlan) must quarantine identically.
 		expect(gate.tryTransition("waiting_for_plan", "tester", "quarantine from ready")).toBe(true);
 		expect(gate.state).toBe("waiting_for_plan");
-		expect(gate.transitions.at(-1)).toMatchObject({ accepted: true, from: "ready", to: "waiting_for_plan" });
+		expect(gate.transitions.at(-1)).toMatchObject({
+			accepted: true,
+			from: "ready",
+			to: "waiting_for_plan",
+		});
 		expect(gate.plan).toBeUndefined();
 		expect(gate.planHash).toBeUndefined();
 		expect(gate.planId).toBeUndefined();
@@ -940,7 +990,12 @@ describe("Plan gate review fixes (round 7)", () => {
 
 	test("(2) waiting self-transition preserves the in-flight poll budget", () => {
 		const clock = fakeClock();
-		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers, pollIntervalMs: 1_000, maxPollAttempts: 2 });
+		const gate = new CompletionGate({
+			inactivityMs: 0,
+			timers: clock.timers,
+			pollIntervalMs: 1_000,
+			maxPollAttempts: 2,
+		});
 		expect(gate.enterWaitingForPlan()).toBe(true);
 		expect(gate.pollOnce()).toBeUndefined();
 		expect(gate.pollAttempts).toBe(1);
@@ -958,7 +1013,12 @@ describe("Plan gate review fixes (round 7)", () => {
 describe("Plan gate review fixes (round 9)", () => {
 	test("(1) blocked gate clears blocked/blockReason when a valid plan leaves waiting_for_plan", () => {
 		const clock = fakeClock();
-		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers, pollIntervalMs: 1_000, maxPollAttempts: 2 });
+		const gate = new CompletionGate({
+			inactivityMs: 0,
+			timers: clock.timers,
+			pollIntervalMs: 1_000,
+			maxPollAttempts: 2,
+		});
 		expect(gate.enterWaitingForPlan()).toBe(true);
 		expect(gate.pollOnce()).toBeUndefined();
 		expect(gate.pollOnce()).toBeUndefined();
@@ -985,12 +1045,22 @@ describe("Plan gate review fixes (round 9)", () => {
 		expect(rejected).toBeUndefined();
 		expect(gate.state).toBe("ready");
 		expect(gate.planHash).toBe(first!.planHash);
-		expect(progress.some((entry) => entry.label.includes("rejected") && entry.label.includes("plan_validated") && entry.label.includes("ready"))).toBe(true);
+		expect(
+			progress.some(
+				(entry) =>
+					entry.label.includes("rejected") &&
+					entry.label.includes("plan_validated") &&
+					entry.label.includes("ready"),
+			),
+		).toBe(true);
 		expect(progress.some((entry) => entry.state === "ready")).toBe(true);
 	});
 });
 describe("Plan gate review fixes (round 10)", () => {
-	const REPLACEMENT_PLAN = CHECKLIST_PLAN.replace("ship the plan gate", "ship the replacement gate");
+	const REPLACEMENT_PLAN = CHECKLIST_PLAN.replace(
+		"ship the plan gate",
+		"ship the replacement gate",
+	);
 
 	test("(1) valid candidates revive from partial_failure and planning through waiting_for_plan to ready", () => {
 		const partial = new CompletionGate({ inactivityMs: 0 });
@@ -1032,7 +1102,9 @@ describe("Plan gate review fixes (round 10)", () => {
 		expect(accepted).toBeDefined();
 		expect(discovering.state).toBe("ready");
 		expect(discovering.planHash).toBe(accepted!.planHash);
-		expect(discovering.transitions.map((t) => `${t.from}->${t.to}:${t.accepted}`).slice(-5)).toEqual([
+		expect(
+			discovering.transitions.map((t) => `${t.from}->${t.to}:${t.accepted}`).slice(-5),
+		).toEqual([
 			"discovering->discussing:true",
 			"discussing->planning:true",
 			"planning->waiting_for_plan:true",
@@ -1047,21 +1119,27 @@ describe("Plan gate review fixes (round 10)", () => {
 		expect(revived).toBeDefined();
 		expect(discussing.state).toBe("ready");
 		expect(discussing.planHash).toBe(revived!.planHash);
-		expect(discussing.transitions.map((t) => `${t.from}->${t.to}:${t.accepted}`).slice(-4)).toEqual([
-			"discussing->planning:true",
-			"planning->waiting_for_plan:true",
-			"waiting_for_plan->plan_validated:true",
-			"plan_validated->ready:true",
-		]);
+		expect(discussing.transitions.map((t) => `${t.from}->${t.to}:${t.accepted}`).slice(-4)).toEqual(
+			[
+				"discussing->planning:true",
+				"planning->waiting_for_plan:true",
+				"waiting_for_plan->plan_validated:true",
+				"plan_validated->ready:true",
+			],
+		);
 	});
 
 	test("(3) ready/executing/validating/complete/failed still reject replacement plans loudly and keep the original", () => {
-		const setup = (target: GateState): { gate: CompletionGate; hash: string | undefined; progress: GateProgress[] } => {
+		const setup = (
+			target: GateState,
+		): { gate: CompletionGate; hash: string | undefined; progress: GateProgress[] } => {
 			const gate = new CompletionGate({ inactivityMs: 0 });
 			const first = gate.submitPlan(CHECKLIST_PLAN);
 			expect(first).toBeDefined();
-			if (target === "executing" || target === "validating" || target === "complete") expect(gate.beginExecution()).toBe(true);
-			if (target === "validating" || target === "complete") expect(gate.beginValidation()).toBe(true);
+			if (target === "executing" || target === "validating" || target === "complete")
+				expect(gate.beginExecution()).toBe(true);
+			if (target === "validating" || target === "complete")
+				expect(gate.beginValidation()).toBe(true);
 			if (target === "complete") {
 				gate.recordValidationEvidence("tests green");
 				expect(gate.completeExecution()).toBe(true);
@@ -1076,8 +1154,19 @@ describe("Plan gate review fixes (round 10)", () => {
 			expect(gate.submitPlan(REPLACEMENT_PLAN)).toBeUndefined();
 			expect(gate.state).toBe(target);
 			expect(gate.planHash).toBe(hash);
-			expect(gate.transitions.at(-1)).toMatchObject({ accepted: false, from: target, to: "plan_validated" });
-			expect(progress.some((entry) => entry.label.includes("rejected") && entry.label.includes("plan_validated") && entry.label.includes(target))).toBe(true);
+			expect(gate.transitions.at(-1)).toMatchObject({
+				accepted: false,
+				from: target,
+				to: "plan_validated",
+			});
+			expect(
+				progress.some(
+					(entry) =>
+						entry.label.includes("rejected") &&
+						entry.label.includes("plan_validated") &&
+						entry.label.includes(target),
+				),
+			).toBe(true);
 		}
 
 		const failed = new CompletionGate({ inactivityMs: 0 });
@@ -1087,8 +1176,18 @@ describe("Plan gate review fixes (round 10)", () => {
 		expect(failed.submitPlan(CHECKLIST_PLAN)).toBeUndefined();
 		expect(failed.state).toBe("failed_or_cancelled");
 		expect(failed.plan).toBeUndefined();
-		expect(failed.transitions.at(-1)).toMatchObject({ accepted: false, from: "failed_or_cancelled", to: "plan_validated" });
-		expect(progress.some((entry) => entry.label.includes("rejected") && entry.label.includes("plan_validated") && entry.label.includes("failed_or_cancelled"))).toBe(true);
+		expect(failed.transitions.at(-1)).toMatchObject({
+			accepted: false,
+			from: "failed_or_cancelled",
+			to: "plan_validated",
+		});
+		expect(
+			progress.some(
+				(entry) =>
+					entry.label.includes("rejected") &&
+					entry.label.includes("plan_validated") &&
+					entry.label.includes("failed_or_cancelled"),
+			),
+		).toBe(true);
 	});
 });
-

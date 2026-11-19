@@ -363,9 +363,13 @@ export class CompletionGate {
 		this.#planProvider = options.planProvider;
 		this.#now = options.now ?? Date.now;
 		const pollInterval = options.pollIntervalMs ?? 2000;
-		this.#planPollIntervalMs = Number.isFinite(pollInterval) && pollInterval > 0 ? Math.min(pollInterval, MAX_TIMER_MS) : 2000;
+		this.#planPollIntervalMs =
+			Number.isFinite(pollInterval) && pollInterval > 0
+				? Math.min(pollInterval, MAX_TIMER_MS)
+				: 2000;
 		const maxPolls = options.maxPollAttempts ?? 30;
-		this.#planMaxPollAttempts = Number.isFinite(maxPolls) && maxPolls > 0 ? Math.floor(maxPolls) : 30;
+		this.#planMaxPollAttempts =
+			Number.isFinite(maxPolls) && maxPolls > 0 ? Math.floor(maxPolls) : 30;
 		// A rejected settlement is impossible: every terminal path resolves.
 		this.#arm();
 	}
@@ -444,7 +448,8 @@ export class CompletionGate {
 	/** Transition log line for persistence; one line per attempt, accepted or rejected. */
 	transitionLog(): string[] {
 		return this.#transitions.map(
-			(t) => `${new Date(t.timestamp).toISOString()} ${t.actor} ${t.from}->${t.to} ${t.accepted ? "accepted" : "rejected"}: ${t.reason}`,
+			(t) =>
+				`${new Date(t.timestamp).toISOString()} ${t.actor} ${t.from}->${t.to} ${t.accepted ? "accepted" : "rejected"}: ${t.reason}`,
 		);
 	}
 
@@ -466,7 +471,8 @@ export class CompletionGate {
 		if (to === "complete" && this.#validationEvidence === undefined) ok = false;
 		// plan_validated requires a pending (submitPlan) or already validated (#plan) record:
 		// the public edge alone never proves a checklist-validated Plan exists.
-		if (to === "plan_validated" && this.#pendingPlan === undefined && this.#plan === undefined) ok = false;
+		if (to === "plan_validated" && this.#pendingPlan === undefined && this.#plan === undefined)
+			ok = false;
 		// ready requires the validated plan record itself.
 		if (to === "ready" && this.#plan === undefined) ok = false;
 		if (from === "complete" || from === "failed_or_cancelled") ok = false;
@@ -504,7 +510,10 @@ export class CompletionGate {
 	 * Quarantine itself lives in tryTransition, so this is a thin wrapper: a raw
 	 * tryTransition("waiting_for_plan") gets the identical clear-and-poll behaviour,
 	 * and the waiting->waiting self path preserves the in-flight poll budget. */
-	enterWaitingForPlan(actor = "system", reason = "plan missing, stale, unparseable or failing checklist"): boolean {
+	enterWaitingForPlan(
+		actor = "system",
+		reason = "plan missing, stale, unparseable or failing checklist",
+	): boolean {
 		return this.tryTransition("waiting_for_plan", actor, reason);
 	}
 
@@ -518,7 +527,10 @@ export class CompletionGate {
 	 * routes through waiting_for_plan (the permitted chain) before plan_validated; from
 	 * discovering/discussing it first walks discovering->discussing->planning->waiting_for_plan.
 	 */
-	submitPlan(text: string | undefined, options: { actor?: string; stale?: boolean; version?: string } = {}): PlanGatePlan | undefined {
+	submitPlan(
+		text: string | undefined,
+		options: { actor?: string; stale?: boolean; version?: string } = {},
+	): PlanGatePlan | undefined {
 		const actor = options.actor ?? "planner";
 		const verdict = validatePlanChecklist(text, options);
 		if (!verdict.ok) {
@@ -552,7 +564,11 @@ export class CompletionGate {
 		if (this.#state === "plan_validated") {
 			this.#pendingPlan = plan;
 			accepted = this.tryTransition("plan_validated", actor, "plan checklist passed");
-		} else if (this.#state === "generating" || this.#state === "partial_failure" || this.#state === "planning") {
+		} else if (
+			this.#state === "generating" ||
+			this.#state === "partial_failure" ||
+			this.#state === "planning"
+		) {
 			// Route through waiting_for_plan first: that entry centralizes quarantine and
 			// clears any pending record, so the pending record is only set after it.
 			if (this.enterWaitingForPlan(actor, "plan submitted: routing via waiting_for_plan")) {
@@ -563,7 +579,9 @@ export class CompletionGate {
 			// No skip to waiting_for_plan from discovering/discussing: walk each permitted
 			// forward edge, then the waiting edge. Any failed hop aborts (logged + emitted below).
 			const chain: readonly GateState[] =
-				this.#state === "discovering" ? ["discussing", "planning", "waiting_for_plan"] : ["planning", "waiting_for_plan"];
+				this.#state === "discovering"
+					? ["discussing", "planning", "waiting_for_plan"]
+					: ["planning", "waiting_for_plan"];
 			let routed = true;
 			for (const step of chain) {
 				if (!this.tryTransition(step, actor, "plan submitted: routing via waiting_for_plan")) {
@@ -581,7 +599,9 @@ export class CompletionGate {
 		}
 		if (!accepted) {
 			this.#pendingPlan = undefined;
-			this.#emit(`plan rejected: valid candidate cannot enter plan_validated from ${this.#state} (never silent)`);
+			this.#emit(
+				`plan rejected: valid candidate cannot enter plan_validated from ${this.#state} (never silent)`,
+			);
 			return undefined;
 		}
 		// Automatic use: validated means ready; no manual restart is required.
@@ -645,14 +665,28 @@ export class CompletionGate {
 	/** Execution context for every worker: identical plan id/hash or undefined when not ready.
 	 * The hash is `planGateHash(released #plan text)`: workers verify the text they execute against it. */
 	buildWorkerContexts(workerIds: readonly string[]): WorkerContext[] | undefined {
-		const ready = this.#state === "ready" || this.#state === "plan_validated" || this.#state === "executing" || this.#state === "validating" || this.#state === "complete";
+		const ready =
+			this.#state === "ready" ||
+			this.#state === "plan_validated" ||
+			this.#state === "executing" ||
+			this.#state === "validating" ||
+			this.#state === "complete";
 		if (!ready || !this.#plan) return undefined;
-		return workerIds.map((workerId) => ({ workerId, planId: this.#plan!.planId, planHash: this.#plan!.planHash }));
+		return workerIds.map((workerId) => ({
+			workerId,
+			planId: this.#plan!.planId,
+			planHash: this.#plan!.planHash,
+		}));
 	}
 
 	getExecutionContext(): { planId: string; planHash: string; text: string } | undefined {
 		if (!this.#plan) return undefined;
-		const ready = this.#state === "ready" || this.#state === "plan_validated" || this.#state === "executing" || this.#state === "validating" || this.#state === "complete";
+		const ready =
+			this.#state === "ready" ||
+			this.#state === "plan_validated" ||
+			this.#state === "executing" ||
+			this.#state === "validating" ||
+			this.#state === "complete";
 		if (!ready) return undefined;
 		return { planId: this.#plan.planId, planHash: this.#plan.planHash, text: this.#plan.text };
 	}
@@ -791,7 +825,8 @@ export class CompletionGate {
 			this.#released = true;
 			return { ok: true, state: "ready", text: this.#plan.text, problems: verdict?.problems ?? [] };
 		}
-		if (!staged || !verdict) return { ok: false, reason: "failed", detail: "no validated artifacts are staged" };
+		if (!staged || !verdict)
+			return { ok: false, reason: "failed", detail: "no validated artifacts are staged" };
 		this.#released = true;
 		return { ok: true, state: "ready", text: staged.text, problems: verdict.problems };
 	}
@@ -905,7 +940,12 @@ export function planGateHash(text: string): string {
 
 function buildPlanGatePlan(text: string, version?: string): PlanGatePlan {
 	const hash = planGateHash(text);
-	return { planId: `plan-${hash.slice(0, 12)}`, planHash: hash, text: text.trim(), version: version ?? "1" };
+	return {
+		planId: `plan-${hash.slice(0, 12)}`,
+		planHash: hash,
+		text: text.trim(),
+		version: version ?? "1",
+	};
 }
 
 /**
@@ -917,7 +957,10 @@ function buildPlanGatePlan(text: string, version?: string): PlanGatePlan {
 function labeledChecklistValue(body: string, labelPattern: string): string | undefined {
 	const end = String.raw`(?=\s*(?:Objective|Scope|Named surfaces?|Acceptance|Out[- ]of[- ]scope|Dependencies|Ordering)\s*:|\n|$)`;
 	const normalized = body.replace(/\*\*/g, "");
-	const match = new RegExp(`(?:^|[.;\\n]\\s*(?:(?:[-*•>]|\\d+[.)])\\s*)?)${labelPattern}\\s*:[ \\t]*([^\\n]*?)${end}`, "i").exec(normalized);
+	const match = new RegExp(
+		`(?:^|[.;\\n]\\s*(?:(?:[-*•>]|\\d+[.)])\\s*)?)${labelPattern}\\s*:[ \\t]*([^\\n]*?)${end}`,
+		"i",
+	).exec(normalized);
 	const value = match?.[1]?.trim();
 	return value ? value : undefined;
 }
@@ -953,7 +996,3 @@ export function validatePlanChecklist(
 	if (!roadmapConsistent) problems.push("ROADMAP consistency missing");
 	return { ok: problems.length === 0, problems };
 }
-
-/** Waiting copy for the host: Ultrathink waits; a late valid Plan auto-resumes. */
-export const GATE_WAITING_PLAN =
-	"STOP. Ultrathink is waiting for the phase Plan: it is missing, stale, unparseable or failing the checklist. Do not act yet. Bounded polling is running; a late valid Plan auto-resumes to ready and is used automatically (no manual restart).";

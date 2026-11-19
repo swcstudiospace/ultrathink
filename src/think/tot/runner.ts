@@ -57,7 +57,7 @@ interface Checkpoint {
 }
 
 /** Effective execution wave of one PRD: the explicit `wave` when set, otherwise its CoT `step` (see `PrdRequest`). */
-export function waveOf(request: PrdRequest): number {
+function waveOf(request: PrdRequest): number {
 	return request.wave ?? request.step;
 }
 
