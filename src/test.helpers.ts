@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Finding } from "./doctor/types.ts";
+import { sleep as defaultSleep } from "./resilience/sleep.ts";
 import type { TeachableMoment } from "./teach/types.ts";
 import { escapeXml } from "./uplift/xml.ts";
 
@@ -45,7 +46,7 @@ export async function waitUntil(
 	const timeoutMs = opts.timeoutMs ?? 30_000;
 	const intervalMs = opts.intervalMs ?? 10;
 	const now = opts.now ?? Date.now;
-	const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
+	const sleep = opts.sleep ?? defaultSleep;
 	const deadline = now() + timeoutMs;
 	while (!(await predicate())) {
 		if (now() >= deadline) {
