@@ -651,14 +651,12 @@ describe("Plan gate review fixes (round 2)", () => {
 		const releasedText = released.ok ? released.text : "";
 		expect(releasedText).toBe(accepted!.text);
 		expect(releasedText).not.toBe(plan());
-		// omp.ts delivers/saves exactly `released.text`; planRecord stays separate for attribution/logging.
-		const delivered = releasedText;
-		expect(delivered).toBe(releasedText);
-		expect(planGateHash(delivered)).toBe(accepted!.planHash);
-		for (const ctx of contexts) expect(planGateHash(delivered)).toBe(ctx.planHash);
+		// `released.text` is the delivered text; re-hashing it must match the workers' hash.
+		expect(planGateHash(releasedText)).toBe(accepted!.planHash);
+		for (const ctx of contexts) expect(planGateHash(releasedText)).toBe(ctx.planHash);
 		expect(gate.planRecord()).toContain(accepted!.planId);
 		expect(gate.planRecord()).toContain(accepted!.planHash);
-		expect(delivered).not.toContain(gate.planRecord());
+		expect(releasedText).not.toContain(gate.planRecord());
 	});
 
 	test("(2) a pure plan gate still records its plan id/hash", () => {
@@ -671,13 +669,11 @@ describe("Plan gate review fixes (round 2)", () => {
 		expect(released.ok).toBe(true);
 		const releasedText = released.ok ? released.text : "";
 		expect(releasedText).toContain("Objective: ship the plan gate");
-		// omp.ts delivers/saves exactly `released.text`; planRecord stays separate.
-		const delivered = releasedText;
-		expect(delivered).toBe(releasedText);
-		expect(planGateHash(delivered)).toBe(accepted!.planHash);
+		// `released.text` is the delivered text; re-hashing it must match the workers' hash.
+		expect(planGateHash(releasedText)).toBe(accepted!.planHash);
 		expect(gate.planRecord()).toContain(accepted!.planId);
 		expect(gate.planRecord()).toContain(accepted!.planHash);
-		expect(delivered).not.toContain(gate.planRecord());
+		expect(releasedText).not.toContain(gate.planRecord());
 	});
 });
 describe("Plan gate review fixes (round 3)", () => {
@@ -827,12 +823,8 @@ describe("Plan gate review fixes (round 5)", () => {
 		expect(gate.getExecutionContext()).toMatchObject({ planHash: planGateHash(releasedText), text: releasedText });
 		expect(gate.planRecord()).toContain(planGateHash(releasedText));
 		expect(releasedText).toBe(accepted!.text);
-		// omp.ts delivery: delivered text is exactly released.text, so re-hashing it matches workers.
-		const delivered = releasedText;
-		expect(delivered).toBe(releasedText);
-		expect(planGateHash(delivered)).toBe(accepted!.planHash);
-		for (const ctx of contextsAfter!) expect(planGateHash(delivered)).toBe(ctx.planHash);
-		expect(delivered).not.toContain(gate.planRecord());
+		// The delivered text is `released.text` itself; no record is appended to it.
+		expect(releasedText).not.toContain(gate.planRecord());
 	});
 
 	test("(2) legacy staged-only release is unchanged: staged text, no record, no plan contexts", () => {
@@ -850,7 +842,7 @@ describe("Plan gate review fixes (round 5)", () => {
 	});
 });
 describe("Plan gate review fixes (round 6)", () => {
-	test("(1) delivered text === released.text even with a plan record (no append breaks planHash)", () => {
+	test("(1) released text re-hashes to planHash even with a plan record (no append breaks planHash)", () => {
 		const gate = new CompletionGate({ inactivityMs: 0 });
 		const accepted = gate.submitPlan(CHECKLIST_PLAN);
 		expect(accepted).toBeDefined();
@@ -860,12 +852,73 @@ describe("Plan gate review fixes (round 6)", () => {
 		const releasedText = released.ok ? released.text : "";
 		// Record is non-empty here, so the old `${text}\n\n${record}` composition would re-hash differently.
 		expect(gate.planRecord()).not.toBe("");
-		const delivered = releasedText;
-		expect(delivered).toBe(releasedText);
-		expect(planGateHash(delivered)).toBe(accepted!.planHash);
-		for (const ctx of contexts!) expect(planGateHash(delivered)).toBe(ctx.planHash);
-		expect(gate.planRecord()).toContain(planGateHash(delivered));
-		expect(delivered).not.toContain(gate.planRecord());
+		expect(planGateHash(releasedText)).toBe(accepted!.planHash);
+		for (const ctx of contexts!) expect(planGateHash(releasedText)).toBe(ctx.planHash);
+		expect(gate.planRecord()).toContain(planGateHash(releasedText));
+		expect(releasedText).not.toContain(gate.planRecord());
+	});
+});
+describe("Plan gate review fixes (round 7)", () => {
+	test("(1) tryTransition waiting_for_plan from ready quarantines the stale plan and starts polling", () => {
+		const clock = fakeClock();
+		let calls = 0;
+		const gate = new CompletionGate({
+			inactivityMs: 0,
+			timers: clock.timers,
+			pollIntervalMs: 1_000,
+			maxPollAttempts: 3,
+			planProvider: () => (calls++ < 1 ? undefined : CHECKLIST_PLAN),
+		});
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		expect(gate.state).toBe("ready");
+		expect(gate.planHash).toBe(accepted!.planHash);
+		// The raw public edge (not enterWaitingForPlan) must quarantine identically.
+		expect(gate.tryTransition("waiting_for_plan", "tester", "quarantine from ready")).toBe(true);
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(gate.transitions.at(-1)).toMatchObject({ accepted: true, from: "ready", to: "waiting_for_plan" });
+		expect(gate.plan).toBeUndefined();
+		expect(gate.planHash).toBeUndefined();
+		expect(gate.planId).toBeUndefined();
+		expect(gate.planRecord()).toBe("");
+		expect(gate.buildWorkerContexts(["w1"])).toBeUndefined();
+		expect(gate.getExecutionContext()).toBeUndefined();
+		expect(gate.release()).toMatchObject({ ok: false });
+		// Polling started with a fresh budget: exactly one timer, no attempts consumed yet.
+		expect(clock.armed()).toBe(1);
+		expect(gate.pollAttempts).toBe(0);
+		expect(gate.blocked).toBe(false);
+		// The stale plan cannot re-enter: neither guard may accept it.
+		expect(gate.tryTransition("plan_validated", "tester", "stale bypass")).toBe(false);
+		expect(gate.tryTransition("ready", "tester", "stale bypass")).toBe(false);
+		expect(gate.beginExecution()).toBe(false);
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(gate.plan).toBeUndefined();
+		// A late valid Plan still auto-resumes through polling (fresh budget of 3).
+		expect(gate.pollOnce()).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
+		const revived = gate.pollOnce();
+		expect(revived).toBeDefined();
+		expect(gate.state).toBe("ready");
+		expect(gate.planHash).toBe(revived!.planHash);
+		expect(clock.armed()).toBe(0);
+	});
+
+	test("(2) waiting self-transition preserves the in-flight poll budget", () => {
+		const clock = fakeClock();
+		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers, pollIntervalMs: 1_000, maxPollAttempts: 2 });
+		expect(gate.enterWaitingForPlan()).toBe(true);
+		expect(gate.pollOnce()).toBeUndefined();
+		expect(gate.pollAttempts).toBe(1);
+		// Re-quarantining while already waiting (the invalid-candidate self path)
+		// must not reset the budget, or bounded polling could never block.
+		expect(gate.submitPlan("plain text, no checklist")).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(gate.pollAttempts).toBe(1);
+		expect(gate.pollOnce()).toBeUndefined();
+		expect(gate.pollAttempts).toBe(2);
+		expect(gate.blocked).toBe(true);
+		expect(gate.blockReason).toContain("blocked");
 	});
 });
 

@@ -87,6 +87,28 @@ describe("savePlan and loadPlan", () => {
 		expect(loadPlan(dir, plan.key)).toEqual(plan);
 	});
 
+	test("round trips a gate-released plan with its validated identity", () => {
+		const plan = samplePlan({ planId: "plan-1", planHash: "abc123" });
+		savePlan(dir, plan);
+		// The identity rides alongside the text, which is never altered.
+		expect(loadPlan(dir, plan.key)).toEqual(plan);
+	});
+
+	test("reads a record whose identity fields are not strings as unreadable", () => {
+		const plan = samplePlan();
+		writeRaw(
+			plan.key,
+			JSON.stringify({
+				key: plan.key,
+				text: plan.text,
+				view: plan.view,
+				createdAt: plan.createdAt,
+				planId: 42,
+			}),
+		);
+		expect(loadPlan(dir, plan.key)).toBe("unreadable");
+	});
+
 	test("returns 'absent' for a missing key", () => {
 		expect(loadPlan(dir, planKey(input))).toBe("absent");
 	});

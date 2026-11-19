@@ -25,6 +25,9 @@ export interface StoredPlan {
 	text: string;
 	view: unknown;
 	createdAt: string;
+	/** Validated identity of the gate-released plan (the gate's `planId`/`planHash`); absent on non-gated or legacy records. */
+	planId?: string;
+	planHash?: string;
 }
 
 // Keys become file names, so only url-safe characters are accepted. planKey output always matches.
@@ -67,6 +70,8 @@ export function savePlan(stateDir: string, plan: StoredPlan): void {
 		text: plan.text,
 		view: plan.view,
 		createdAt: plan.createdAt,
+		...(plan.planId !== undefined ? { planId: plan.planId } : {}),
+		...(plan.planHash !== undefined ? { planHash: plan.planHash } : {}),
 	});
 	try {
 		writeFileSync(tmpPath, record, { mode: 0o600, flag: "wx" });
@@ -177,5 +182,19 @@ function parseRecord(value: unknown, expectedKey: string): StoredPlan | undefine
 	if (typeof key !== "string" || typeof text !== "string" || typeof createdAt !== "string")
 		return undefined;
 	if (key !== expectedKey || !("view" in value)) return undefined;
-	return { key, text, view: value.view, createdAt };
+	const planId = "planId" in value ? value.planId : undefined;
+	const planHash = "planHash" in value ? value.planHash : undefined;
+	if (
+		(planId !== undefined && typeof planId !== "string") ||
+		(planHash !== undefined && typeof planHash !== "string")
+	)
+		return undefined;
+	return {
+		key,
+		text,
+		view: value.view,
+		createdAt,
+		...(planId !== undefined ? { planId } : {}),
+		...(planHash !== undefined ? { planHash } : {}),
+	};
 }

@@ -1751,6 +1751,8 @@ export function createOmpExtension(
 			prd?: PrdOutcome;
 			/** What the gate released for this flight; kept so a host re-run of the same submission gets the same plan. */
 			releasedText?: string;
+			/** Validated identity of the gate-released plan text; kept with `releasedText` for re-delivery. */
+			releasedPlan?: { planId: string; planHash: string };
 			/** Start order; only the latest flight writes to the bar store. */
 			generation: number;
 			settled: boolean;
@@ -3131,12 +3133,13 @@ export function createOmpExtension(
 		 * `none`: a cancelled flight, which stays silent.
 		 */
 		type GateDelivery =
-			| { kind: "plan"; text: string }
+			| { kind: "plan"; text: string; planId?: string; planHash?: string }
 			| { kind: "hold"; text: string }
 			| { kind: "notice"; text: string }
 			| { kind: "none" };
 		const gateDelivery = (flight: Flight, gate: CompletionGate): GateDelivery => {
-			if (flight.releasedText !== undefined) return { kind: "plan", text: flight.releasedText };
+			if (flight.releasedText !== undefined)
+				return { kind: "plan", text: flight.releasedText, ...flight.releasedPlan };
 			if (gate.state === "failed_or_cancelled") {
 				// A plan was produced but is unusable (for example cut off): it is never injected or released.
 				if (gate.verdict) return { kind: "hold", text: gateHoldPartial(gate.reason, false) };
@@ -3158,12 +3161,16 @@ export function createOmpExtension(
 			const released = gate.release();
 			if (!released.ok) return { kind: "notice", text: planFailedNotice(released.detail) };
 			// Delivered/saved text is exactly `released.text`: workers re-hash it and
-			// must get `planHash`. The `planRecord()` (plan id/hash) stays separate for
-			// attribution/logging and is never appended into the plan body.
+			// must get `planHash`. The validated identity (`planId`/`planHash`, the
+			// `planRecord()` equivalent) travels alongside the body only: it is
+			// persisted with the stored record and carried on the delivery, never
+			// appended into the plan body, so re-hashing the body still verifies.
 			const text = released.text;
+			const identity = gate.getExecutionContext();
 			flight.releasedText = text;
-			saveReleased(flight, text);
-			return { kind: "plan", text };
+			if (identity) flight.releasedPlan = { planId: identity.planId, planHash: identity.planHash };
+			saveReleased(flight, text, identity ?? undefined);
+			return { kind: "plan", text, ...flight.releasedPlan };
 		};
 
 		/** An aside, or a notice as one: a refused send is warned and shown display-only, so the model and the user both learn of it. */
@@ -3767,7 +3774,11 @@ export function createOmpExtension(
 						cwd: flight.cwd,
 					});
 		/** Durable copy of a released plan. A store failure never blocks the turn; it is reported as a warning. */
-		const saveReleased = (flight: Flight, text: string): void => {
+		const saveReleased = (
+			flight: Flight,
+			text: string,
+			identity?: { planId: string; planHash: string },
+		): void => {
 			const key = planRecordKey(flight);
 			if (key === undefined) return;
 			try {
@@ -3777,6 +3788,8 @@ export function createOmpExtension(
 					// A record without a `view` key is unreadable and JSON drops undefined, so an absent view is stored as null.
 					view: flight.view ?? null,
 					createdAt: new Date(now()).toISOString(),
+					// The validated identity rides alongside the body; the body itself is never altered.
+					...(identity ? { planId: identity.planId, planHash: identity.planHash } : {}),
 				});
 			} catch (error) {
 				guard(() =>

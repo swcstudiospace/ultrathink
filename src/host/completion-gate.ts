@@ -449,6 +449,9 @@ export class CompletionGate {
 	/**
 	 * Hard state machine: only listed edges pass. Executing before plan_validated and
 	 * complete without validation evidence are always rejected; every attempt is logged.
+	 * Any accepted transition to waiting_for_plan centralizes quarantine here: it
+	 * clears the plan/pending records and (except on the waiting self path, which
+	 * preserves the poll budget) starts bounded polling.
 	 */
 	tryTransition(to: GateState, actor = "system", reason = ""): boolean {
 		const from = this.#state;
@@ -471,19 +474,29 @@ export class CompletionGate {
 		// after ready->executing->validating, complete requires evidence recorded in this cycle.
 		if (to === "executing" || to === "validating") this.#validationEvidence = undefined;
 		this.#state = to;
+		if (to === "waiting_for_plan") {
+			// Centralized quarantine: every accepted entry into waiting_for_plan drops any
+			// prior plan/pending record, so plan_validated/ready guards below (which
+			// require one of those records) cannot re-admit the stale plan. A fresh
+			// entry from any other state also starts bounded polling with a fresh
+			// budget. The waiting->waiting self path only clears the records: it
+			// preserves the in-flight poll budget/blocked state, so an invalid
+			// candidate re-quarantining while already waiting (submitPlan/pollOnce)
+			// cannot reset the bounded polling it is supposed to exhaust.
+			this.#plan = undefined;
+			this.#pendingPlan = undefined;
+			if (from !== "waiting_for_plan") this.#startPolling();
+		}
 		this.#emit(entry.reason || `${from} -> ${to}`);
 		return true;
 	}
 
-	/** Enter waiting_for_plan (missing/stale/unparseable/fails checklist) and start bounded polling. */
+	/** Enter waiting_for_plan (missing/stale/unparseable/fails checklist) and start bounded polling.
+	 * Quarantine itself lives in tryTransition, so this is a thin wrapper: a raw
+	 * tryTransition("waiting_for_plan") gets the identical clear-and-poll behaviour,
+	 * and the waiting->waiting self path preserves the in-flight poll budget. */
 	enterWaitingForPlan(actor = "system", reason = "plan missing, stale, unparseable or failing checklist"): boolean {
-		const ok = this.tryTransition("waiting_for_plan", actor, reason);
-		if (ok) {
-			// Quarantine: no prior plan may execute while waiting; a late valid Plan re-validates via submitPlan.
-			this.#plan = undefined;
-			this.#startPolling();
-		}
-		return ok;
+		return this.tryTransition("waiting_for_plan", actor, reason);
 	}
 
 	/**
@@ -505,7 +518,8 @@ export class CompletionGate {
 			// stays authoritative for the running/terminal gate.
 			const reason = `plan quarantined: ${verdict.problems.join("; ")}`;
 			if (this.#state === "waiting_for_plan") {
-				this.#plan = undefined;
+				// Self-quarantine: tryTransition clears any plan/pending record but preserves
+				// the in-flight poll budget, so this cannot reset bounded polling.
 				this.tryTransition("waiting_for_plan", actor, reason);
 			} else if (!this.enterWaitingForPlan(actor, reason)) {
 				this.#emit(`plan quarantined (rejected, no held state): ${verdict.problems.join("; ")}`);
@@ -518,15 +532,19 @@ export class CompletionGate {
 		// enter plan_validated. The pending record lets tryTransition accept that one entry;
 		// without it, the same edge is rejected. #plan is only set once plan_validated accepts,
 		// and ready then requires that record, so the chain cannot be entered empty.
-		this.#pendingPlan = plan;
 		let accepted = false;
 		if (this.#state === "plan_validated") {
+			this.#pendingPlan = plan;
 			accepted = true;
 		} else if (this.#state === "generating") {
-			accepted =
-				this.enterWaitingForPlan(actor, "plan submitted: routing via waiting_for_plan") &&
-				this.tryTransition("plan_validated", actor, "plan checklist passed");
+			// Route through waiting_for_plan first: that entry centralizes quarantine and
+			// clears any pending record, so the pending record is only set after it.
+			if (this.enterWaitingForPlan(actor, "plan submitted: routing via waiting_for_plan")) {
+				this.#pendingPlan = plan;
+				accepted = this.tryTransition("plan_validated", actor, "plan checklist passed");
+			}
 		} else {
+			this.#pendingPlan = plan;
 			accepted = this.tryTransition("plan_validated", actor, "plan checklist passed");
 		}
 		if (!accepted) {
