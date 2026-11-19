@@ -344,6 +344,7 @@ export class CompletionGate {
 	readonly #planProvider: (() => string | undefined) | undefined;
 	readonly #now: () => number;
 	#plan: PlanGatePlan | undefined;
+	#pendingPlan: PlanGatePlan | undefined;
 	#pollAttempts = 0;
 	#pollTimer: NodeJS.Timeout | undefined;
 	#blocked = false;
@@ -456,6 +457,11 @@ export class CompletionGate {
 		// complete only with validation evidence recorded in validating.
 		if (to === "executing" && from !== "ready") ok = false;
 		if (to === "complete" && this.#validationEvidence === undefined) ok = false;
+		// plan_validated requires a pending (submitPlan) or already validated (#plan) record:
+		// the public edge alone never proves a checklist-validated Plan exists.
+		if (to === "plan_validated" && this.#pendingPlan === undefined && this.#plan === undefined) ok = false;
+		// ready requires the validated plan record itself.
+		if (to === "ready" && this.#plan === undefined) ok = false;
 		if (from === "complete" || from === "failed_or_cancelled") ok = false;
 		const entry: GateTransition = { timestamp: this.#now(), actor, from, to, reason, accepted: ok };
 		this.#transitions.push(entry);
@@ -506,14 +512,30 @@ export class CompletionGate {
 			return undefined;
 		}
 		const plan = buildPlanGatePlan(text ?? "", options.version);
-		// Only acceptance into plan_validated may replace #plan: attempt that transition first,
-		// and never let an unrelated ready edge (validating -> ready) accept a resubmission.
-		let accepted = this.#state === "plan_validated";
-		if (!accepted) accepted = this.tryTransition("plan_validated", actor, "plan checklist passed");
-		if (!accepted) return undefined;
+		// The public table no longer has generating -> plan_validated, so a valid plan submitted
+		// from generating routes through waiting_for_plan (the permitted chain) before it can
+		// enter plan_validated. The pending record lets tryTransition accept that one entry;
+		// without it, the same edge is rejected. #plan is only set once plan_validated accepts,
+		// and ready then requires that record, so the chain cannot be entered empty.
+		this.#pendingPlan = plan;
+		let accepted = false;
+		if (this.#state === "plan_validated") {
+			accepted = true;
+		} else if (this.#state === "generating") {
+			accepted =
+				this.enterWaitingForPlan(actor, "plan submitted: routing via waiting_for_plan") &&
+				this.tryTransition("plan_validated", actor, "plan checklist passed");
+		} else {
+			accepted = this.tryTransition("plan_validated", actor, "plan checklist passed");
+		}
+		if (!accepted) {
+			this.#pendingPlan = undefined;
+			return undefined;
+		}
 		// Automatic use: validated means ready; no manual restart is required.
-		this.tryTransition("ready", actor, "auto-use validated plan");
 		this.#plan = plan;
+		this.#pendingPlan = undefined;
+		this.tryTransition("ready", actor, "auto-use validated plan");
 		this.#stopPolling();
 		return plan;
 	}
@@ -524,7 +546,19 @@ export class CompletionGate {
 		// A manual tick supersedes any armed poll timer; the re-arm below leaves at most one handle.
 		this.#stopPolling();
 		this.#pollAttempts++;
-		const candidate = this.#planProvider?.();
+		let candidate: string | undefined;
+		try {
+			candidate = this.#planProvider?.();
+		} catch (error) {
+			// A throwing provider must never stall silently: stop polling, block loudly with the
+			// provider error, emit it, and stay waiting_for_plan.
+			const detail = error instanceof Error ? error.message : String(error);
+			this.#blocked = true;
+			this.#blockReason = `waiting_for_plan blocked: plan provider threw: ${detail} (never silent)`;
+			this.#stopPolling();
+			this.#emit(this.#blockReason);
+			return undefined;
+		}
 		if (candidate !== undefined) {
 			const accepted = this.submitPlan(candidate);
 			if (accepted) return accepted;
@@ -764,16 +798,17 @@ function describe(problems: readonly GateProblem[]): string {
 
 /** Allowed hard-state-machine edges: the strict spec chain
  * discovering->discussing->planning->waiting_for_plan->plan_validated->ready->executing->validating->complete,
- * plus legacy generating (the entry state, which may enter discovering, waiting_for_plan for an invalid first
- * candidate, or plan_validated for a directly submitted valid Plan, or terminal failed_or_cancelled) and terminal
- * failed_or_cancelled. No skip edges: discovering/discussing/planning cannot jump to plan_validated, ready
- * cannot jump to validating (it must pass through executing), and validating cannot go back to ready.
- * `waiting_for_plan` self-quarantine is idempotent. The sole backward exceptions are quarantine:
- * plan_validated/ready may fall back to waiting_for_plan so a rejected Plan candidate clears the prior plan
- * instead of executing on it; executing/validating have no such edge. validating may also branch to
- * partial_failure (validation found the plan incomplete), and partial_failure may fall back to waiting_for_plan
- * for a late valid Plan. Legacy `complete()` bypasses this table by direct assignment, so removing
- * generating->validating does not break it. */
+ * plus legacy generating (the entry state, which may enter discovering, waiting_for_plan — for an invalid
+ * first candidate or, inside submitPlan, as the transit hop for a directly submitted valid Plan — or
+ * terminal failed_or_cancelled). No skip edges: discovering/discussing/
+ * planning cannot jump to plan_validated, ready cannot jump to validating (it must pass through executing),
+ * and validating cannot go back to ready. `waiting_for_plan` self-quarantine is idempotent. The sole
+ * backward exceptions are quarantine: plan_validated/ready may fall back to waiting_for_plan so a rejected
+ * Plan candidate clears the prior plan instead of executing on it; executing/validating have no such edge.
+ * validating may also branch to partial_failure (validation found the plan incomplete), and partial_failure
+ * may fall back to waiting_for_plan for a late valid Plan. Legacy `complete()` bypasses this table by direct
+ * assignment, so removing generating->validating does not break it. tryTransition additionally requires a
+ * pending/validated plan record for plan_validated and #plan for ready (see tryTransition). */
 export function planGateAllowed(from: GateState): ReadonlySet<GateState> {
 	const table: Record<string, readonly GateState[]> = {
 		discovering: ["discussing", "failed_or_cancelled"],
@@ -781,7 +816,7 @@ export function planGateAllowed(from: GateState): ReadonlySet<GateState> {
 		planning: ["waiting_for_plan", "failed_or_cancelled"],
 		waiting_for_plan: ["waiting_for_plan", "plan_validated", "failed_or_cancelled"],
 		plan_validated: ["ready", "waiting_for_plan", "failed_or_cancelled"],
-		generating: ["discovering", "waiting_for_plan", "plan_validated", "failed_or_cancelled"],
+		generating: ["discovering", "waiting_for_plan", "failed_or_cancelled"],
 		validating: ["partial_failure", "failed_or_cancelled", "complete"],
 		ready: ["executing", "failed_or_cancelled", "waiting_for_plan"],
 		executing: ["validating", "failed_or_cancelled"],
@@ -838,10 +873,12 @@ export function validatePlanChecklist(
 		if (labeledChecklistValue(body, label) === undefined) problems.push(problem);
 	}
 	if (!/\bSPE-\d+\b/.test(body)) problems.push("referenced Linear issues missing");
-	// ROADMAP consistency: the ROADMAP line must name a wave/ordering/consistency reference.
-	const roadmapLine = body.split("\n").find((line) => /ROADMAP/.test(line));
-	if (roadmapLine === undefined || !/\b(?:wave|ordering|order|consistency|consistent)\b/i.test(roadmapLine))
-		problems.push("ROADMAP consistency missing");
+	// ROADMAP consistency: any ROADMAP line must name a wave/ordering/order/consistency reference.
+	// Scan every line: an earlier bare ROADMAP line does not hide a later qualified one.
+	const hasRoadmapConsistency = body
+		.split("\n")
+		.some((line) => /ROADMAP/.test(line) && /\b(?:wave|ordering|order|consistency|consistent)\b/i.test(line));
+	if (!hasRoadmapConsistency) problems.push("ROADMAP consistency missing");
 	return { ok: problems.length === 0, problems };
 }
 

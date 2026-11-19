@@ -8,6 +8,7 @@ import {
 	type GateProgress,
 	type GateState,
 	type GateTimers,
+	planGateAllowed,
 	validateArtifacts,
 	validatePlanChecklist,
 } from "./completion-gate.ts";
@@ -567,7 +568,10 @@ describe("Plan gate review fixes (round 1)", () => {
 		expect(gate.planHash).toBe(revived!.planHash);
 
 		const validated = new CompletionGate({ inactivityMs: 0 });
-		expect(validated.tryTransition("plan_validated")).toBe(true);
+		// No pending/validated plan record exists, so the public edge alone cannot enter
+		// plan_validated (round 4); an invalid candidate then quarantines from generating.
+		expect(validated.tryTransition("plan_validated")).toBe(false);
+		expect(validated.state).toBe("generating");
 		expect(validated.submitPlan("plain text, no checklist")).toBeUndefined();
 		expect(validated.state).toBe("waiting_for_plan");
 		expect(validated.plan).toBeUndefined();
@@ -723,5 +727,66 @@ describe("Plan gate review fixes (round 3)", () => {
 		gate.recordValidationEvidence("second cycle green");
 		expect(gate.completeExecution()).toBe(true);
 		expect(gate.state).toBe("complete");
+	});
+});
+
+describe("Plan gate review fixes (round 4)", () => {
+	test("(1) direct bypass cannot reach executing without a validated Plan", () => {
+		expect(planGateAllowed("generating").has("plan_validated")).toBe(false);
+
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		expect(gate.tryTransition("plan_validated")).toBe(false);
+		expect(gate.tryTransition("ready")).toBe(false);
+		expect(gate.beginExecution()).toBe(false);
+		expect(gate.state).toBe("generating");
+		expect(gate.plan).toBeUndefined();
+
+		const waiting = new CompletionGate({ inactivityMs: 0 });
+		expect(waiting.enterWaitingForPlan()).toBe(true);
+		expect(waiting.tryTransition("plan_validated")).toBe(false);
+		expect(waiting.tryTransition("ready")).toBe(false);
+		expect(waiting.beginExecution()).toBe(false);
+		expect(waiting.state).toBe("waiting_for_plan");
+		expect(waiting.plan).toBeUndefined();
+
+		// A valid submitted plan from generating still gets through, via waiting_for_plan.
+		const submitted = new CompletionGate({ inactivityMs: 0 });
+		expect(submitted.submitPlan(CHECKLIST_PLAN)).toBeDefined();
+		expect(submitted.state).toBe("ready");
+		expect(submitted.plan).toBeDefined();
+		expect(submitted.transitions.map((t) => `${t.from}->${t.to}:${t.accepted}`)).toEqual([
+			"generating->waiting_for_plan:true",
+			"waiting_for_plan->plan_validated:true",
+			"plan_validated->ready:true",
+		]);
+	});
+
+	test("(2) a throwing planProvider blocks loudly and stays waiting, never silent", () => {
+		const progress: GateProgress[] = [];
+		const gate = new CompletionGate({
+			inactivityMs: 0,
+			maxPollAttempts: 5,
+			planProvider: () => {
+				throw new Error("boom-provider");
+			},
+		});
+		gate.onProgress((p) => progress.push(p));
+		expect(gate.enterWaitingForPlan()).toBe(true);
+		expect(gate.pollOnce()).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(gate.blocked).toBe(true);
+		expect(gate.blockReason).toContain("boom-provider");
+		expect(progress.some((p) => p.label)).toBe(true);
+		expect(progress.at(-1)).toMatchObject({ state: "waiting_for_plan" });
+		expect(progress.at(-1)!.label).toContain("boom-provider");
+	});
+
+	test("(3) ROADMAP scan passes when a later line carries the token", () => {
+		const laterQualified = CHECKLIST_PLAN.replace("ROADMAP wave 1.", "ROADMAP\nROADMAP wave 1.");
+		expect(validatePlanChecklist(laterQualified)).toEqual({ ok: true, problems: [] });
+		// No qualified ROADMAP line anywhere still fails.
+		expect(validatePlanChecklist(CHECKLIST_PLAN.replace("ROADMAP wave 1", "ROADMAP")).problems).toContain(
+			"ROADMAP consistency missing",
+		);
 	});
 });
