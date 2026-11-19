@@ -903,7 +903,8 @@ function buildPlanGatePlan(text: string, version?: string): PlanGatePlan {
  */
 function labeledChecklistValue(body: string, labelPattern: string): string | undefined {
 	const end = String.raw`(?=\s*(?:Objective|Scope|Named surfaces?|Acceptance|Out[- ]of[- ]scope|Dependencies|Ordering)\s*:|\n|$)`;
-	const match = new RegExp(`(?:^|[.;\\n]\\s*)${labelPattern}\\s*:[ \\t]*([^\\n]*?)${end}`, "i").exec(body);
+	const normalized = body.replace(/\*\*/g, "");
+	const match = new RegExp(`(?:^|[.;\\n]\\s*(?:(?:[-*•>]|\\d+[.)])\\s*)?)${labelPattern}\\s*:[ \\t]*([^\\n]*?)${end}`, "i").exec(normalized);
 	const value = match?.[1]?.trim();
 	return value ? value : undefined;
 }

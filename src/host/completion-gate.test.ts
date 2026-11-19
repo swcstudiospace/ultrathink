@@ -622,6 +622,9 @@ describe("Plan gate review fixes (round 1)", () => {
 
 	test("(4) the checklist requires labeled non-empty values, SPE-<n> and ROADMAP wave/ordering", () => {
 		expect(validatePlanChecklist(CHECKLIST_PLAN)).toEqual({ ok: true, problems: [] });
+		// Bulleted and bold labels count as labeled values.
+		const bulleted = CHECKLIST_PLAN.replace("Objective: ship the plan gate.", "- **Objective:** ship the plan gate.");
+		expect(validatePlanChecklist(bulleted).problems).not.toContain("objective missing");
 		// Bare keywords with no `Label:` lines do not count.
 		const bare = plan().replace(
 			"</BUILD_PROMPT>",
