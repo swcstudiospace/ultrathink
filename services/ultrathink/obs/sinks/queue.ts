@@ -14,6 +14,7 @@
  * clock.
  */
 
+import { platformTimers, type TimerPort } from "../../../../src/shared.ts";
 import type { SendResult, SinkEnvelope, SinkTransport } from "./types.ts";
 
 type SinkEventType = "sent" | "failed" | "dropped";
@@ -25,10 +26,9 @@ export interface SinkEvent {
 	readonly reason?: string;
 }
 
-/** A timer handle: a numeric id from an injected fake, or the Bun timer `setTimeout` returns. `clearTimeout` accepts both. */
-type TimerHandle = number | Timer;
-export type SetTimer = (callback: () => void, ms: number) => TimerHandle;
-export type ClearTimer = (handle: TimerHandle | undefined) => void;
+/** Timer seam: the shared timer port. Tests inject a fake; the default is the platform timers. */
+export type SetTimer = TimerPort["setTimeout"];
+export type ClearTimer = TimerPort["clearTimeout"];
 
 export interface SinkQueueOptions {
 	readonly transport: SinkTransport;
@@ -61,9 +61,6 @@ export interface SinkQueue {
 
 type Failure = Extract<SendResult, { ok: false }>;
 
-const defaultSetTimer: SetTimer = (callback, ms) => setTimeout(callback, ms);
-const defaultClearTimer: ClearTimer = (handle) => clearTimeout(handle);
-
 function assertPositiveInteger(name: string, value: number): void {
 	if (!Number.isInteger(value) || value < 1) {
 		throw new RangeError(`${name} must be a positive integer, got ${value}`);
@@ -80,8 +77,8 @@ function normalize(value: SendResult | undefined): SendResult {
 export function createSinkQueue(options: SinkQueueOptions): SinkQueue {
 	const { transport, capacity, maxBatch, maxAttempts, backoffMs, requestTimeoutMs, onEvent } =
 		options;
-	const setTimer = options.setTimer ?? defaultSetTimer;
-	const clearTimer = options.clearTimer ?? defaultClearTimer;
+	const setTimer = options.setTimer ?? platformTimers.setTimeout;
+	const clearTimer = options.clearTimer ?? platformTimers.clearTimeout;
 	const sink = transport.name;
 
 	assertPositiveInteger("capacity", capacity);
@@ -134,7 +131,7 @@ export function createSinkQueue(options: SinkQueueOptions): SinkQueue {
 		const { promise, resolve } = Promise.withResolvers<SendResult>();
 		const controller = new AbortController();
 		let settled = false;
-		let timer: TimerHandle | undefined;
+		let timer: unknown;
 		const settle = (result: SendResult): void => {
 			if (settled) return;
 			settled = true;
