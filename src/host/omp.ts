@@ -2817,6 +2817,7 @@ export function createOmpExtension(
 					fetch: {
 						...(fetchers.knowledge && { knowledge: fetchers.knowledge }),
 						lessons: fetchers.lessons,
+						moments: fetchers.moments,
 						skills: fetchers.skills,
 					},
 				});

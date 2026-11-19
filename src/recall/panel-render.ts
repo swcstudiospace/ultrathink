@@ -3,7 +3,7 @@
 /**
  * Text renderer for one information-panel envelope. Pure: it reads no clock and no filesystem; the render time and the
  * record reference come in through the context. Every returned row fits within `width` terminal columns, and every
- * state carries a text label, so no state is told apart by color alone.
+ * state carries an icon and a text label, so no state is told apart by color alone.
  */
 import type { KnowledgeStage } from "../greptile/knowledge-probe.ts";
 import { formatElapsed, truncateToWidth } from "../host/omp-paint.ts";
@@ -32,6 +32,15 @@ const STATUS_TAG: Record<PanelEnvelope["status"], string> = {
 	empty: "EMPTY",
 	partial: "PARTIAL",
 	error: "ERROR",
+};
+
+/** One icon per status: a glyph one terminal column wide, so a state reads without its color. */
+const STATUS_ICON: Record<PanelEnvelope["status"], string> = {
+	loading: "◌",
+	success: "✓",
+	empty: "○",
+	partial: "◐",
+	error: "✗",
 };
 
 const EMPTY_LABEL: Record<EmptyReason, string> = {
@@ -119,7 +128,7 @@ function retryText(retry: ErrorEnvelope["retry"]): string {
 }
 
 function panelLines(panel: PanelEnvelope, context: PanelRenderContext): string[] {
-	const head = `[${STATUS_TAG[panel.status]}] ${collapseWhitespace(context.label.replace(CONTROL_RUN, " "))}`;
+	const head = `${STATUS_ICON[panel.status]} [${STATUS_TAG[panel.status]}] ${collapseWhitespace(context.label.replace(CONTROL_RUN, " "))}`;
 	switch (panel.status) {
 		case "loading": {
 			const elapsed =
@@ -135,6 +144,11 @@ function panelLines(panel: PanelEnvelope, context: PanelRenderContext): string[]
 			return [
 				head,
 				`  reason: ${panel.reason} — ${EMPTY_LABEL[panel.reason]}`,
+				...(panel.appliedFilterOrThreshold === undefined
+					? []
+					: [
+							`  applied: ${collapseWhitespace(panel.appliedFilterOrThreshold.replace(CONTROL_RUN, " "))}`,
+						]),
 				...(removed.length > 0 ? [`  removed by: ${removed.join(", ")}`] : []),
 				countsLine(panel),
 				...bodyRows(panel),

@@ -8,8 +8,11 @@ import {
 	type PanelEnvelope,
 	type PanelItem,
 	PREVIEW_MAX_CHARS,
+	type PanelSurface,
 	panelCounts,
+	panelTriggerFromPlanner,
 	sanitizePanelText,
+	withPanelMeta,
 } from "./panel-model.ts";
 
 function lookup(over: Partial<KnowledgeLookup>): KnowledgeLookup {
@@ -199,5 +202,144 @@ describe("sanitizePanelText", () => {
 	test("non-string input yields an empty string", () => {
 		expect(sanitizePanelText(undefined, PREVIEW_MAX_CHARS)).toBe("");
 		expect(sanitizePanelText(42, PREVIEW_MAX_CHARS)).toBe("");
+	});
+});
+
+const SURFACES: PanelSurface[] = ["substrate", "teachable_moment", "lesson", "knowledge", "skill"];
+
+const INVOCATION = {
+	trigger: "explicit_request" as const,
+	query: "how is auth wired",
+	filters: ["organization:sent"],
+	startedAt: 1_000,
+	finishedAt: 1_750,
+};
+
+const SUCCESS_BODY: PanelEnvelope = { status: "success", ...mixedBody };
+
+describe("envelope metadata", () => {
+	test.each(SURFACES)("the %s envelope carries the metadata fields", (surface) => {
+		const panel = withPanelMeta(SUCCESS_BODY, { surface, ...INVOCATION });
+		expect(panel).toMatchObject({
+			surface,
+			trigger: "explicit_request",
+			request: {
+				source: surface,
+				queryPreview: "how is auth wired",
+				filters: ["organization:sent"],
+				startedAt: 1_000,
+			},
+			timing: { startedAt: 1_000, finishedAt: 1_750, latencyMs: 750 },
+		});
+		expect(panel.id).toMatch(new RegExp(`^${surface}-[0-9a-f]{16}$`));
+		expect(panel.status).toBe("success");
+	});
+
+	test("a knowledge lookup carries the metadata when it is invoked and none when it is not", () => {
+		const record = lookup({
+			outcome: "used",
+			docs: ["index.md"],
+			chars: 10,
+			ms: 3,
+			query: { text: "auth", chars: 4, truncated: false },
+			filters: { organization: true, maxDocs: 5 },
+		});
+		expect(knowledgeLookupToPanel(record)).not.toHaveProperty("id");
+		expect(
+			knowledgeLookupToPanel(record, { trigger: "scope_change", startedAt: 5, finishedAt: 9 }),
+		).toMatchObject({
+			surface: "knowledge",
+			trigger: "scope_change",
+			request: {
+				source: "knowledge",
+				queryPreview: "auth",
+				filters: ["organization:sent", "maxDocs:5"],
+			},
+			timing: { latencyMs: 4 },
+		});
+	});
+
+	test.each([
+		["scopeChange", "scope_change"],
+		["failure", "failure"],
+		["phaseBoundary", "phase_boundary"],
+		["uncertainty", "uncertainty"],
+		["explicit", "explicit_request"],
+	] as const)("the planner's %s trigger maps to %s", (planner, panelTrigger) => {
+		expect(panelTriggerFromPlanner(planner)).toBe(panelTrigger);
+	});
+
+	test("the query preview is sanitized and capped, and a cut ends in an ellipsis", () => {
+		const panel = withPanelMeta(SUCCESS_BODY, {
+			surface: "lesson",
+			trigger: "failure",
+			query: "q".repeat(1_000),
+			filters: [],
+			startedAt: 1,
+		});
+		const preview = panel.request?.queryPreview ?? "";
+		expect(preview.length).toBe(PREVIEW_MAX_CHARS);
+		expect(preview.endsWith("…")).toBe(true);
+	});
+
+	test("latency is present only with a finish time and is never negative", () => {
+		const open = withPanelMeta(SUCCESS_BODY, {
+			surface: "skill",
+			trigger: "uncertainty",
+			query: "",
+			filters: [],
+			startedAt: 10,
+		});
+		expect(open.timing).toEqual({ startedAt: 10 });
+		expect(open.request?.queryPreview).toBe("");
+		expect(open).not.toHaveProperty("rawRef");
+		const backwards = withPanelMeta(SUCCESS_BODY, {
+			surface: "skill",
+			trigger: "uncertainty",
+			query: "",
+			filters: [],
+			startedAt: 10,
+			finishedAt: 4,
+		});
+		expect(backwards.timing?.latencyMs).toBe(0);
+	});
+
+	test("rawRef is a pointer: control characters go, the rest is kept, and no record content is inlined", () => {
+		const panel = withPanelMeta(SUCCESS_BODY, {
+			surface: "substrate",
+			trigger: "session_end",
+			query: "",
+			filters: [],
+			startedAt: 1,
+			rawRef: "store/brief/a&b\u0007",
+		});
+		expect(panel.rawRef).toBe("store/brief/a&b");
+	});
+
+	test("the id is deterministic per invocation and changes when the invocation changes", () => {
+		const first = withPanelMeta(SUCCESS_BODY, { surface: "lesson", ...INVOCATION }).id;
+		expect(withPanelMeta(SUCCESS_BODY, { surface: "lesson", ...INVOCATION }).id).toBe(first);
+		expect(
+			withPanelMeta(SUCCESS_BODY, { surface: "lesson", ...INVOCATION, startedAt: 2_000 }).id,
+		).not.toBe(first);
+		expect(withPanelMeta(SUCCESS_BODY, { surface: "skill", ...INVOCATION }).id).not.toBe(first);
+	});
+
+	test("header counts still equal the list lengths once metadata is attached", () => {
+		const panel = withPanelMeta(SUCCESS_BODY, { surface: "substrate", ...INVOCATION });
+		expect(panelCounts(panel)).toEqual({ requested: 6, returned: 3, excluded: 2, missing: 1 });
+	});
+
+	test("the empty reason keeps its optional applied filter or threshold", () => {
+		const panel: PanelEnvelope = {
+			status: "empty",
+			reason: "below_floor",
+			appliedFilterOrThreshold: "min score 2.0",
+			items: [],
+			excluded: [],
+			missing: [],
+			stages: [],
+		};
+		expect(panel).toMatchObject({ appliedFilterOrThreshold: "min score 2.0" });
 	});
 });

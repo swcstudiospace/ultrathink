@@ -11,7 +11,12 @@
  */
 import type { KnowledgeLookup } from "../greptile/knowledge-probe.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
-import { lessonsLookupToPanel, skillsLookupToPanel } from "./adapters.ts";
+import {
+	type ProducerInvocation,
+	lessonsLookupToPanel,
+	momentsLookupToPanel,
+	skillsLookupToPanel,
+} from "./adapters.ts";
 import type { RecallSettings } from "./config.ts";
 import {
 	type BudgetDecision,
@@ -53,7 +58,7 @@ const SOURCES_BY_TRIGGER: Record<Exclude<RecallTrigger, "failure">, readonly Pan
 	scopeChange: ["knowledge", "lessons"],
 	phaseBoundary: ["skills"],
 	uncertainty: ["knowledge"],
-	explicit: ["knowledge", "lessons", "skills"],
+	explicit: ["knowledge", "lessons", "moments", "skills"],
 };
 
 /** Estimated tokens per character: the convention of decisions/client.ts. */
@@ -146,7 +151,11 @@ export type RecallPlan =
 	  }
 	| { ok: false; reason: RecallRefusal };
 
-/** The cooldown request of one source under an event; undefined for a failure or an explicit request, which have none. */
+/**
+ * The cooldown request of one source under an event; undefined when that source does not cool down under it. A failure's
+ * lessons and moments cool down per error signature for the failure window. Its skills do not, so a repeat that is still
+ * within the window plans them again. An explicit request has no cooldown.
+ */
 function cooldownRequest(source: PanelSourceName, event: RecallEvent): CooldownRequest | undefined {
 	switch (event.trigger) {
 		case "scopeChange":
@@ -159,9 +168,10 @@ function cooldownRequest(source: PanelSourceName, event: RecallEvent): CooldownR
 			};
 		case "uncertainty":
 			return { source, trigger: "uncertainty", subject: { topic: event.topic } };
-		// A failure is limited by its occurrence count (see failureSources), not a cooldown: a cooldown on its skills
-		// would block the skills its second occurrence plans.
 		case "failure":
+			return source === "lessons" || source === "moments"
+				? { source, trigger: "failure", subject: { error: event.error } }
+				: undefined;
 		case "explicit":
 			return undefined;
 	}
@@ -197,6 +207,7 @@ function panelFor(
 	source: PanelSourceName,
 	lookups: RecallLookups,
 	floor: number,
+	invocation: ProducerInvocation,
 ): { panel: PanelEnvelope; chars: number } | undefined {
 	switch (source) {
 		case "knowledge": {
@@ -205,15 +216,19 @@ function panelFor(
 		}
 		case "lessons": {
 			const lookup = lookups.lessons;
-			return lookup && { panel: lessonsLookupToPanel(lookup, floor), chars: lookup.chars };
+			return (
+				lookup && { panel: lessonsLookupToPanel(lookup, floor, invocation), chars: lookup.chars }
+			);
 		}
 		case "skills": {
 			const lookup = lookups.skills;
-			return lookup && { panel: skillsLookupToPanel(lookup), chars: lookup.chars };
+			return lookup && { panel: skillsLookupToPanel(lookup, invocation), chars: lookup.chars };
 		}
 		case "moments": {
 			const lookup = lookups.moments;
-			return lookup && { panel: lessonsLookupToPanel(lookup, floor), chars: lookup.chars };
+			return (
+				lookup && { panel: momentsLookupToPanel(lookup, floor, invocation), chars: lookup.chars }
+			);
 		}
 	}
 }
@@ -241,6 +256,7 @@ export function planRecall(input: RecallInput): RecallPlan {
 	const { trigger, nowMs, settings, lookups } = input;
 	const recall = settings.recall;
 	const floor = recall.relevanceFloor.lessons;
+	const invocation: ProducerInvocation = { trigger: trigger.trigger, startedAt: nowMs };
 
 	if (!Number.isFinite(nowMs)) return { ok: false, reason: "invalid_clock" };
 	if (!Number.isFinite(floor) || floor < 0 || floor > 1) {
@@ -277,7 +293,7 @@ export function planRecall(input: RecallInput): RecallPlan {
 			continue;
 		}
 
-		const admitted = panelFor(source, lookups, floor);
+		const admitted = panelFor(source, lookups, floor, invocation);
 		if (admitted === undefined) {
 			audit.push({ ...pair, outcome: "no_source" });
 			continue;

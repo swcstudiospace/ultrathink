@@ -125,13 +125,13 @@ describe("renderPanel states", () => {
 		["skills", "Skills"],
 		["substrate", "Substrate brief"],
 	])("the %s panel header is its source label", (_source, label) => {
-		expect(renderPanel(SUCCESS, WIDE, { label })[0]).toBe(`[SUCCESS] ${label}`);
-		expect(renderPanel(ERROR, WIDE, { label })[0]).toBe(`[ERROR] ${label}`);
+		expect(renderPanel(SUCCESS, WIDE, { label })[0]).toBe(`✓ [SUCCESS] ${label}`);
+		expect(renderPanel(ERROR, WIDE, { label })[0]).toBe(`✗ [ERROR] ${label}`);
 	});
 
 	test("success lists each item with its fields and score only when it carries one", () => {
 		const rows = renderPanel(SUCCESS, WIDE, HEADER);
-		expect(rows[0]).toBe("[SUCCESS] Greptile knowledge base");
+		expect(rows[0]).toBe("✓ [SUCCESS] Greptile knowledge base");
 		const [withScore, withoutScore] = rowsStarting(rows, ITEM_ROW);
 		expect(withScore).toContain("[returned] doc:docs/a.md");
 		expect(withScore).toContain("docs/a.md · First paragraph of the document.");
@@ -145,7 +145,7 @@ describe("renderPanel states", () => {
 
 	test("empty shows the reason label, the reasons that removed results, and the stage ladder", () => {
 		const rows = renderPanel(EMPTY, WIDE, HEADER);
-		expect(rows[0]).toBe("[EMPTY] Greptile knowledge base");
+		expect(rows[0]).toBe("○ [EMPTY] Greptile knowledge base");
 		expect(rows).toContain("  reason: below_floor — every candidate scored below the floor");
 		expect(rows).toContain("  removed by: below_floor, filtered");
 		expect(rowsStarting(rows, STAGE_ROW)).toEqual([
@@ -156,7 +156,7 @@ describe("renderPanel states", () => {
 
 	test("partial shows the returned item and the remainder reason", () => {
 		const rows = renderPanel(PARTIAL, WIDE, HEADER);
-		expect(rows[0]).toBe("[PARTIAL] Greptile knowledge base");
+		expect(rows[0]).toBe("◐ [PARTIAL] Greptile knowledge base");
 		expect(rows).toContain("  remainder: budget_cap — the budget cap stopped the lookup");
 		expect(rowsStarting(rows, ITEM_ROW)).toHaveLength(1);
 		expect(rowsStarting(rows, ITEM_ROW)[0]).toContain("[returned] doc:index.md");
@@ -164,7 +164,7 @@ describe("renderPanel states", () => {
 
 	test("error shows the class, the sanitized message, the retry state and the record reference", () => {
 		const rows = renderPanel(ERROR, WIDE, CTX);
-		expect(rows[0]).toBe("[ERROR] Greptile knowledge base");
+		expect(rows[0]).toBe("✗ [ERROR] Greptile knowledge base");
 		expect(rows).toContain("  class: timeout");
 		expect(rows).toContain("  message: Knowledge lookup timed out after 5000 ms.");
 		expect(rows).toContain(
@@ -286,5 +286,38 @@ describe("renderPanel rows", () => {
 			}
 		}
 		expect(violations).toEqual([]);
+	});
+});
+
+describe("renderPanel status icons", () => {
+	test.each([
+		["loading", LOADING, "◌"],
+		["success", SUCCESS, "✓"],
+		["empty", EMPTY, "○"],
+		["partial", PARTIAL, "◐"],
+		["error", ERROR, "✗"],
+	] as [string, PanelEnvelope, string][])(
+		"the %s state renders its icon and its text label",
+		(status, panel, icon) => {
+			const [header] = renderPanel(panel, WIDE, HEADER);
+			expect(header?.startsWith(`${icon} `)).toBe(true);
+			expect(header).toContain(`[${status.toUpperCase()}]`);
+		},
+	);
+
+	test("each state has a distinct icon", () => {
+		const icons = [LOADING, SUCCESS, EMPTY, PARTIAL, ERROR].map(
+			(panel) => renderPanel(panel, WIDE, HEADER)[0]?.split(" ")[0],
+		);
+		expect(new Set(icons).size).toBe(5);
+	});
+
+	test("an empty panel names the filter or threshold that removed its candidates", () => {
+		const rows = renderPanel({ ...EMPTY, appliedFilterOrThreshold: "min score 2.0" }, WIDE, HEADER);
+		expect(rows).toContain("  applied: min score 2.0");
+	});
+
+	test("an empty panel without one shows no applied row", () => {
+		expect(rowsStarting(renderPanel(EMPTY, WIDE, HEADER), "  applied")).toEqual([]);
 	});
 });
