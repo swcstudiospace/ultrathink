@@ -46,6 +46,7 @@ import { redactText } from "./redact.ts";
 import { appendAudit } from "./skill-audit.ts";
 import {
 	authorSkill,
+	type AutoSkill,
 	evaluateAutoPromotion,
 	normalizeSignature,
 	type SignatureEvent,
@@ -54,7 +55,9 @@ import {
 } from "./skill-author.ts";
 import {
 	generatedStoreDir,
+	type GeneratedEntry,
 	listGenerated,
+	mergeGeneratedSkillSources,
 	promoteGeneratedSkillAutomatically,
 	writeGeneratedSkill,
 } from "./skill-store.ts";
@@ -562,11 +565,39 @@ function namesIn(dir: string): string[] {
 }
 
 /**
- * Authors a draft generated skill for each confirmed lesson that qualifies, unless a skill already covers its signature.
- * A new skill is written as a draft. A candidate the validator refuses writes nothing and is audited with its reason; the
- * moment id names that record, since a refused candidate has no skill name. A manifest that cannot be read is left alone.
- * Existing generated skills are not merged into: their manifest entries carry no steps to merge with, so a covered
- * signature is skipped.
+ * The manifest entries as `planSkill` reads them. The manifest keeps no steps, so the view carries none: the planner
+ * reads the match keys only, and an update's merged skill is never written (the store writes the sources alone). An
+ * entry without a signature hash predates the key; it is left out, so the planner never merges into it.
+ */
+function planningView(entries: readonly GeneratedEntry[]): AutoSkill[] {
+	const views: AutoSkill[] = [];
+	for (const entry of entries) {
+		if (entry.signature_hash === undefined) continue;
+		views.push({
+			name: entry.name,
+			description: entry.description,
+			applies_when: entry.applies_when,
+			steps: [],
+			source_ids: entry.source_ids,
+			generated_by: entry.generated_by,
+			generated_at: entry.generated_at,
+			content_hash: entry.content_hash,
+			version: entry.version,
+			status: entry.status,
+			signature_hash: entry.signature_hash,
+			stale: entry.stale,
+			warnings: [],
+		});
+	}
+	return views;
+}
+
+/**
+ * Authors generated skills for the confirmed lessons that qualify. `planSkill` decides each one's match against the
+ * manifest: a match adds the lesson's id to that skill's sources, and no match writes a new draft. A lesson whose id is
+ * already a source is left alone and asks no question. A candidate the validator refuses writes nothing and is audited
+ * with its reason; the moment id names that record, since a refused candidate has no skill name. A manifest that cannot
+ * be read is left alone.
  */
 async function authorDrafts(ctx: TeachContext, verdicts: Map<string, boolean>): Promise<void> {
 	const dir = generatedStoreDir(ctx.stateDir);
@@ -620,7 +651,7 @@ async function authorDrafts(ctx: TeachContext, verdicts: Map<string, boolean>): 
 					},
 				},
 				pool,
-				existing: [],
+				existing: planningView(entries),
 				takenNames: taken,
 				now: nowIso,
 				windowMs: SKILL_WINDOW_MS,
@@ -640,7 +671,19 @@ async function authorDrafts(ctx: TeachContext, verdicts: Map<string, boolean>): 
 				});
 				continue;
 			}
-			if (entries.some((entry) => entry.signature_hash === outcome.skill.signature_hash)) {
+			if (outcome.action === "update") {
+				const current = entries.find((entry) => entry.name === outcome.skill.name);
+				if (current === undefined || current.source_ids.includes(moment.id)) continue;
+				const [kept] = await filterSkillworthy([moment], ctx, verdicts);
+				if (kept === undefined) continue;
+				const merged = await mergeGeneratedSkillSources(dir, current.name, [moment.id], nowIso, {
+					...(by === undefined ? {} : { qualification_by: by }),
+					...(outcome.match === undefined ? {} : { match_by: outcome.match.by }),
+				});
+				if (merged.ok && merged.changed) {
+					const { entry: updated } = merged;
+					entries = entries.map((entry) => (entry.name === updated.name ? updated : entry));
+				}
 				continue;
 			}
 			const [kept] = await filterSkillworthy([moment], ctx, verdicts);

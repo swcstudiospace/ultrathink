@@ -117,7 +117,8 @@ interface AppliesWhen {
 	error_signatures: string[];
 }
 
-type AutoSkillStatus = "draft" | "disabled";
+/** `active` only on a skill the store has promoted: a merge carries it through unchanged. */
+type AutoSkillStatus = "draft" | "active" | "disabled";
 
 export interface AutoSkill {
 	/** Kebab-case slug, unique among skills. */
@@ -222,10 +223,20 @@ export function normalizeSignature(text: string): string {
 		.join(" ");
 }
 
-/** Jaccard similarity of the normalized token sets; 0 when both are empty. */
-function tokenSimilarity(a: string, b: string): number {
-	const left = new Set(normalizeSignature(a).split(" ").filter(Boolean));
-	const right = new Set(normalizeSignature(b).split(" ").filter(Boolean));
+/** The distinct lowercase letter runs of a description: the tokens `jaccardSimilarity` compares. */
+function descriptionTokens(text: string): Set<string> {
+	return new Set(
+		text
+			.toLowerCase()
+			.split(/[^\p{L}]+/u)
+			.filter(Boolean),
+	);
+}
+
+/** Jaccard similarity of two descriptions' token sets: shared tokens over all tokens; 0 when both are empty. */
+function jaccardSimilarity(a: string, b: string): number {
+	const left = descriptionTokens(a);
+	const right = descriptionTokens(b);
 	if (left.size === 0 && right.size === 0) return 0;
 	let shared = 0;
 	for (const token of left) if (right.has(token)) shared += 1;
@@ -310,9 +321,9 @@ export function qualifySkillCandidate(
 }
 
 /**
- * Create or merge. An exact signature-hash match wins, then the same task type with the same scope, then the best
- * description similarity at or above `SKILL_SIMILARITY_THRESHOLD`. A merge keeps the existing name, description and
- * status (a disabled skill stays disabled), unions the sources and the applicability and bumps the version.
+ * Create or merge. An exact signature-hash match wins, then the same task type with an overlapping, non-empty scope,
+ * then the best description similarity at or above `SKILL_SIMILARITY_THRESHOLD`. A merge keeps the existing name,
+ * description and status (a disabled skill stays disabled), unions the sources and the applicability and bumps the version.
  * A new skill's name is the signature slug, suffixed `-2`, `-3`, ... until it is free.
  */
 export function planSkill(input: PlanInput): SkillPlan {
@@ -343,16 +354,19 @@ export function planSkill(input: PlanInput): SkillPlan {
 	const bySignature = input.existing.find((skill) => skill.signature_hash === signatureHash);
 	if (bySignature) return merge(bySignature, { by: "signature-hash" });
 
+	// A scope-less lesson or skill shares no glob with anything, so this rule never matches it.
 	const byScope = input.existing.find(
 		(skill) =>
 			skill.applies_when.task_types.includes(facts.taskType) &&
-			sameSet(skill.applies_when.scope_globs, incoming.applies_when.scope_globs),
+			skill.applies_when.scope_globs.some((glob) =>
+				incoming.applies_when.scope_globs.includes(glob),
+			),
 	);
 	if (byScope) return merge(byScope, { by: "task-scope" });
 
 	let best: { skill: AutoSkill; score: number } | undefined;
 	for (const skill of input.existing) {
-		const score = tokenSimilarity(description, skill.description);
+		const score = jaccardSimilarity(description, skill.description);
 		if (score >= SKILL_SIMILARITY_THRESHOLD && (best === undefined || score > best.score)) {
 			best = { skill, score };
 		}
@@ -505,7 +519,7 @@ export interface SignatureEvent {
 
 interface AutoPromotionInput {
 	/** The manifest status. Only a draft is ever promoted. */
-	status: AutoSkill["status"] | "active";
+	status: AutoSkill["status"];
 	/** The skill's current `generated_at`: a resolution at or before it belongs to an earlier version and does not count. */
 	generatedAt: string;
 	/** The normalized error signatures the skill applies to; events on any other signature are ignored. */
@@ -628,7 +642,11 @@ function schemaProblem(skill: AutoSkill): { field: string; detail: string } | un
 		],
 		["generated_by", skill.generated_by === "auto", 'must be "auto"'],
 		["generated_at", ISO_UTC_RE.test(skill.generated_at), "ISO 8601 UTC"],
-		["status", skill.status === "draft" || skill.status === "disabled", '"draft" or "disabled"'],
+		[
+			"status",
+			skill.status === "draft" || skill.status === "active" || skill.status === "disabled",
+			'"draft", "active" or "disabled"',
+		],
 		["version", Number.isInteger(skill.version) && skill.version >= 1, "integer of at least 1"],
 		["source_ids", listOf(skill.source_ids, 1, 50, 200), "1 to 50 non-empty ids"],
 		[
@@ -712,12 +730,6 @@ function listOf(value: readonly string[], min: number, max: number, itemMax: num
 				!LINE_BREAK_RE.test(item),
 		)
 	);
-}
-
-function sameSet(a: readonly string[], b: readonly string[]): boolean {
-	const left = unique(a).sort();
-	const right = unique(b).sort();
-	return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
 function union<T>(a: readonly T[], b: readonly T[]): T[] {
