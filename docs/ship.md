@@ -312,7 +312,7 @@ Merge the PR on GitHub yourself. ultrathink does not watch it afterwards, and it
 <clone>/bin/ultrathink-ship phase repair-runtime --phase <phase> --session <session-id> --reason <text> [--cwd <repo dir>]
 ```
 
-`--state` is required. `--cwd` defaults to the current directory, so run it from the project's working tree or pass `--cwd`; the config files are read for that directory. Each call prints one JSON object. The exit code is 0, except 2 for usage errors and 127 when Bun is missing. Failures are reported in the JSON as `ok: false` with a `reason` or `error`.
+`--state` is required for every subcommand except `phase repair-runtime`, which takes `--session` instead. `--cwd` defaults to the current directory, so run it from the project's working tree or pass `--cwd`; the config files are read for that directory. Each call prints one JSON object. The exit code is 0, except 2 for usage errors and 127 when Bun is missing. Failures are reported in the JSON as `ok: false` with a `reason` or `error`.
 
 An owner decision (`resolve --owner`, or `merge`/`run --owner-override`) needs its owner listed in `ship.owners` in your user config. Any other name, or an empty list, is refused before anything is written.
 
