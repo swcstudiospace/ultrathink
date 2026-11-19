@@ -615,7 +615,20 @@ export class CompletionGate {
 			return undefined;
 		}
 		if (candidate !== undefined) {
-			const accepted = this.submitPlan(candidate);
+			let accepted: PlanGatePlan | undefined;
+			try {
+				accepted = this.submitPlan(candidate);
+			} catch (error) {
+				const detail = redactSecrets(error instanceof Error ? error.message : String(error))
+					.replace(/\s+/g, " ")
+					.trim()
+					.slice(0, 300);
+				this.#blocked = true;
+				this.#blockReason = `waiting_for_plan blocked: plan submission failed: ${detail} (never silent)`;
+				this.#stopPolling();
+				this.#emit(this.#blockReason);
+				return undefined;
+			}
 			if (accepted) return accepted;
 		}
 		if (this.#pollAttempts >= this.#planMaxPollAttempts) {

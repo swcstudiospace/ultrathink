@@ -3176,6 +3176,7 @@ export function createOmpExtension(
 				flight.releasedText = undefined;
 				flight.releasedPlan = undefined;
 				flight.deliveredInline = false;
+				markPlanDelivered(flight);
 				return { kind: "hold", text: gate.blocked ? gateWaitingBlocked(gate.blockReason) : GATE_WAITING };
 			}
 			if (gate.state === "plan_validated") {
@@ -3479,6 +3480,7 @@ export function createOmpExtension(
 					if (progress.state === "waiting_for_plan") {
 						flight.gateWaiting = true;
 						// A quarantine revoked the prior release: a revised Plan may be delivered again.
+						markPlanDelivered(flight);
 						flight.gateAsideDelivered = false;
 						flight.gateNoticeDelivered = false;
 						if (flight.releasedText !== undefined) flight.lastDeliveredPlanText = flight.releasedText;
