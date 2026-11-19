@@ -18,6 +18,7 @@
  */
 import { createHash } from "node:crypto";
 import type { TotManifest } from "../think/tot/types.ts";
+import { redactSecrets } from "../redact.ts";
 import type { SyncSummary } from "../track/prd-types.ts";
 import { checkUpliftXml } from "../uplift/xml.ts";
 
@@ -603,7 +604,10 @@ export class CompletionGate {
 		} catch (error) {
 			// A throwing provider must never stall silently: stop polling, block loudly with the
 			// provider error, emit it, and stay waiting_for_plan.
-			const detail = error instanceof Error ? error.message : String(error);
+			const detail = redactSecrets(error instanceof Error ? error.message : String(error))
+				.replace(/\s+/g, " ")
+				.trim()
+				.slice(0, 300);
 			this.#blocked = true;
 			this.#blockReason = `waiting_for_plan blocked: plan provider threw: ${detail} (never silent)`;
 			this.#stopPolling();
