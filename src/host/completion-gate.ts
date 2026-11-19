@@ -491,6 +491,7 @@ export class CompletionGate {
 			// cannot reset the bounded polling it is supposed to exhaust.
 			this.#plan = undefined;
 			this.#pendingPlan = undefined;
+			this.#released = false;
 			if (from !== "waiting_for_plan") this.#startPolling();
 		}
 		this.#emit(entry.reason || `${from} -> ${to}`);

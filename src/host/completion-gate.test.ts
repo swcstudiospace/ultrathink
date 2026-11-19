@@ -225,6 +225,21 @@ describe("CompletionGate", () => {
 		expect(gate.release()).toMatchObject({ ok: false, reason: "already_released" });
 	});
 
+	test("quarantine resets the one-shot release so a revived plan can release", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		const first = gate.submitPlan(CHECKLIST_PLAN);
+		expect(first).toBeDefined();
+		expect(gate.release()).toMatchObject({ ok: true, state: "ready", text: first!.text });
+		expect(gate.release()).toMatchObject({ ok: false, reason: "already_released" });
+		expect(gate.submitPlan("plain text, no checklist")).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(gate.released).toBe(false);
+		const revived = gate.submitPlan(CHECKLIST_PLAN.replace("ship the plan gate", "ship the revived gate"));
+		expect(revived).toBeDefined();
+		expect(gate.release()).toMatchObject({ ok: true, state: "ready", text: revived!.text });
+		expect(gate.released).toBe(true);
+	});
+
 	test("generating -> validating -> ready is observable through the progress side channel", () => {
 		const gate = new CompletionGate({ inactivityMs: 0 });
 		const seen: GateProgress[] = [];
