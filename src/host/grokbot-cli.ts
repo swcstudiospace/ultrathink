@@ -8,6 +8,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { runDecisionsCommand } from "../decisions/cli.ts";
+import type { DecisionsFetch } from "../decisions/client.ts";
 import { CLARIFY_SYSTEM_PROMPT } from "../hitl/prompts.ts";
 import { runHindsightCommand } from "../hindsight/cli.ts";
 import { runRagflowCommand } from "../ragflow/cli.ts";
@@ -215,7 +216,7 @@ const GREPTILE_BOT_LOGIN = "greptile-apps[bot]";
 const GITHUB_READ_TIMEOUT_MS = 15_000;
 
 /** Read-only fixture files (from the GitHub connector) standing in for the REST calls. */
-export function dirFetcher(dir: string): typeof fetch {
+export function dirFetcher(dir: string): DecisionsFetch {
 	const files: Array<[RegExp, string]> = [
 		[/\/pulls\/\d+\/comments/, "review-comments.json"],
 		[/\/pulls\/\d+\/reviews/, "reviews.json"],
@@ -223,18 +224,18 @@ export function dirFetcher(dir: string): typeof fetch {
 		[/\/check-runs/, "check-runs.json"],
 		[/\/pulls\/\d+$/, "pull.json"],
 	];
-	return (async (input: Parameters<typeof fetch>[0]) => {
+	return async (input) => {
 		const url = String(input).split("?")[0] as string;
 		const hit = files.find(([re]) => re.test(url));
 		if (!hit) return new Response("{}", { status: 404 });
 		return new Response(readFileSync(join(dir, hit[1]), "utf8"), { status: 200 });
-	}) as unknown as typeof fetch;
+	};
 }
 
 export async function reviewRead(
 	repo: string,
 	pr: string,
-	fetcher: typeof fetch = fetch,
+	fetcher: DecisionsFetch = fetch,
 ): Promise<Record<string, unknown>> {
 	const headers = { accept: "application/vnd.github+json", "user-agent": "ultrathink-grokbot" };
 	/** A stalled GitHub read fails after GITHUB_READ_TIMEOUT_MS instead of hanging `review read`. */
