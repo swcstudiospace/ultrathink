@@ -134,7 +134,7 @@ type PanelEnvelopeState =
 	  };
 
 /** A request as the panel saw it. The query is kept as a sanitized, capped preview only. */
-export interface PanelRequest {
+interface PanelRequest {
 	source: PanelSurface;
 	queryPreview: string;
 	/** Applied filters, sanitized, one label each. */
@@ -142,7 +142,7 @@ export interface PanelRequest {
 	startedAt: number;
 }
 
-export interface PanelTiming {
+interface PanelTiming {
 	startedAt: number;
 	finishedAt?: number;
 	/** `finishedAt` minus `startedAt`, never negative. Present only with `finishedAt`. */
@@ -150,7 +150,7 @@ export interface PanelTiming {
 }
 
 /** Which invocation produced a panel. */
-export interface PanelMeta {
+interface PanelMeta {
 	/** Deterministic per invocation: the same surface, trigger, start, query and filters give the same id. */
 	id: string;
 	surface: PanelSurface;
