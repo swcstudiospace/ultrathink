@@ -430,11 +430,12 @@ export class CompletionGate {
 		return this.#validationEvidence !== undefined;
 	}
 
-	/** Record for STATE.md / SUMMARY / Linear PRD / Notion prompt. Empty until a plan validates, and empty
-	 * whenever staged artifacts are present: `release()` then hands over the staged text, so a `#plan`
-	 * id/hash would misattribute that content. Only a pure plan gate (no staged artifacts) records. */
+	/** Record for STATE.md / SUMMARY / Linear PRD / Notion prompt. Empty until a plan validates.
+	 * When a validated checklist `#plan` coexists with staged artifacts, `#plan` is the release
+	 * authority: `release()` returns `#plan.text`, so this record (and the worker contexts) attribute
+	 * exactly that text. Only a legacy staged-only gate (no `#plan`) records nothing. */
 	planRecord(): string {
-		if (!this.#plan || this.#staged) return "";
+		if (!this.#plan) return "";
 		return `Plan ${this.#plan.planId} @ ${this.#plan.planHash} (v${this.#plan.version})`;
 	}
 
@@ -574,7 +575,8 @@ export class CompletionGate {
 		return undefined;
 	}
 
-	/** Execution context for every worker: identical plan id/hash or undefined when not ready. */
+	/** Execution context for every worker: identical plan id/hash or undefined when not ready.
+	 * The hash is `planGateHash(released #plan text)`: workers verify the text they execute against it. */
 	buildWorkerContexts(workerIds: readonly string[]): WorkerContext[] | undefined {
 		const ready = this.#state === "ready" || this.#state === "plan_validated" || this.#state === "executing" || this.#state === "validating" || this.#state === "complete";
 		if (!ready || !this.#plan) return undefined;
@@ -695,8 +697,11 @@ export class CompletionGate {
 	}
 
 	/**
-	 * The single atomic release: it returns the staged text exactly once, and only from `ready`. A partial plan
-	 * reports what is missing and stays unreleased; any other call changes nothing and says why.
+	 * The single atomic release: it returns the release-authority text exactly once, and only from
+	 * `ready`. The authority is a validated checklist `#plan` when present (it wins over any staged
+	 * artifacts, so `planRecord()`, `buildWorkerContexts()` and `getExecutionContext()` attribute the
+	 * same text); in a legacy staged-only gate it is the staged text. A partial plan reports what is
+	 * missing and stays unreleased; any other call changes nothing and says why.
 	 */
 	release(): GateRelease {
 		if (this.#released)
@@ -713,14 +718,13 @@ export class CompletionGate {
 			};
 		if (this.#state !== "ready")
 			return { ok: false, reason: "not_ready", detail: `the plan is still ${this.#state}` };
-		if (!staged || !verdict) {
-			// Plan-gate path: a checklist-validated Plan (submitPlan) is the release content.
-			if (this.#plan) {
-				this.#released = true;
-				return { ok: true, state: "ready", text: this.#plan.text, problems: [] };
-			}
-			return { ok: false, reason: "failed", detail: "no validated artifacts are staged" };
+		if (this.#plan) {
+			// #plan is the release authority whenever present, staged or not: its text is exactly what
+			// planRecord() and the worker contexts hash/attribute, so re-hashing it yields their hash.
+			this.#released = true;
+			return { ok: true, state: "ready", text: this.#plan.text, problems: verdict?.problems ?? [] };
 		}
+		if (!staged || !verdict) return { ok: false, reason: "failed", detail: "no validated artifacts are staged" };
 		this.#released = true;
 		return { ok: true, state: "ready", text: staged.text, problems: verdict.problems };
 	}

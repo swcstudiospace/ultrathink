@@ -9,6 +9,7 @@ import {
 	type GateState,
 	type GateTimers,
 	planGateAllowed,
+	planGateHash,
 	validateArtifacts,
 	validatePlanChecklist,
 } from "./completion-gate.ts";
@@ -625,7 +626,7 @@ describe("Plan gate review fixes (round 1)", () => {
 });
 
 describe("Plan gate review fixes (round 2)", () => {
-	test("(1) staged+plan coexistence: released staged text carries no #plan record", () => {
+	test("(1) staged+plan coexistence: validated #plan is the release authority", () => {
 		const gate = new CompletionGate({ inactivityMs: 0 });
 		gate.stage({ text: plan(), expected: FULL });
 		expect(gate.complete().state).toBe("ready");
@@ -635,18 +636,27 @@ describe("Plan gate review fixes (round 2)", () => {
 		expect(accepted).toBeDefined();
 		expect(gate.state).toBe("ready");
 		expect(gate.plan).toBeDefined();
-		// Staged artifacts are the released authority, so no plan attribution may be appended.
-		expect(gate.planRecord()).toBe("");
+		// #plan is the release authority when present, so record, release and workers all attribute it.
+		expect(gate.planRecord()).toContain(accepted!.planId);
+		expect(gate.planRecord()).toContain(accepted!.planHash);
+		const contexts = gate.buildWorkerContexts(["w1", "w2"]);
+		expect(contexts?.map((c) => c.planHash)).toEqual([accepted!.planHash, accepted!.planHash]);
+		expect(gate.getExecutionContext()).toMatchObject({
+			planId: accepted!.planId,
+			planHash: accepted!.planHash,
+			text: accepted!.text,
+		});
 		const released = gate.release();
 		expect(released.ok).toBe(true);
 		const releasedText = released.ok ? released.text : "";
-		expect(releasedText).toBe(plan());
+		expect(releasedText).toBe(accepted!.text);
+		expect(releasedText).not.toBe(plan());
 		// The omp.ts composition: `record ? `${text}\n\n${record}` : text`.
 		const record = gate.planRecord();
 		const composed = record ? `${releasedText}\n\n${record}` : releasedText;
-		expect(composed).toBe(plan());
-		expect(composed).not.toContain(accepted!.planHash);
-		expect(composed).not.toContain(accepted!.planId);
+		expect(composed).toContain(releasedText);
+		expect(composed).toContain(accepted!.planHash);
+		expect(composed).toContain(accepted!.planId);
 	});
 
 	test("(2) a pure plan gate still records its plan id/hash", () => {
@@ -788,5 +798,43 @@ describe("Plan gate review fixes (round 4)", () => {
 		expect(validatePlanChecklist(CHECKLIST_PLAN.replace("ROADMAP wave 1", "ROADMAP")).problems).toContain(
 			"ROADMAP consistency missing",
 		);
+	});
+});
+
+describe("Plan gate review fixes (round 5)", () => {
+	test("(1) released text re-hashes to the exact planHash every worker receives (staged+plan)", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		gate.stage({ text: plan(), expected: FULL });
+		expect(gate.complete().state).toBe("ready");
+		expect(gate.enterWaitingForPlan()).toBe(true);
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		const contextsBefore = gate.buildWorkerContexts(["w1", "w2", "w3"]);
+		const released = gate.release();
+		expect(released.ok).toBe(true);
+		const releasedText = released.ok ? released.text : "";
+		// The invariant: re-hashing the released text yields the hash workers were given.
+		expect(planGateHash(releasedText)).toBe(accepted!.planHash);
+		expect(planGateHash(releasedText)).toBe(gate.planHash);
+		for (const ctx of contextsBefore!) expect(planGateHash(releasedText)).toBe(ctx.planHash);
+		const contextsAfter = gate.buildWorkerContexts(["w1", "w2", "w3"]);
+		for (const ctx of contextsAfter!) expect(planGateHash(releasedText)).toBe(ctx.planHash);
+		expect(gate.getExecutionContext()).toMatchObject({ planHash: planGateHash(releasedText), text: releasedText });
+		expect(gate.planRecord()).toContain(planGateHash(releasedText));
+		expect(releasedText).toBe(accepted!.text);
+	});
+
+	test("(2) legacy staged-only release is unchanged: staged text, no record, no plan contexts", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		gate.stage({ text: plan(), expected: FULL });
+		expect(gate.complete().state).toBe("ready");
+		expect(gate.plan).toBeUndefined();
+		expect(gate.buildWorkerContexts(["w1"])).toBeUndefined();
+		expect(gate.getExecutionContext()).toBeUndefined();
+		expect(gate.planRecord()).toBe("");
+		const released = gate.release();
+		expect(released.ok).toBe(true);
+		expect(released.ok ? released.text : "").toBe(plan());
+		expect(gate.planRecord()).toBe("");
 	});
 });
