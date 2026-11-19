@@ -89,7 +89,6 @@ never replace).
 - Shell (`bash` probe of repo state): BLOCKED — `swarm-assignment` lane rule
   (edit-only mid-flight); docs_bundle.py/docs_bundle.ts therefore recorded as
   skipped:tool-missing for this lane.
-- Headings sanity of the template fragment above: h1 1, skips 0 (SUCCESS).
 
 ## Omitted sub-issues
 

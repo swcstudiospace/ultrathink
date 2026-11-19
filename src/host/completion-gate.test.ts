@@ -613,7 +613,9 @@ describe("Plan gate review fixes (round 1)", () => {
 		expect(bareVerdict.problems).toContain("ordering missing");
 		// A label with an empty value does not count.
 		const empty = CHECKLIST_PLAN.replace("Objective: ship the plan gate.", "Objective:");
-		expect(validatePlanChecklist(empty).problems).toContain("objective missing");
+		// A value on a later line does not satisfy a bare labeled line.
+		const split = CHECKLIST_PLAN.replace("Objective: ship the plan gate.", "Objective:\n\nAn unrelated line.");
+		expect(validatePlanChecklist(split).problems).toContain("objective missing");
 		// An explicit SPE-<n> reference is required.
 		expect(validatePlanChecklist(CHECKLIST_PLAN.replace("SPE-35029", "an issue")).problems).toContain(
 			"referenced Linear issues missing",
