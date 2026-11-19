@@ -427,3 +427,99 @@ describe("CompletionGate watchdog", () => {
 		expect(await gate.settled).toMatchObject({ state: "failed_or_cancelled" });
 	});
 });
+
+const CHECKLIST_PLAN = plan().replace(
+	"</BUILD_PROMPT>",
+	`\nObjective: ship the plan gate. Scope: host only. Named surfaces: completion-gate.ts, omp.ts.
+Acceptance: regression tests. Out-of-scope: other files. Dependencies: node:crypto only. Ordering: checklist first.
+Linear SPE-35029 ROADMAP wave 1.
+</BUILD_PROMPT>`,
+);
+
+describe("Plan gate (SPE-35029 design B)", () => {
+	test("(1) missing Plan blocks execution, release and completion", () => {
+		// Executing before plan_validated is rejected, with actor/from/to/reason logged.
+		const early = new CompletionGate({ inactivityMs: 0 });
+		expect(early.tryTransition("executing", "tester", "too early")).toBe(false);
+		expect(early.transitions.at(-1)).toMatchObject({ accepted: false, actor: "tester", to: "executing", reason: "too early" });
+
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		expect(gate.enterWaitingForPlan()).toBe(true);
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(gate.beginExecution()).toBe(false);
+		expect(gate.completeExecution()).toBe(false);
+		expect(gate.buildWorkerContexts(["w1"])).toBeUndefined();
+		expect(gate.getExecutionContext()).toBeUndefined();
+		expect(gate.release()).toMatchObject({ ok: false });
+		expect(gate.transitions.find((t) => t.to === "executing")).toMatchObject({ accepted: false, from: "waiting_for_plan" });
+		for (const t of gate.transitions) {
+			expect(typeof t.timestamp).toBe("number");
+			expect(typeof t.actor).toBe("string");
+			expect(t.from).toBeTruthy();
+			expect(t.to).toBeTruthy();
+		}
+	});
+
+	test("(2) invalid/stale Plan is rejected and quarantined", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		expect(gate.submitPlan(undefined)).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(gate.submitPlan("plain text, no checklist")).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(gate.plan).toBeUndefined();
+		expect(gate.submitPlan(CHECKLIST_PLAN, { stale: true })).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(gate.plan).toBeUndefined();
+		expect(gate.beginExecution()).toBe(false);
+	});
+
+	test("(3) late valid Plan auto-resumes to ready; done requires validation", () => {
+		let calls = 0;
+		const gate = new CompletionGate({
+			inactivityMs: 0,
+			maxPollAttempts: 5,
+			planProvider: () => (calls++ < 1 ? undefined : CHECKLIST_PLAN),
+		});
+		gate.enterWaitingForPlan();
+		expect(gate.pollOnce()).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
+		const accepted = gate.pollOnce();
+		expect(accepted).toBeDefined();
+		expect(gate.state).toBe("ready");
+		expect(gate.planHash).toBe(accepted!.planHash);
+		// Done-before-validation is rejected; evidence recorded outside validating is ignored.
+		expect(gate.beginExecution()).toBe(true);
+		gate.recordValidationEvidence("too early");
+		expect(gate.hasValidationEvidence).toBe(false);
+		expect(gate.completeExecution()).toBe(false);
+		expect(gate.beginValidation()).toBe(true);
+		expect(gate.completeExecution()).toBe(false);
+		gate.recordValidationEvidence("tests green");
+		expect(gate.hasValidationEvidence).toBe(true);
+		expect(gate.completeExecution()).toBe(true);
+		expect(gate.state).toBe("complete");
+
+		// Bounded polling blocks loudly after max attempts, never silent.
+		const blocked = new CompletionGate({ inactivityMs: 0, maxPollAttempts: 2 });
+		blocked.enterWaitingForPlan();
+		blocked.pollOnce();
+		blocked.pollOnce();
+		expect(blocked.blocked).toBe(true);
+		expect(blocked.blockReason).toContain("blocked");
+		expect(blocked.state).toBe("waiting_for_plan");
+	});
+
+	test("(4) every worker receives the identical plan hash", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		const contexts = gate.buildWorkerContexts(["w1", "w2", "w3"]);
+		expect(contexts).toHaveLength(3);
+		expect(new Set(contexts!.map((c) => c.planHash)).size).toBe(1);
+		expect(contexts![0].planHash).toBe(accepted!.planHash);
+		expect(contexts![0].planId).toBe(accepted!.planId);
+		expect(gate.getExecutionContext()).toMatchObject({ planId: accepted!.planId, planHash: accepted!.planHash });
+		expect(gate.planRecord()).toContain(accepted!.planHash);
+		expect(gate.release()).toMatchObject({ ok: true, text: expect.stringContaining("Objective: ship the plan gate") });
+	});
+});

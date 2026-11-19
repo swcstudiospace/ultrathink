@@ -16,11 +16,23 @@
  * disables). Progress for a human goes out through `onProgress` listeners only: a side channel that is never part
  * of the prompt.
  */
+import { createHash } from "node:crypto";
 import type { TotManifest } from "../think/tot/types.ts";
-import type { SyncSummary } from "../track/prd-types.ts";
 import { checkUpliftXml } from "../uplift/xml.ts";
 
-type GateState = "generating" | "validating" | "ready" | "partial_failure" | "failed_or_cancelled";
+export type GateState =
+	| "discovering"
+	| "discussing"
+	| "planning"
+	| "waiting_for_plan"
+	| "plan_validated"
+	| "generating"
+	| "validating"
+	| "ready"
+	| "executing"
+	| "partial_failure"
+	| "failed_or_cancelled"
+	| "complete";
 
 /** Default inactivity window before the watchdog fails the gate: 30 minutes. */
 export const DEFAULT_GATE_INACTIVITY_MS = 30 * 60_000;
@@ -243,13 +255,46 @@ const PLATFORM_TIMERS: GateTimers = {
 	clearTimeout: (handle) => clearTimeout(handle),
 };
 
-interface CompletionGateOptions {
-	/** Inactivity window in ms; 0 disables the watchdog. Default `DEFAULT_GATE_INACTIVITY_MS`. */
+export interface CompletionGateOptions {
+	/** Inactivity window in ms; 0 disables the watchdog. Default DEFAULT_GATE_INACTIVITY_MS. */
 	readonly inactivityMs?: number;
 	readonly timers?: GateTimers;
 	readonly validate?: (artifacts: GateArtifacts) => GateVerdict;
 	/** Called once, loudly, when the watchdog failed the gate; the host must stop the planner and tell the user. */
 	readonly onStall?: (reason: string) => void;
+	/** Bounded Plan-gate polling: interval between re-checks while waiting_for_plan. Default 2000. */
+	readonly pollIntervalMs?: number;
+	/** Bounded Plan-gate polling: max attempts before blocked-with-reason. Default 30. */
+	readonly maxPollAttempts?: number;
+	/** Plan source re-polled while waiting_for_plan; undefined means submitPlan() drives the gate. */
+	readonly planProvider?: () => string | undefined;
+	/** Clock for transition timestamps; defaults to Date.now. Test seam. */
+	readonly now?: () => number;
+}
+
+/** One transition attempt, accepted or rejected, with actor and reason. */
+export interface GateTransition {
+	readonly timestamp: number;
+	readonly actor: string;
+	readonly from: GateState;
+	readonly to: GateState;
+	readonly reason: string;
+	readonly accepted: boolean;
+}
+
+/** A plan that passed the checklist: version/hash every worker must carry. */
+export interface PlanGatePlan {
+	readonly planId: string;
+	readonly planHash: string;
+	readonly text: string;
+	readonly version: string;
+}
+
+/** Execution context injected to one worker; all share the same plan hash. */
+export interface WorkerContext {
+	readonly workerId: string;
+	readonly planId: string;
+	readonly planHash: string;
 }
 
 /** A side-channel progress note. It is for the user's eyes and never part of a prompt. */
@@ -294,6 +339,17 @@ export class CompletionGate {
 	readonly #timers: GateTimers;
 	readonly #validate: (artifacts: GateArtifacts) => GateVerdict;
 	readonly #onStall: ((reason: string) => void) | undefined;
+	readonly #planPollIntervalMs: number;
+	readonly #planMaxPollAttempts: number;
+	readonly #planProvider: (() => string | undefined) | undefined;
+	readonly #now: () => number;
+	#plan: PlanGatePlan | undefined;
+	#pollAttempts = 0;
+	#pollTimer: NodeJS.Timeout | undefined;
+	#blocked = false;
+	#blockReason = "";
+	#validationEvidence: string | undefined;
+	readonly #transitions: GateTransition[] = [];
 
 	constructor(options: CompletionGateOptions = {}) {
 		const window = options.inactivityMs ?? DEFAULT_GATE_INACTIVITY_MS;
@@ -301,6 +357,12 @@ export class CompletionGate {
 		this.#timers = options.timers ?? PLATFORM_TIMERS;
 		this.#validate = options.validate ?? ((artifacts) => validateArtifacts(artifacts));
 		this.#onStall = options.onStall;
+		this.#planProvider = options.planProvider;
+		this.#now = options.now ?? Date.now;
+		const pollInterval = options.pollIntervalMs ?? 2000;
+		this.#planPollIntervalMs = Number.isFinite(pollInterval) && pollInterval > 0 ? Math.min(pollInterval, MAX_TIMER_MS) : 2000;
+		const maxPolls = options.maxPollAttempts ?? 30;
+		this.#planMaxPollAttempts = Number.isFinite(maxPolls) && maxPolls > 0 ? Math.floor(maxPolls) : 30;
 		// A rejected settlement is impossible: every terminal path resolves.
 		this.#arm();
 	}
@@ -332,6 +394,182 @@ export class CompletionGate {
 	/** Resolves once the gate reached `ready`, `partial_failure` or `failed_or_cancelled`. */
 	get settled(): Promise<GateOutcome> {
 		return this.#settled.promise;
+	}
+
+	get transitions(): readonly GateTransition[] {
+		return [...this.#transitions];
+	}
+
+	get plan(): PlanGatePlan | undefined {
+		return this.#plan;
+	}
+
+	get planHash(): string | undefined {
+		return this.#plan?.planHash;
+	}
+
+	get planId(): string | undefined {
+		return this.#plan?.planId;
+	}
+
+	get pollAttempts(): number {
+		return this.#pollAttempts;
+	}
+
+	get blocked(): boolean {
+		return this.#blocked;
+	}
+
+	get blockReason(): string {
+		return this.#blockReason;
+	}
+
+	/** True once validation evidence was recorded for the complete() step. */
+	get hasValidationEvidence(): boolean {
+		return this.#validationEvidence !== undefined;
+	}
+
+	/** Record for STATE.md / SUMMARY / Linear PRD / Notion prompt. Empty until a plan validates. */
+	planRecord(): string {
+		if (!this.#plan) return "";
+		return `Plan ${this.#plan.planId} @ ${this.#plan.planHash} (v${this.#plan.version})`;
+	}
+
+	/** Transition log line for persistence; one line per attempt, accepted or rejected. */
+	transitionLog(): string[] {
+		return this.#transitions.map(
+			(t) => `${new Date(t.timestamp).toISOString()} ${t.actor} ${t.from}->${t.to} ${t.accepted ? "accepted" : "rejected"}: ${t.reason}`,
+		);
+	}
+
+	/**
+	 * Hard state machine: only listed edges pass. Executing before plan_validated and
+	 * complete without validation evidence are always rejected; every attempt is logged.
+	 */
+	tryTransition(to: GateState, actor = "system", reason = ""): boolean {
+		const from = this.#state;
+		const allowed = planGateAllowed(from);
+		let ok = allowed.has(to);
+		// Executing only from ready (plan_validated must pass through ready);
+		// complete only with validation evidence recorded in validating.
+		if (to === "executing" && from !== "ready") ok = false;
+		if (to === "complete" && this.#validationEvidence === undefined) ok = false;
+		if (from === "complete" || from === "failed_or_cancelled") ok = false;
+		const entry: GateTransition = { timestamp: this.#now(), actor, from, to, reason, accepted: ok };
+		this.#transitions.push(entry);
+		if (!ok) return false;
+		this.#state = to;
+		this.#emit(entry.reason || `${from} -> ${to}`);
+		return true;
+	}
+
+	/** Enter waiting_for_plan (missing/stale/unparseable/fails checklist) and start bounded polling. */
+	enterWaitingForPlan(actor = "system", reason = "plan missing, stale, unparseable or failing checklist"): boolean {
+		const ok = this.tryTransition("waiting_for_plan", actor, reason);
+		if (ok) this.#startPolling();
+		return ok;
+	}
+
+	/**
+	 * Submit a candidate plan. Returns the plan when it validates (hash computed, gate
+	 * auto-transitions plan_validated -> ready without manual restart); else undefined and
+	 * the gate stays/returns to waiting_for_plan (invalid/stale quarantined).
+	 */
+	submitPlan(text: string | undefined, options: { actor?: string; stale?: boolean; version?: string } = {}): PlanGatePlan | undefined {
+		const actor = options.actor ?? "planner";
+		const verdict = validatePlanChecklist(text, options);
+		if (!verdict.ok) {
+			if (this.#state !== "waiting_for_plan") this.enterWaitingForPlan(actor, `plan quarantined: ${verdict.problems.join("; ")}`);
+			else this.tryTransition("waiting_for_plan", actor, `plan quarantined: ${verdict.problems.join("; ")}`);
+			return undefined;
+		}
+		const plan = buildPlanGatePlan(text ?? "", options.version);
+		this.#plan = plan;
+		if (this.#state !== "plan_validated") this.tryTransition("plan_validated", actor, "plan checklist passed");
+		// Automatic use: validated means ready; no manual restart is required.
+		this.tryTransition("ready", actor, "auto-use validated plan");
+		this.#stopPolling();
+		return plan;
+	}
+
+	/** One bounded poll tick (host timer or test): re-check provider, auto-resume or block. */
+	pollOnce(): PlanGatePlan | undefined {
+		if (this.#state !== "waiting_for_plan") return undefined;
+		this.#pollAttempts += 1;
+		const candidate = this.#planProvider?.();
+		if (candidate !== undefined) {
+			const accepted = this.submitPlan(candidate);
+			if (accepted) return accepted;
+		}
+		if (this.#pollAttempts >= this.#planMaxPollAttempts) {
+			this.#blocked = true;
+			this.#blockReason = `waiting_for_plan blocked after ${this.#pollAttempts} attempts: no valid Plan (never silent)`;
+			this.#stopPolling();
+			this.#emit(this.#blockReason);
+		} else {
+			this.#armPollTimer();
+		}
+		return undefined;
+	}
+
+	/** Execution context for every worker: identical plan id/hash or undefined when not ready. */
+	buildWorkerContexts(workerIds: readonly string[]): WorkerContext[] | undefined {
+		const ready = this.#state === "ready" || this.#state === "plan_validated" || this.#state === "executing" || this.#state === "validating" || this.#state === "complete";
+		if (!ready || !this.#plan) return undefined;
+		return workerIds.map((workerId) => ({ workerId, planId: this.#plan!.planId, planHash: this.#plan!.planHash }));
+	}
+
+	getExecutionContext(): { planId: string; planHash: string; text: string } | undefined {
+		if (!this.#plan) return undefined;
+		const ready = this.#state === "ready" || this.#state === "plan_validated" || this.#state === "executing" || this.#state === "validating" || this.#state === "complete";
+		if (!ready) return undefined;
+		return { planId: this.#plan.planId, planHash: this.#plan.planHash, text: this.#plan.text };
+	}
+
+	beginExecution(actor = "system", reason = "execution started"): boolean {
+		return this.tryTransition("executing", actor, reason);
+	}
+
+	beginValidation(actor = "system", reason = "validation started"): boolean {
+		return this.tryTransition("validating", actor, reason);
+	}
+
+	/**
+	 * Validation evidence for the complete() step. Accepted only in `validating`:
+	 * evidence recorded earlier (e.g. in ready/executing) never enables complete.
+	 */
+	recordValidationEvidence(evidence: string, actor = "validator"): void {
+		if (this.#state !== "validating" || evidence.trim() === "") return;
+		this.#validationEvidence = evidence;
+		this.#emit(`validation evidence recorded by ${actor}`);
+	}
+
+	completeExecution(actor = "system", reason = "execution complete"): boolean {
+		return this.tryTransition("complete", actor, reason);
+	}
+
+	#startPolling(): void {
+		this.#pollAttempts = 0;
+		this.#blocked = false;
+		this.#blockReason = "";
+		this.#stopPolling();
+		this.#armPollTimer();
+	}
+
+	#armPollTimer(): void {
+		if (this.#state !== "waiting_for_plan") return;
+		const timer = this.#timers.setTimeout(() => {
+			this.#pollTimer = undefined;
+			this.pollOnce();
+		}, this.#planPollIntervalMs);
+		(timer as { unref?: () => void } | undefined)?.unref?.();
+		this.#pollTimer = timer;
+	}
+
+	#stopPolling(): void {
+		if (this.#pollTimer === undefined) return;
+		this.#timers.clearTimeout(this.#pollTimer);
+		this.#pollTimer = undefined;
 	}
 
 	/** Subscribes to side-channel progress; returns the unsubscribe function. */
@@ -411,8 +649,14 @@ export class CompletionGate {
 			};
 		if (this.#state !== "ready")
 			return { ok: false, reason: "not_ready", detail: `the plan is still ${this.#state}` };
-		if (!staged || !verdict)
+		if (!staged || !verdict) {
+			// Plan-gate path: a checklist-validated Plan (submitPlan) is the release content.
+			if (this.#plan) {
+				this.#released = true;
+				return { ok: true, state: "ready", text: this.#plan.text, problems: [] };
+			}
 			return { ok: false, reason: "failed", detail: "no validated artifacts are staged" };
+		}
 		this.#released = true;
 		return { ok: true, state: "ready", text: staged.text, problems: verdict.problems };
 	}
@@ -487,3 +731,67 @@ function describe(problems: readonly GateProblem[]): string {
 	);
 	return ordered.map((problem) => problem.detail).join("; ");
 }
+
+/** Allowed hard-state-machine edges: the spec chain discovering->discussing->planning->waiting_for_plan->
+ * plan_validated->ready->executing->validating->complete, plus legacy generating (the entry state, which may
+ * enter discovering) and terminal failed_or_cancelled. No backward or skip edges: executing is ready-only and
+ * complete is validating-only (plus evidence). `waiting_for_plan` self-quarantine is idempotent. */
+function planGateAllowed(from: GateState): ReadonlySet<GateState> {
+	const table: Record<string, readonly GateState[]> = {
+		discovering: ["discussing", "waiting_for_plan", "plan_validated", "failed_or_cancelled"],
+		discussing: ["planning", "waiting_for_plan", "plan_validated", "failed_or_cancelled"],
+		planning: ["waiting_for_plan", "plan_validated", "failed_or_cancelled"],
+		waiting_for_plan: ["waiting_for_plan", "plan_validated", "failed_or_cancelled"],
+		plan_validated: ["ready", "failed_or_cancelled"],
+		generating: ["discovering", "validating", "partial_failure", "failed_or_cancelled", "waiting_for_plan", "plan_validated"],
+		validating: ["ready", "partial_failure", "failed_or_cancelled", "complete"],
+		ready: ["executing", "validating", "failed_or_cancelled"],
+		executing: ["validating", "failed_or_cancelled"],
+		partial_failure: ["failed_or_cancelled", "waiting_for_plan"],
+		failed_or_cancelled: [],
+		complete: [],
+	};
+	return new Set(table[from] ?? []);
+}
+
+/** Sha256 of canonical plan text (trimmed). */
+export function planGateHash(text: string): string {
+	return createHash("sha256").update(text.trim()).digest("hex");
+}
+
+function buildPlanGatePlan(text: string, version?: string): PlanGatePlan {
+	const hash = planGateHash(text);
+	return { planId: `plan-${hash.slice(0, 12)}`, planHash: hash, text: text.trim(), version: version ?? "1" };
+}
+
+/**
+ * Plan checklist: objective, scope, named surfaces, acceptance, out-of-scope,
+ * dependencies, ordering, referenced Linear issues, ROADMAP consistency.
+ * Unparseable (empty/truncated XML) fails; stale is flagged by the caller.
+ */
+export function validatePlanChecklist(
+	text: string | undefined,
+	options: { stale?: boolean } = {},
+): { ok: boolean; problems: string[] } {
+	const problems: string[] = [];
+	if (text === undefined || text.trim() === "") problems.push("plan missing");
+	if (options.stale) problems.push("plan stale");
+	if (problems.length > 0) return { ok: false, problems };
+	const body = text ?? "";
+	if (!checkUpliftXml(body, "").ok) problems.push("plan unparseable");
+	if (!/objective/i.test(body)) problems.push("objective missing");
+	if (!/scope/i.test(body)) problems.push("scope missing");
+	if (!/surfaces?/i.test(body)) problems.push("named surfaces missing");
+	if (!/acceptance/i.test(body)) problems.push("acceptance missing");
+	if (!/out-of-scope|out of scope/i.test(body)) problems.push("out-of-scope missing");
+	if (!/dependencies/i.test(body)) problems.push("dependencies missing");
+	if (!/ordering|order/i.test(body)) problems.push("ordering missing");
+	if (!/SPE-\d+/.test(body)) problems.push("referenced Linear issues missing");
+	// ROADMAP consistency: the Plan must name ROADMAP and the ordering it is consistent with.
+	if (!/ROADMAP/.test(body)) problems.push("ROADMAP consistency missing");
+	return { ok: problems.length === 0, problems };
+}
+
+/** Waiting copy for the host: Ultrathink waits; a late valid Plan auto-resumes. */
+export const GATE_WAITING_PLAN =
+	"STOP. Ultrathink is waiting for the phase Plan: it is missing, stale, unparseable or failing the checklist. Do not act yet. Bounded polling is running; a late valid Plan auto-resumes to ready and is used automatically (no manual restart).";

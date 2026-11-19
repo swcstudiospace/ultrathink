@@ -460,6 +460,10 @@ export const GATE_HOLD =
 export const gateHoldPartial = (detail: string, usable: boolean): string =>
 	`STOP. Ultrathink finished planning but the plan is ${usable ? "incomplete" : "unusable"}: ${detail}. Nothing from it was released, so the session did not start on it. Do not call any tool, edit any file or run any command, and do not act on the request. Tell the user what is missing from the plan and ask them to resend the prompt to plan again, or to run /ultrathink-quick <message> to continue without a plan.`;
 
+/** Gate hold while waiting_for_plan: Ultrathink waits; a late valid Plan auto-resumes and is used automatically. */
+export const GATE_WAITING =
+	"STOP. Ultrathink is waiting for the phase Plan: it is missing, stale, unparseable or failing the checklist (objective, scope, named surfaces, acceptance, out-of-scope, dependencies, ordering, referenced Linear issues, ROADMAP). Do not act yet. Bounded polling is running; when a valid Plan lands it is hashed and used automatically as execution context (no manual restart).";
+
 /** The inactivity watchdog ended planning: shown loudly, and the request continues as written. */
 export const gateStalled = (reason: string): string =>
 	`Ultrathink stopped planning: ${reason}. Continue with the user's request as written.`;
@@ -3143,13 +3147,17 @@ export function createOmpExtension(
 				const missing = (gate.verdict?.problems ?? []).map((problem) => problem.detail).join("; ");
 				return { kind: "hold", text: gateHoldPartial(missing, true) };
 			}
+			if (gate.state === "waiting_for_plan") return { kind: "hold", text: GATE_WAITING };
+			if (gate.state === "plan_validated") gate.tryTransition("ready", "omp", "auto-use validated plan");
 			if (gate.state !== "ready")
 				return { kind: "notice", text: planFailedNotice(`the plan is still ${gate.state}`) };
 			const released = gate.release();
 			if (!released.ok) return { kind: "notice", text: planFailedNotice(released.detail) };
-			flight.releasedText = released.text;
-			saveReleased(flight, released.text);
-			return { kind: "plan", text: released.text };
+			const record = gate.planRecord();
+			const text = record ? `${released.text}\n\n${record}` : released.text;
+			flight.releasedText = text;
+			saveReleased(flight, text);
+			return { kind: "plan", text };
 		};
 
 		/** An aside, or a notice as one: a refused send is warned and shown display-only, so the model and the user both learn of it. */
