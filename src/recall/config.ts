@@ -16,6 +16,11 @@ type SkillActivation = "draft" | "active";
 interface RecallConfig {
 	/** Master switch. While false nothing is recalled, whatever the sources and triggers say. */
 	enabled: boolean;
+	/**
+	 * Whether recall may inject lessons and moments captured without your confirmation. False: only confirmed items.
+	 * Skill drafts are never injected, whatever this says.
+	 */
+	injectNew: boolean;
 	sources: { knowledge: boolean; lessons: boolean; moments: boolean; skills: boolean };
 	triggers: {
 		scopeChange: boolean;
@@ -63,6 +68,7 @@ export function defaultRecallSettings(): RecallSettings {
 		knowledge: { probeRecord: true },
 		recall: {
 			enabled: false,
+			injectNew: false,
 			sources: { knowledge: false, lessons: false, moments: false, skills: false },
 			triggers: {
 				scopeChange: false,
@@ -128,6 +134,7 @@ export function parseRecallSettings(
 		knowledge: { probeRecord: flag(knowledge.probeRecord, base.knowledge.probeRecord) },
 		recall: {
 			enabled: flag(recall.enabled, b.enabled),
+			injectNew: flag(recall.injectNew, b.injectNew),
 			sources: {
 				knowledge: flag(sources.knowledge, b.sources.knowledge),
 				lessons: flag(sources.lessons, b.sources.lessons),

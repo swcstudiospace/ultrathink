@@ -6,6 +6,7 @@
 import type { KnowledgeLookup } from "../greptile/knowledge.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";
 import {
+	type ProducerInvocation,
 	lessonsLookupToPanel,
 	skillsLookupToPanel,
 	type SubstrateBriefInput,
@@ -35,14 +36,19 @@ interface TurnLookups {
 export function buildTurnPanels(
 	lookups: TurnLookups,
 	settings: RecallSettings,
+	invocation?: ProducerInvocation,
 ): TurnPanels | undefined {
 	if (!settings.panels.informationPanels) return undefined;
 	const panels: TurnPanels = {};
 	if (lookups.knowledge) panels.knowledge = knowledgeLookupToPanel(lookups.knowledge);
 	if (lookups.lessons)
-		panels.lessons = lessonsLookupToPanel(lookups.lessons, settings.recall.relevanceFloor.lessons);
-	if (lookups.skills) panels.skills = skillsLookupToPanel(lookups.skills);
-	if (lookups.substrate) panels.substrate = substrateBriefToPanel(lookups.substrate);
+		panels.lessons = lessonsLookupToPanel(
+			lookups.lessons,
+			settings.recall.relevanceFloor.lessons,
+			invocation,
+		);
+	if (lookups.skills) panels.skills = skillsLookupToPanel(lookups.skills, invocation);
+	if (lookups.substrate) panels.substrate = substrateBriefToPanel(lookups.substrate, invocation);
 	return Object.keys(panels).length > 0 ? panels : undefined;
 }
 

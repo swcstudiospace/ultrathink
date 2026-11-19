@@ -810,6 +810,7 @@ describe("promoteDue", () => {
 		expect(result).toEqual({ drafted: [], installed: [] });
 		expect(existsSync(join(f.stateDir, "teach", "skill-drafts"))).toBe(false);
 		expect(existsSync(f.piDir)).toBe(false);
+		expect(existsSync(join(f.stateDir, "generated-skills"))).toBe(false);
 	});
 
 	test("does nothing while Teachable Moments is off or killed", async () => {
@@ -1161,5 +1162,112 @@ describe("promoteDue skillworthy gate", () => {
 		expect(existsSync(join(f.stateDir, "teach", "skill-drafts", "lesson-skip-lesson"))).toBe(false);
 		expect(store.get(skip.id)?.status).toBe("confirmed");
 		expect(store.get(keep.id)?.status).toBe("promoted");
+	});
+});
+
+describe("promoteDue authors draft generated skills", () => {
+	const RECENT = "2026-09-20T00:00:00.000Z";
+	const NOW_ISO = "2026-10-01T00:00:00.000Z";
+
+	test("a recurring lesson produces exactly one draft, however often the sweep runs", async () => {
+		const f = fixture();
+		const store = openStore(storeDir(f.stateDir));
+		const first = moment({
+			name: "Import types with import type",
+			origin: "observe",
+			createdAt: RECENT,
+		});
+		const second = moment({
+			name: "Import types with import type",
+			origin: "observe",
+			createdAt: RECENT,
+		});
+		store.put(first);
+		store.put(second);
+		const ctx = f.ctx({ teach: { autoPromote: true } });
+
+		await promoteDue(ctx);
+		await promoteDue(ctx);
+
+		const dir = join(f.stateDir, "generated-skills");
+		const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
+			skills: Array<{ name: string; status: string; source_ids: string[] }>;
+		};
+		expect(manifest.skills).toHaveLength(1);
+		const [skill] = manifest.skills;
+		expect(skill?.name).toBe("import-types-with-import-type");
+		expect(skill?.status).toBe("draft");
+		expect([first.id, second.id] as (string | undefined)[]).toContain(skill?.source_ids[0]);
+		expect(readdirSync(dir).sort()).toEqual([
+			"audit.ndjson",
+			"import-types-with-import-type",
+			"manifest.json",
+		]);
+		expect(readFileSync(join(dir, "import-types-with-import-type", "SKILL.md"), "utf8")).toContain(
+			"status: draft",
+		);
+		const audit = readFileSync(join(dir, "audit.ndjson"), "utf8").trim().split("\n");
+		expect(audit.map((line) => JSON.parse(line).action)).toEqual(["create"]);
+	});
+
+	test("a candidate that fails validation writes no skill and records its reason", async () => {
+		const f = fixture();
+		const lesson = moment({
+			name: "Stale path lesson",
+			body: "Edit `src/long-gone/module.ts` before rerunning.",
+			origin: "explicit",
+			createdAt: RECENT,
+		});
+		openStore(storeDir(f.stateDir)).put(lesson);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		const dir = join(f.stateDir, "generated-skills");
+		expect(readdirSync(dir)).toEqual(["audit.ndjson"]);
+		const audit = readFileSync(join(dir, "audit.ndjson"), "utf8").trim().split("\n");
+		expect(audit.map((line) => JSON.parse(line))).toEqual([
+			{
+				ts: NOW_ISO,
+				action: "reject",
+				name: lesson.id,
+				source_ids: [lesson.id],
+				qualification_by: "user-confirmed",
+				reject_kind: "stale-path",
+			},
+		]);
+		expect(audit[0]).not.toContain("long-gone");
+	});
+
+	test("a user-authored skill with the same name is never touched", async () => {
+		const f = fixture();
+		const dir = join(f.stateDir, "generated-skills");
+		const handWritten = join(dir, "import-types-with-import-type");
+		mkdirSync(handWritten, { recursive: true });
+		const text =
+			"---\nname: import-types-with-import-type\ndescription: Mine.\n---\nWritten by hand.\n";
+		writeFileSync(join(handWritten, "SKILL.md"), text);
+		openStore(storeDir(f.stateDir)).put(
+			moment({ name: "Import types with import type", origin: "explicit", createdAt: RECENT }),
+		);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		expect(readFileSync(join(handWritten, "SKILL.md"), "utf8")).toBe(text);
+		expect(readdirSync(handWritten)).toEqual(["SKILL.md"]);
+		const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as {
+			skills: Array<{ name: string }>;
+		};
+		expect(manifest.skills.map((entry) => entry.name)).toEqual(["import-types-with-import-type-2"]);
+	});
+
+	test("a lesson that neither recurs nor was captured explicitly writes nothing", async () => {
+		const f = fixture();
+		openStore(storeDir(f.stateDir)).put(
+			moment({ name: "Lone observation", origin: "observe", createdAt: RECENT }),
+		);
+
+		await promoteDue(f.ctx({ teach: { autoPromote: true } }));
+
+		expect(existsSync(join(f.stateDir, "generated-skills"))).toBe(false);
 	});
 });

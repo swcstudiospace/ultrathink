@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import type { LessonRow, LessonsLookup, SkillRow, SkillsLookup } from "../teach/types.ts";
 import {
 	lessonsLookupToPanel,
+	momentsLookupToPanel,
 	skillsLookupToPanel,
 	type SubstrateBriefInput,
 	substrateBriefToPanel,
@@ -447,5 +448,43 @@ describe("substrateBriefToPanel", () => {
 				stages: [],
 			});
 		}
+	});
+});
+
+describe("producer metadata: surface and trigger on the envelope", () => {
+	test("the lessons producer's envelope carries the lesson surface and the planner trigger as a panel trigger", () => {
+		expect(
+			lessonsLookupToPanel(lessons([row()]), FLOOR, { trigger: "scopeChange", startedAt: 1_000 }),
+		).toMatchObject({
+			surface: "lesson",
+			trigger: "scope_change",
+		});
+	});
+
+	test("the skills producer's envelope carries the skill surface and the planner trigger as a panel trigger", () => {
+		expect(
+			skillsLookupToPanel(skills([skillRow()]), { trigger: "phaseBoundary", startedAt: 1_000 }),
+		).toMatchObject({
+			surface: "skill",
+			trigger: "phase_boundary",
+		});
+	});
+
+	test("the substrate producer's envelope carries the substrate surface and the planner trigger as a panel trigger", () => {
+		expect(
+			substrateBriefToPanel(
+				{ text: "Brief", state: "complete" },
+				{ trigger: "uncertainty", startedAt: 1_000 },
+			),
+		).toMatchObject({ surface: "substrate", trigger: "uncertainty" });
+	});
+
+	test("the teachable-moment producer's envelope carries the teachable_moment surface and the planner trigger as a panel trigger", () => {
+		expect(
+			momentsLookupToPanel(lessons([row()]), FLOOR, { trigger: "explicit", startedAt: 1_000 }),
+		).toMatchObject({
+			surface: "teachable_moment",
+			trigger: "explicit_request",
+		});
 	});
 });

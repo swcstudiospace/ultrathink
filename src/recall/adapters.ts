@@ -7,12 +7,16 @@
  * is shown only as an excluded row, so the panel can say that drafts exist without ever injecting one.
  */
 import type { LessonRow, LessonsLookup, SkillsLookup } from "../teach/types.ts";
+import type { RecallEvent } from "./engine.ts";
 import {
 	type PanelBody,
 	type PanelEnvelope,
 	type PanelItem,
+	type PanelSurface,
 	PREVIEW_MAX_CHARS,
+	panelTriggerFromPlanner,
 	sanitizePanelText,
+	withPanelMeta,
 } from "./panel-model.ts";
 
 const TITLE_MAX_CHARS = 160;
@@ -52,6 +56,38 @@ function lessonItem(row: LessonRow): PanelItem {
 	return item;
 }
 
+/** When a producer's lookup started and the planner trigger that called it. Without one, no metadata is added. */
+export interface ProducerInvocation {
+	trigger: RecallEvent["trigger"];
+	startedAt: number;
+}
+
+/** A pointer to the record a lookup read: its kind and the record's own names or ids, never the record's content. */
+function recordRef(kind: string, values: readonly string[]): string | undefined {
+	return values.length > 0 ? `${kind}:${values.join(",")}` : undefined;
+}
+
+/**
+ * Attach an invocation's metadata to a producer's envelope. The surface is the producer's own source; the request has
+ * no query or filters, since the lookup record keeps neither. Without an invocation the envelope is returned unchanged.
+ */
+function withInvocation(
+	panel: PanelEnvelope,
+	surface: PanelSurface,
+	invocation: ProducerInvocation | undefined,
+	rawRef: string | undefined,
+): PanelEnvelope {
+	if (invocation === undefined) return panel;
+	return withPanelMeta(panel, {
+		surface,
+		trigger: panelTriggerFromPlanner(invocation.trigger),
+		query: "",
+		filters: [],
+		startedAt: invocation.startedAt,
+		rawRef,
+	});
+}
+
 /**
  * Map one lessons lookup record onto a panel envelope.
  * - `used`: each row is an item carrying its confidence as a score; a row whose score is below `floor` is excluded as
@@ -61,7 +97,7 @@ function lessonItem(row: LessonRow): PanelItem {
  * - `error` is an error envelope, classed unclassified: the lessons record carries free text, not a probe code.
  * - `used` without rows (a record written before rows existed) is empty (source_unavailable): its lessons cannot be shown.
  */
-export function lessonsLookupToPanel(lookup: LessonsLookup, floor: number): PanelEnvelope {
+function lessonsPanel(lookup: LessonsLookup, floor: number): PanelEnvelope {
 	switch (lookup.outcome) {
 		case "error":
 			return errorEnvelope(lookup.reason, "Lessons lookup failed.");
@@ -88,6 +124,34 @@ export function lessonsLookupToPanel(lookup: LessonsLookup, floor: number): Pane
 	}
 }
 
+/** The lessons source's envelope, with the invocation's metadata when the caller passes one. */
+export function lessonsLookupToPanel(
+	lookup: LessonsLookup,
+	floor: number,
+	invocation?: ProducerInvocation,
+): PanelEnvelope {
+	return withInvocation(
+		lessonsPanel(lookup, floor),
+		"lesson",
+		invocation,
+		recordRef("lessons", lookup.ids),
+	);
+}
+
+/** The teachable-moments source: the lessons shape, surfaced as teachable_moment. */
+export function momentsLookupToPanel(
+	lookup: LessonsLookup,
+	floor: number,
+	invocation?: ProducerInvocation,
+): PanelEnvelope {
+	return withInvocation(
+		lessonsPanel(lookup, floor),
+		"teachable_moment",
+		invocation,
+		recordRef("teachable_moments", lookup.ids),
+	);
+}
+
 /**
  * Map one skills lookup record onto a panel envelope.
  * - `used`: a row with `injected` is a pointer item (its description as the preview, its target in the match reason). A
@@ -98,7 +162,7 @@ export function lessonsLookupToPanel(lookup: LessonsLookup, floor: number): Pane
  * - `none` is empty (no_match). `off` is empty (gate_off). `error` is an error envelope, classed unclassified.
  * - `used` without rows (a record written before rows existed) is empty (source_unavailable).
  */
-export function skillsLookupToPanel(lookup: SkillsLookup): PanelEnvelope {
+function skillsPanel(lookup: SkillsLookup): PanelEnvelope {
 	switch (lookup.outcome) {
 		case "error":
 			return errorEnvelope(lookup.reason, "Skills lookup failed.");
@@ -130,6 +194,19 @@ export function skillsLookupToPanel(lookup: SkillsLookup): PanelEnvelope {
 	}
 }
 
+/** The skills source's envelope, with the invocation's metadata when the caller passes one. */
+export function skillsLookupToPanel(
+	lookup: SkillsLookup,
+	invocation?: ProducerInvocation,
+): PanelEnvelope {
+	return withInvocation(
+		skillsPanel(lookup),
+		"skill",
+		invocation,
+		recordRef("skills", lookup.names),
+	);
+}
+
 /** The Substrate brief as the hook fetched it: already masked, and how it was obtained. */
 export interface SubstrateBriefInput {
 	text: string;
@@ -139,6 +216,7 @@ export interface SubstrateBriefInput {
 
 const BRIEF_TITLE = "Substrate brief";
 const BRIEF_MATCH_REASON = "Cross-agent brief for this repository";
+const BRIEF_REF = "substrate_brief:brief";
 
 function briefItem(preview: string): PanelItem {
 	return {
@@ -162,7 +240,7 @@ function briefItem(preview: string): PanelItem {
  *   row (source_unavailable).
  * - Any state with text that is empty once sanitized is empty (no_match).
  */
-export function substrateBriefToPanel(input: SubstrateBriefInput): PanelEnvelope {
+function briefPanel(input: SubstrateBriefInput): PanelEnvelope {
 	if (input.state === "none") {
 		switch (input.reason) {
 			case "disabled":
@@ -186,4 +264,12 @@ export function substrateBriefToPanel(input: SubstrateBriefInput): PanelEnvelope
 		missing: [{ ref: "brief", reason: "source_unavailable" }],
 		stages: [],
 	};
+}
+
+/** The Substrate brief's envelope, with the invocation's metadata when the caller passes one. */
+export function substrateBriefToPanel(
+	input: SubstrateBriefInput,
+	invocation?: ProducerInvocation,
+): PanelEnvelope {
+	return withInvocation(briefPanel(input), "substrate", invocation, BRIEF_REF);
 }

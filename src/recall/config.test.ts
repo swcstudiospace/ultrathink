@@ -24,6 +24,7 @@ const TRIGGER_KEYS = ["scopeChange", "failure", "phaseBoundary", "uncertainty", 
 const FIELDS: { path: string[]; fallback: unknown; invalid: unknown[] }[] = [
 	{ path: ["knowledge", "probeRecord"], fallback: true, invalid: ["yes", 1, null] },
 	{ path: ["recall", "enabled"], fallback: false, invalid: ["true", 1, null] },
+	{ path: ["recall", "injectNew"], fallback: false, invalid: ["true", 1, null] },
 	...SOURCE_KEYS.map((key) => ({
 		path: ["recall", "sources", key],
 		fallback: false,
@@ -99,6 +100,7 @@ describe("recall settings defaults", () => {
 			knowledge: { probeRecord: true },
 			recall: {
 				enabled: false,
+				injectNew: false,
 				sources: { knowledge: false, lessons: false, moments: false, skills: false },
 				triggers: {
 					scopeChange: false,
@@ -157,6 +159,7 @@ describe("recall settings parsing", () => {
 			knowledge: { probeRecord: false },
 			recall: {
 				enabled: true,
+				injectNew: true,
 				sources: { knowledge: true, lessons: true, moments: true, skills: true },
 				triggers: {
 					scopeChange: true,
@@ -257,5 +260,13 @@ describe("recall settings wiring", () => {
 			{ project: true },
 		);
 		expect(config.recallSettings).toEqual(defaultRecallSettings());
+	});
+
+	test("a project file cannot turn on recall.enabled or recall.injectNew", () => {
+		const config = mergeConfig({ recall: { enabled: true, injectNew: true } }, defaultConfig(), {
+			project: true,
+		});
+		expect(config.recallSettings.recall.enabled).toBe(false);
+		expect(config.recallSettings.recall.injectNew).toBe(false);
 	});
 });

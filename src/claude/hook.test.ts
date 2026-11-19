@@ -35,6 +35,7 @@ import type { ProgressEvent } from "../host/progress.ts";
 import { HANDOFF_MAX_CHARS } from "../host/display-limits.ts";
 import { TRACKING_OFF_NOTE, UPLIFT_CONTEXT_HEADER } from "./output.ts";
 import {
+	runCompactionReset,
 	runPromptSubmit,
 	runToolResultRecall,
 	savePlanRecord,
@@ -4972,6 +4973,66 @@ describe("mid-session recall (SPE-34394)", () => {
 			});
 			expect(outcome.additionalContext).toContain(skill.name);
 			expect(outcome.additionalContext).toContain(skill.description);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a compaction starts a new dedupe epoch, so an item injected before it is injected again", async () => {
+		const { deps, cleanup } = recallDeps({ recallSeams: { lessons: async () => LESSONS_USED } });
+		try {
+			// Recall is off for the prompt: it only writes the session record the failure occurrences are kept on.
+			await runPromptSubmit(input, deps);
+			deps.config.recallSettings = recallConfig({ failure: true }, { lessons: true });
+			deps.config.recallSettings.recall.budget.perTurnCalls = 10;
+			deps.config.recallSettings.recall.budget.perSessionCalls = 1_000;
+			const failure = (stderr: string) => ({
+				...TOOL_ERROR,
+				tool_response: { is_error: true, stderr },
+			});
+			const injected = await runToolResultRecall(failure("EACCES: permission denied"), deps);
+			expect(injected.audit).toContainEqual({
+				source: "lessons",
+				trigger: "failure",
+				outcome: "fired",
+				injected: 1,
+				deduped: 0,
+			});
+			const repeated = await runToolResultRecall(failure("ENOENT: no such file"), deps);
+			expect(repeated.audit).toContainEqual({
+				source: "lessons",
+				trigger: "failure",
+				outcome: "fired",
+				injected: 0,
+				deduped: 1,
+			});
+			runCompactionReset({ session_id: "s1" }, deps);
+			expect(readSession(deps.stateDir, "s1")?.recall?.state.dedupe).toEqual({
+				epoch: 1,
+				injected: [],
+			});
+			const afterCompaction = await runToolResultRecall(
+				failure("EPERM: operation not permitted"),
+				deps,
+			);
+			expect(afterCompaction.audit).toContainEqual({
+				source: "lessons",
+				trigger: "failure",
+				outcome: "fired",
+				injected: 1,
+				deduped: 0,
+			});
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("with the master switch off, a compaction writes no recall state", async () => {
+		const { deps, cleanup } = recallDeps();
+		try {
+			await runPromptSubmit(input, deps);
+			runCompactionReset({ session_id: "s1" }, deps);
+			expect(readSession(deps.stateDir, "s1")?.recall).toBeUndefined();
 		} finally {
 			cleanup();
 		}
