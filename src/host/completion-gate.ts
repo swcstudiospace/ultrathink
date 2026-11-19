@@ -549,7 +549,7 @@ export class CompletionGate {
 		let accepted = false;
 		if (this.#state === "plan_validated") {
 			this.#pendingPlan = plan;
-			accepted = true;
+			accepted = this.tryTransition("plan_validated", actor, "plan checklist passed");
 		} else if (this.#state === "generating" || this.#state === "partial_failure" || this.#state === "planning") {
 			// Route through waiting_for_plan first: that entry centralizes quarantine and
 			// clears any pending record, so the pending record is only set after it.
@@ -868,7 +868,7 @@ export function planGateAllowed(from: GateState): ReadonlySet<GateState> {
 		discussing: ["planning", "failed_or_cancelled"],
 		planning: ["waiting_for_plan", "failed_or_cancelled"],
 		waiting_for_plan: ["waiting_for_plan", "plan_validated", "failed_or_cancelled"],
-		plan_validated: ["ready", "waiting_for_plan", "failed_or_cancelled"],
+		plan_validated: ["plan_validated", "ready", "waiting_for_plan", "failed_or_cancelled"],
 		generating: ["discovering", "waiting_for_plan", "failed_or_cancelled"],
 		validating: ["partial_failure", "failed_or_cancelled", "complete"],
 		ready: ["executing", "failed_or_cancelled", "waiting_for_plan"],

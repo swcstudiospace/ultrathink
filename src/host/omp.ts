@@ -1735,6 +1735,8 @@ export function createOmpExtension(
 			gateWaiting?: boolean;
 			/** The gate-released Plan already went (or is going) out as the flight's one aside: the duplicate guard. */
 			gateAsideDelivered?: boolean;
+			/** A late-plan failure notice for this gate cycle was already surfaced. */
+			gateNoticeDelivered?: boolean;
 			/** Tracker rows are expected in the plan (tracking on and a tracker configured when the flight launched). */
 			tracked?: boolean;
 			/** The no-plan or stalled note, or a recovered stored plan, was already delivered for this flight. */
@@ -3165,6 +3167,7 @@ export function createOmpExtension(
 				flight.gateWaiting = true;
 				// A quarantine revoked the prior release: a revised Plan may be delivered again.
 				flight.gateAsideDelivered = false;
+				flight.gateNoticeDelivered = false;
 				if (flight.releasedText !== undefined) flight.lastDeliveredPlanText = flight.releasedText;
 				if (flight.releasedPlan) flight.lastDeliveredPlanHash = flight.releasedPlan.planHash;
 				flight.releasedText = undefined;
@@ -3290,6 +3293,8 @@ export function createOmpExtension(
 			if (!current(flight)) return;
 			const delivery = gateDelivery(flight, gate);
 			if (delivery.kind === "notice") {
+				if (flight.gateNoticeDelivered) return;
+				flight.gateNoticeDelivered = true;
 				await sendAside(flight, planMessage(delivery.text, flight.view));
 				return;
 			}
@@ -3472,6 +3477,7 @@ export function createOmpExtension(
 						flight.gateWaiting = true;
 						// A quarantine revoked the prior release: a revised Plan may be delivered again.
 						flight.gateAsideDelivered = false;
+						flight.gateNoticeDelivered = false;
 						if (flight.releasedText !== undefined) flight.lastDeliveredPlanText = flight.releasedText;
 						if (flight.releasedPlan) flight.lastDeliveredPlanHash = flight.releasedPlan.planHash;
 						flight.releasedText = undefined;
