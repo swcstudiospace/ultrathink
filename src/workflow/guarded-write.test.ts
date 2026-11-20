@@ -19,9 +19,12 @@ import {
 	ConcurrentWriteError,
 	hashContent,
 	LockHeldError,
+	planningFilePath,
 	readGuarded,
+	updatePlanningFile,
 	withGuardedLock,
 	writeGuarded,
+	writePlanningFile,
 } from "./guarded-write.ts";
 
 /** Returns the error a call throws, or fails the test when it does not throw. */
@@ -259,4 +262,56 @@ describe("guarded writer", () => {
 		expect(readFileSync(path, "utf8")).toBe(payload(winners[0] ?? ""));
 		expect(existsSync(`${path}.lock`)).toBe(false);
 	}, 30_000);
+});
+
+describe("guarded planning files (.planning/STATE.md and .planning/ROADMAP.md)", () => {
+	let root: string;
+
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "guarded-planning-"));
+	});
+
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	test("planningFilePath resolves STATE.md and ROADMAP.md under .planning and rejects other names", () => {
+		expect(planningFilePath(root, "STATE.md")).toBe(join(root, ".planning", "STATE.md"));
+		expect(planningFilePath(root, "ROADMAP.md")).toBe(join(root, ".planning", "ROADMAP.md"));
+		expect(() => planningFilePath(root, "VERIFICATION.md" as never)).toThrow(
+			"not a guarded planning file",
+		);
+	});
+
+	test("writePlanningFile creates STATE.md via the guarded path and leaves no lock or temp file", () => {
+		const result = writePlanningFile(root, "STATE.md", "---\nstatus: executing\n---\n");
+
+		expect(result.path).toBe(join(root, ".planning", "STATE.md"));
+		expect(result.hash).toBe(hashContent("---\nstatus: executing\n---\n"));
+		expect(readFileSync(result.path, "utf8")).toBe("---\nstatus: executing\n---\n");
+		expect(readdirSync(join(root, ".planning"))).toEqual(["STATE.md"]);
+	});
+
+	test("updatePlanningFile transforms the current ROADMAP.md text read-modify-write", () => {
+		writePlanningFile(root, "ROADMAP.md", "# Roadmap\n");
+
+		const result = updatePlanningFile(root, "ROADMAP.md", (current) => `${current}- Phase 112\n`);
+
+		expect(readFileSync(result.path, "utf8")).toBe("# Roadmap\n- Phase 112\n");
+		expect(result.hash).toBe(hashContent("# Roadmap\n- Phase 112\n"));
+	});
+
+	test("a second concurrent writer fails loudly with ConcurrentWriteError and leaves no partial file", () => {
+		writePlanningFile(root, "STATE.md", "base\n");
+		const path = planningFilePath(root, "STATE.md");
+		// Writer B reads the base hash, then writer A commits first.
+		const staleHash = readGuarded(path).hash;
+		writeGuarded(path, staleHash, "writer A\n");
+
+		const error = thrownBy(() => writeGuarded(path, staleHash, "writer B\n"));
+
+		expect(error).toBeInstanceOf(ConcurrentWriteError);
+		expect(readFileSync(path, "utf8")).toBe("writer A\n");
+		expect(readdirSync(join(root, ".planning"))).toEqual(["STATE.md"]);
+	});
 });

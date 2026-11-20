@@ -334,13 +334,37 @@ export async function observeDigest(
 		...(detail ? { detail } : {}),
 	});
 	try {
-		if (!teachEnabled(ctx)) return done([], "off");
+		if (!teachEnabled(ctx)) {
+			try {
+				await promoteDue(ctx);
+			} catch {
+				// reason: the failure is logged through ctx.log; the skip is still reported
+				ctx.log?.("teach observe: due promotions failed");
+			}
+			return done([], "off");
+		}
 		const mode = ctx.config.teach.capture;
-		if (mode === "explicit") return done([], "capture mode is explicit");
+		if (mode === "explicit") {
+			try {
+				await promoteDue(ctx);
+			} catch {
+				// reason: the failure is logged through ctx.log; the skip is still reported
+				ctx.log?.("teach observe: due promotions failed");
+			}
+			return done([], "capture mode is explicit");
+		}
 		if (ctx.env.ULTRATHINK_CHILD === "1") return done([], "child invocation");
 		if (digest.toolCalls < ctx.config.teach.observeMinToolCalls)
 			return done([], "too few tool calls");
-		if (!hasSignal(digest)) return done([], "no signal");
+		if (!hasSignal(digest)) {
+			try {
+				await promoteDue(ctx);
+			} catch {
+				// reason: the failure is logged through ctx.log; the skip is still reported
+				ctx.log?.("teach observe: due promotions failed");
+			}
+			return done([], "no signal");
+		}
 
 		const redactOptions = { home: ctx.env.HOME ?? ctx.env.USERPROFILE, repoRoot: digest.cwd };
 		const transcript = digest.turns
@@ -367,6 +391,12 @@ export async function observeDigest(
 			reply = await Promise.race([complete(DISTILL_SYSTEM, user, combined), aborted(combined)]);
 		} catch (error) {
 			detail = redactLine(error instanceof Error ? error.message : String(error), 160);
+			try {
+				await promoteDue(ctx);
+			} catch {
+				// reason: the failure is logged through ctx.log; the skip is still reported
+				ctx.log?.("teach observe: due promotions failed");
+			}
 			return done([], "distiller failed");
 		}
 

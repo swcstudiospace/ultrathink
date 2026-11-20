@@ -17,6 +17,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { appendRun } from "./runlog.ts";
 import type { TeachDigest } from "./types.ts";
 
 const INBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -46,6 +47,8 @@ function inboxDir(stateDir: string): string {
 /** A detached launch: its pid, undefined when the launcher did not start. */
 interface DetachedLaunch {
 	pid: number | undefined;
+	/** Resolves with the child exit code (null when killed by a signal or never started); never rejects. */
+	exited?: Promise<number | null>;
 }
 
 /** Starts a detached child with ignored stdio and returns at once, without waiting for it. */
@@ -64,8 +67,11 @@ function startDetached(
 	child.on("error", () => {
 		// reason: a launcher that never started has no pid, and the caller reports that
 	});
+	const { promise: exited, resolve: resolveExited } = Promise.withResolvers<number | null>();
+	child.once("error", () => resolveExited(null));
+	child.once("exit", (code) => resolveExited(code));
 	child.unref();
-	return { pid: child.pid };
+	return { pid: child.pid, exited };
 }
 
 /** Removes inbox files older than 24 hours. Foreign file names are left alone; failures are ignored. */
@@ -103,6 +109,7 @@ export function writeInbox(
 /**
  * Starts the supervisor of one `teach observe` run and returns at once; it never waits for the run or its log lock.
  * `spawned` is false when the inbox file or the supervisor could not be started. Never throws.
+ * A supervisor that exits non-zero is recorded in the run log with its exit code.
  */
 export function spawnObserveDetached(
 	digest: TeachDigest,
@@ -130,6 +137,23 @@ export function spawnObserveDetached(
 			cwd,
 		});
 		if (launch && launch.pid === undefined) throw new Error("launcher did not start");
+		const exited = launch?.exited;
+		if (exited) {
+			void exited
+				.then((exitCode) => {
+					if (exitCode !== 0) {
+						appendRun(options.stateDir, {
+							at: Date.now(),
+							sessionId: digest.sessionId,
+							outcome: "skipped",
+							captured: 0,
+							skipped: "launch exited",
+							exitCode,
+						});
+					}
+				})
+				.catch(() => undefined);
+		}
 		return { spawned: true };
 	} catch (error) {
 		if (path) {

@@ -33,7 +33,7 @@ const ERROR: DecisionRecord = {
 	model: "~typesafe/jev-latest",
 	probabilities: {},
 	threshold: 0.2,
-	action: "fail-open",
+	action: "reject",
 	latencyMs: 80,
 	attempts: 1,
 	error: "credits",

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-import type { DecisionRecord } from "../decisions/types.ts";
+import type { DecisionRecord, DecisionsErrorKind } from "../decisions/types.ts";
 
 /** Greptile's confidence scale: scores run 0..5 and 5 ("5/5") is the maximum. */
 export const GREPTILE_MAX_SCORE = 5;
@@ -127,6 +127,13 @@ export interface JudgeVerdict {
 	gaps: string[];
 }
 
+/** Structured degraded verdict (SPE-35302): Jev errored, so the gate could not run. Never a silent pass. */
+export interface JevDegradedVerdict {
+	judge: "jev";
+	error: DecisionsErrorKind;
+	reason: string;
+}
+
 export interface Assessment {
 	done: boolean;
 	confidence: number;
@@ -145,6 +152,8 @@ export interface Assessment {
 	judgedBy?: string;
 	/** Jev ship decision; absent when the point was inactive or a rule gap returned first. */
 	decision?: DecisionRecord;
+	/** Structured degraded verdict; present iff the Jev judge errored (SPE-35302). */
+	degraded?: JevDegradedVerdict;
 	at: number;
 }
 

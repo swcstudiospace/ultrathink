@@ -1847,13 +1847,19 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 			"assess",
 			jevShip({ fetch: recordingFetch([ERR(402)]).fetch, judge: DONE_REPLY }),
 		);
-		expect(failed.output).toMatchObject({ ok: true, done: true });
-		expect(failed.output.decision).toEqual({ action: "fail-open", error: "credits" });
+		// SPE-35302: a Jev error fails the gate closed, never a silent pass.
+		expect(failed.output).toMatchObject({ ok: true, done: false });
+		expect(failed.output.gaps).toEqual([expect.stringContaining(`Jev judge error (credits): `)]);
+		expect(failed.output.decision).toEqual({ action: "reject", degraded: true, error: "credits" });
+		expect(readShip(statePath)?.assessment).toMatchObject({
+			done: false,
+			degraded: { judge: "jev", error: "credits" },
+		});
 		expect(readShip(statePath)?.assessment?.decision).toMatchObject({
 			point: "ship",
 			outcome: "error",
 			error: "credits",
-			action: "fail-open",
+			action: "reject",
 			probabilities: {},
 			attempts: 1,
 		});
@@ -1861,31 +1867,32 @@ describe("runShip assess with Jev (DP-SHIP)", () => {
 	});
 
 	for (const failure of FAILURES) {
-		test(`${failure.name}: assess fails open and its JSON and PR body name the kind (AC-4.12)`, async () => {
+		test(`${failure.name}: assess fails closed on Jev error and its JSON and PR body name the kind (SPE-35302)`, async () => {
 			const decisions: Partial<DecisionsConfig> = {
 				points: ["ship"],
 				...(failure.timeoutMs ? { timeoutMs: failure.timeoutMs } : {}),
 			};
 			const judged = jevShip({ fetch: failure.fetch(), judge: DONE_REPLY, decisions });
-			const baseline = await ship("assess", { ...judged, decisions: undefined });
 			const withJudge = await ship("assess", judged);
 			const { decision, ...rest } = withJudge.output;
-			expect(rest).toEqual(baseline.output);
-			expect(rest).toMatchObject({ ok: true, done: true, gaps: [] });
-			expect(decision).toEqual({ action: "fail-open", error: failure.kind });
-			expect((await ship("pr", judged)).output.ok).toBe(true);
+			expect(rest).toMatchObject({ ok: true, done: false });
+			expect(rest.gaps).toEqual([expect.stringContaining(`Jev judge error (${failure.kind}): `)]);
+			expect(decision).toEqual({ action: "reject", degraded: true, error: failure.kind });
+			// Fail-closed: no PR can be opened from a degraded assessment.
+			expect((await ship("pr", judged)).output.ok).toBe(false);
 			const body = bodies.at(-1) ?? "";
-			const section = body.split("## Assessment\n\n")[1]?.split("\n\n")[0]?.trimEnd() ?? "";
-			expect(section.split("\n").at(-1)).toBe(`- Jev: error (${failure.kind})`);
 
 			writeFileSync(statePath, SPEC_STATE);
 			const bare = jevShip({ fetch: failure.fetch(), decisions });
 			const bareBaseline = await ship("assess", { ...bare, decisions: undefined });
 			const withoutJudge = await ship("assess", bare);
 			const { decision: bareDecision, ...bareRest } = withoutJudge.output;
-			expect(bareRest).toEqual(bareBaseline.output);
-			expect(bareRest).toMatchObject({ done: false, gaps: ["no judge available"] });
-			expect(bareDecision).toEqual({ action: "fail-open", error: failure.kind });
+			expect(bareBaseline.output).toMatchObject({ done: false, gaps: ["no judge available"] });
+			expect(bareRest).toMatchObject({ ok: true, done: false });
+			expect(bareRest.gaps).toEqual([
+				expect.stringContaining(`Jev judge error (${failure.kind}): `),
+			]);
+			expect(bareDecision).toEqual({ action: "reject", degraded: true, error: failure.kind });
 			expectNoKey(
 				withJudge.output,
 				withoutJudge.output,

@@ -608,3 +608,23 @@ Correction (2026-11-17, later the same day): the statement "v1.24 has no phases"
 **Last session:** 2026-11-20T01:37:07.247Z
 **Stopped at:** Completed 113-decomposition-task-matrix verification refresh at c216dc3
 **Resume file:** None
+
+## Linear programme for outstanding milestones (2026-11-20 autonomous run)
+
+No per-phase Linear Issue/Sub-Issue existed for any outstanding phase (verified by keyword list_issues search; coverage was only milestone-level SPE-10128/SPE-7636 + 48 PRD carriers SPE-35034–SPE-35081). Created:
+
+- SPE-35297 [v1.24] Phase lifecycle close-out — parent for 110/111/112/114
+  - SPE-35298 Phase 110 persist/checkpoint (LIFE-01/04)
+  - SPE-35299 Phase 111 audit gate (LIFE-02/05)
+  - SPE-35300 Phase 112 guarded writer (LIFE-03) — in-repo wiring fix dispatched
+  - SPE-35301 Phase 114 criterion 7 closure run (Notion 403)
+  - SPE-35302 Ship gate fail-closed on judge error (quality #1) — dispatched
+  - SPE-35303 Teach promoteDue + child-exit (quality #3/DEF-02) — dispatched
+  - SPE-35320 Host secret-redaction + SLO metrics (Phase 110 seam)
+- SPE-35304 [v1.15] Enterprise hardening human gates — parent for 68–76
+  - SPE-35305..SPE-35311 (68,69,70,71,72,73 — 71/72/73 IDs remapped, see Linear) + SPE-35312..35317 (71–76) per Linear numbering; each one phase (68 audit logging, 69 zero-trust, 70 rate limiting, 71 observability, 72 SAST/DAST, 73 chaos, 74 backup/DR, 75 policy-as-code, 76 gap-closure reconciliation)
+- SPE-35318 [v1.22] Phase 108 live verification — SPE-35319 (MCP-12/13 deploy + evidence)
+
+Production-grade bar: every sub-issue carries Given/When/Then acceptance + boring-design constraints (atomic writes, bounded buffers, fail-closed, redaction, audit strip). Human/owner subs (110,111,114-c7,68–75,108) stay human_needed until live evidence or owner sign-off; they are tracked, not closed.
+
+In-repo items dispatched this run: SPE-35300, SPE-35302, SPE-35303. PR from feat/gsd-linear-program-2026-11-20 to main after green CI.
