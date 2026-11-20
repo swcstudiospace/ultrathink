@@ -15,6 +15,7 @@ import { formatP } from "../decisions/types.ts";
 import type { ShipDiff } from "./signals.ts";
 import type {
 	Assessment,
+	JevDegradedVerdict,
 	JudgeMode,
 	JudgeVerdict,
 	MilestoneEvidence,
@@ -258,7 +259,8 @@ function decided(
  * Gate mode with Jev: a usable "done" verdict is vetoed at or below `shipVetoAtOrBelow` on an
  * untruncated patch; without a usable verdict Jev decides (done iff P >= `shipApproveAt`), unless `autoMerge` is on:
  * a merge then always needs a usable judge verdict, so the judge's result stands and Jev is only recorded. Jev never
- * turns a judge's "not done" into done, and a failed decision leaves today's result.
+ * turns a judge's "not done" into done. A Jev error fails the gate closed with a structured degraded verdict
+ * (SPE-35302) — never a silent pass.
  */
 function gateWithJev(
 	judged: GateJudgement,
@@ -270,11 +272,23 @@ function gateWithJev(
 	// Jev can only veto here: it decides alone only when there is no usable verdict and no auto-merge.
 	const vetoOnly = verdict !== undefined || autoMerge;
 	if (outcome.status === "inactive") return assessment;
-	if (outcome.status === "error")
+	if (outcome.status === "error") {
+		const degraded: JevDegradedVerdict = {
+			judge: "jev",
+			error: outcome.error.kind,
+			reason: outcome.error.message,
+		};
+		const gap = `Jev judge error (${degraded.error}): ${degraded.reason} — ship gate degraded, failing closed`;
 		return {
 			...assessment,
-			decision: decided(outcome.record, "fail-open", vetoOnly ? jev.veto : jev.approve),
+			done: false,
+			confidence: 0,
+			summary: gap,
+			gaps: [...assessment.gaps, gap],
+			degraded,
+			decision: decided(outcome.record, "reject", vetoOnly ? jev.veto : jev.approve),
 		};
+	}
 	const { p, record } = outcome;
 	if (vetoOnly) {
 		if (verdict && assessment.done && p <= jev.veto && !jev.truncated) {
@@ -317,15 +331,28 @@ function gateWithJev(
 	};
 }
 
-/** Advisory mode with Jev: the run still ships; Jev's verdict is only recorded (`advise-veto` where gate would veto). */
+/** Advisory mode with Jev: the run still ships; Jev's verdict is only recorded (`advise-veto` where gate would veto).
+ * A Jev error is marked explicitly degraded (SPE-35302), never silent. */
 function adviseWithJev(
 	assessment: Assessment,
 	outcome: DecisionOutcome,
 	jev: ShipDecision,
 ): Assessment {
 	if (outcome.status === "inactive") return assessment;
-	if (outcome.status === "error")
-		return { ...assessment, decision: decided(outcome.record, "fail-open", jev.veto) };
+	if (outcome.status === "error") {
+		const degraded: JevDegradedVerdict = {
+			judge: "jev",
+			error: outcome.error.kind,
+			reason: outcome.error.message,
+		};
+		const gap = `Jev judge error (${degraded.error}): ${degraded.reason} — ship gate degraded (advisory: shipped anyway)`;
+		return {
+			...assessment,
+			gaps: [...assessment.gaps, gap],
+			degraded,
+			decision: decided(outcome.record, "none", jev.veto),
+		};
+	}
 	const action = outcome.p <= jev.veto && !jev.truncated ? "advise-veto" : "none";
 	return { ...assessment, decision: decided(outcome.record, action, jev.veto) };
 }
@@ -451,11 +478,17 @@ export interface AssessDecisionJson {
 	model?: string;
 	action: DecisionAction;
 	error?: DecisionsErrorKind;
+	/** Explicit degraded marker (SPE-35302): present iff the Jev judge errored. */
+	degraded?: true;
 }
 
-/** ok → {p, model, action}; error → {action: "fail-open", error}. */
+/** ok → {p, model, action}; error → {action, degraded: true, error} (gate: "reject", advisory: "none"). */
 export function assessDecisionJson(record: DecisionRecord): AssessDecisionJson {
 	if (record.outcome === "error")
-		return { action: "fail-open", ...(record.error ? { error: record.error } : {}) };
+		return {
+			action: record.action,
+			degraded: true,
+			...(record.error ? { error: record.error } : {}),
+		};
 	return { p: record.p, model: record.model, action: record.action };
 }

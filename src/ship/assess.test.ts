@@ -1223,11 +1223,19 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 			const r = recordingFetch([ERR(503)]);
 			const { decisions, lines } = jevRuntime(r.fetch);
 			const failed = await assessDone({ ...input, decisions });
-			expect(withoutDecision(failed)).toEqual(baseline);
+			// SPE-35302: a Jev error fails the gate closed with a structured degraded verdict.
+			expect(failed).toMatchObject({
+				done: false,
+				confidence: 0,
+				degraded: { judge: "jev", error: "upstream", reason: expect.stringContaining("upstream") },
+			});
+			expect(failed.gaps[0]).toBe(baseline.gaps[0]);
+			expect(failed.gaps[1]).toStartWith("Jev judge error (upstream): ");
+			expect(failed.gaps[1]).toContain("ship gate degraded, failing closed");
 			expect(failed.decision).toMatchObject({
 				outcome: "error",
 				error: "upstream",
-				action: "fail-open",
+				action: "reject",
 				threshold: 0.7,
 				attempts: 2,
 			});
@@ -1444,8 +1452,12 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 		});
 		expect(await run(ERR(503), offline, true).result).toMatchObject({
 			done: false,
-			gaps: ["assessment unavailable: offline"],
-			decision: { action: "fail-open", threshold: 0.2 },
+			gaps: [
+				"assessment unavailable: offline",
+				expect.stringContaining("Jev judge error (upstream): "),
+			],
+			degraded: { judge: "jev", error: "upstream" },
+			decision: { action: "reject", threshold: 0.2 },
 		});
 		// autoMerge off: Jev alone still decides when there is no completer.
 		expect(await run(JEV(0.79, COMPLETE), undefined, false).result).toMatchObject({
@@ -1592,7 +1604,7 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 	});
 
 	for (const failure of FAILURES) {
-		test(`${failure.name} fails open to today's assessment in gate and advisory mode (AC-4.12)`, async () => {
+		test(`${failure.name}: Jev error fails the gate closed and marks advisory degraded (SPE-35302)`, async () => {
 			const runs: [JudgeMode, ClaudeCompleter | undefined, number][] = [
 				["gate", DONE_09, 0.2],
 				["gate", undefined, 0.7],
@@ -1606,23 +1618,62 @@ describe("assessDone with Jev (DP-SHIP)", () => {
 				};
 				const { decisions, lines } = jevRuntime(failure.fetch(), config);
 				const a = await assessDone({ ...input, decisions });
-				expect(withoutDecision(a)).toEqual(await assessDone(input));
-				expect(a.decision).toMatchObject({
-					point: "ship",
-					outcome: "error",
-					model: ON.model,
-					probabilities: {},
-					error: failure.kind,
-					action: "fail-open",
-					threshold,
+				const gap = `Jev judge error (${failure.kind}): ${a.degraded?.reason ?? ""} — ship gate degraded${mode === "advisory" ? " (advisory: shipped anyway)" : ", failing closed"}`;
+				// Bun's toMatchObject with expect.any() matchers replaces matched properties on the received
+				// object with {} (in-place), so capture the gaps array before matching against `a`.
+				const gaps = a.gaps;
+				expect(a).toMatchObject({
+					degraded: { judge: "jev", error: failure.kind, reason: expect.any(String) },
+					gaps: expect.any(Array),
 				});
-				expect(a.decision && assessDecisionJson(a.decision)).toEqual({
-					action: "fail-open",
-					error: failure.kind,
-				});
+				expect(Array.isArray(gaps)).toBe(true);
+				expect(gaps).toContain(gap);
+				if (mode === "gate") {
+					expect(a).toMatchObject({ done: false, confidence: 0, summary: gap });
+					expect(a.decision).toMatchObject({
+						point: "ship",
+						outcome: "error",
+						model: ON.model,
+						probabilities: {},
+						error: failure.kind,
+						action: "reject",
+						threshold,
+					});
+					expect(a.decision && assessDecisionJson(a.decision)).toEqual({
+						action: "reject",
+						degraded: true,
+						error: failure.kind,
+					});
+				} else {
+					expect(a).toMatchObject({ done: true, mode: "advisory" });
+					expect(a.decision).toMatchObject({
+						outcome: "error",
+						error: failure.kind,
+						action: "none",
+						threshold,
+					});
+					expect(a.decision && assessDecisionJson(a.decision)).toEqual({
+						action: "none",
+						degraded: true,
+						error: failure.kind,
+					});
+				}
 				expect(lines).toHaveLength(1);
 				expectNoKey(a, lines);
 			}
 		});
 	}
+
+	test("SPE-35302: judge error (out-of-credit) never silently passes in gate mode", async () => {
+		const input = { record: RECORD, signals: clean, diff: FULL_DIFF, complete: DONE_09, now };
+		const a = await assessDone({
+			...input,
+			decisions: jevRuntime(recordingFetch([ERR(402)]).fetch).decisions,
+		});
+		expect(a.done).toBe(false);
+		expect(a.degraded).toMatchObject({ judge: "jev", error: "credits" });
+		expect(a.degraded?.reason).toContain("credits");
+		expect(a.gaps.some((g) => g.includes("Jev judge error (credits): "))).toBe(true);
+		expect(a.decision).toMatchObject({ outcome: "error", error: "credits", action: "reject" });
+	});
 });

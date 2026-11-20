@@ -1,11 +1,31 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
+/**
+ * Single guarded writer for `.planning/STATE.md` and `.planning/ROADMAP.md` (SPE-35300,
+ * Phase 112, ADR 0001 decision 5). Every write to either file goes through writeGuarded:
+ * compare-and-swap on the content hash under an exclusive `<path>.lock`, so a second
+ * concurrent writer fails loudly with ConcurrentWriteError and no partial file is left
+ * (content lands via a unique temp file, fsync, then rename).
+ *
+ * Stale-lock break: a lock is taken over only when (a) its body names a pid that no longer
+ * exists (process.kill throws ESRCH), or (b) its modification time is older than
+ * LOCK_DEADMAN_MS (60 s) whatever its holder. A lock whose body is not a pid is never
+ * broken: its writer may still be creating it. A lock held by a live writer is waited out
+ * for the lock-wait budget, then refused with LockHeldError without touching the file.
+ *
+ * Residual: the production writes to these two files today live in gsd-core (the external
+ * GSD engine this repo shells out to). This repo only reads them (ship/signals.ts). Any
+ * writer landed in this repo must use writePlanningFile/updatePlanningFile below, never a
+ * direct writeFileSync to STATE.md or ROADMAP.md.
+ */
+
 import { createHash, randomBytes } from "node:crypto";
 import {
 	closeSync,
 	fsyncSync,
 	linkSync,
+	mkdirSync,
 	openSync,
 	readFileSync,
 	renameSync,
@@ -66,6 +86,57 @@ export function readGuarded(path: string): { text: string; hash: string } {
 		throw error;
 	}
 	return { text, hash: hashContent(text) };
+}
+
+/** The planning files this module guards: `.planning/STATE.md` and `.planning/ROADMAP.md`. */
+export type PlanningFileName = "STATE.md" | "ROADMAP.md";
+
+const PLANNING_FILE_NAMES: readonly PlanningFileName[] = ["STATE.md", "ROADMAP.md"];
+
+/** The path of a guarded planning file under `<cwd>/.planning`. Throws on any other name. */
+export function planningFilePath(cwd: string, name: PlanningFileName): string {
+	if (!PLANNING_FILE_NAMES.includes(name)) {
+		throw new Error(`not a guarded planning file: ${name}`);
+	}
+	return join(cwd, ".planning", name);
+}
+
+/**
+ * Writes a guarded planning file: reads the current text and hash, replaces the whole file
+ * with `next` only when the hash still matches. A concurrent writer that committed first
+ * makes this call throw ConcurrentWriteError with the file untouched, and the caller must
+ * read again and decide what to write. Never a direct writeFileSync: use this (or
+ * updatePlanningFile) for STATE.md and ROADMAP.md.
+ */
+export function writePlanningFile(
+	cwd: string,
+	name: PlanningFileName,
+	next: string,
+	options: WriteGuardedOptions = {},
+): { path: string; hash: string } {
+	const path = planningFilePath(cwd, name);
+	mkdirSync(dirname(path), { recursive: true });
+	const { hash } = writeGuarded(path, readGuarded(path).hash, next, options);
+	return { path, hash };
+}
+
+/**
+ * Read-modify-write of a guarded planning file in one call: `transform` receives the current
+ * text ("" when the file is absent) and returns the new text. The swap checks the hash read
+ * here, so writer B holding a stale read fails loudly with ConcurrentWriteError instead of
+ * silently clobbering writer A's commit.
+ */
+export function updatePlanningFile(
+	cwd: string,
+	name: PlanningFileName,
+	transform: (currentText: string) => string,
+	options: WriteGuardedOptions = {},
+): { path: string; hash: string } {
+	const path = planningFilePath(cwd, name);
+	mkdirSync(dirname(path), { recursive: true });
+	const { text, hash } = readGuarded(path);
+	const result = writeGuarded(path, hash, transform(text), options);
+	return { path, hash: result.hash };
 }
 
 /** Options for writeGuarded. */
@@ -132,9 +203,10 @@ export function withGuardedLock<T>(
 }
 
 /**
- * Takes `<path>.lock`, retrying until `waitMs` elapses. A lock is taken over when its body names a
- * dead pid, or when its file is older than LOCK_DEADMAN_MS whatever its holder. A lock taken here
- * holds this process's pid as its body.
+ * Takes `<path>.lock`, retrying until `waitMs` elapses. The stale-lock break: a lock is taken
+ * over when its body names a dead pid (ESRCH), or when its file is older than LOCK_DEADMAN_MS
+ * whatever its holder. A body that is not a pid is never broken. A lock taken here holds this
+ * process's pid as its body, and is removed only while that body still matches.
  */
 function acquireLock(lockPath: string, waitMs: number): void {
 	const startedAt = Date.now();
