@@ -41,26 +41,26 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 | BACKLOG-CONNECTOR-LIVE | backlog | First real Grok Chat and Claude Desktop connection (USER_ACTION_1, VALIDATION_1 in `ultrathink-mcp/BLOCKER_LEDGER.md`); needs the operator's accounts and is not claimed by v1.14. | backlog | blocked | external | - | none; missing: condition in R:55 is not yet met: First real Grok Chat and Claude Desktop connection (USER_ACTION_1, VALIDATION_1 in `ultrathink-mcp/BLOCKER_LEDGER.md`); needs the operator's accounts and is not claimed by v1.14. | - | I:96 | not in sources | not in sources | R:55 | I:96 |
 | BACKLOG-MCP-2026-07-28 | backlog | Serve the stateless revision (`server/discover`, `Mcp-Method`/`Mcp-Name` headers, `resultType`, `ttlMs`/`cacheScope`) if a hosted client stops falling back; delta and prototype in `milestones/v1.14-phases/63-client-protocol-compatibility/evidence/R1-mcp-2026-07-28-findings.md`. Scheduled as v1.22 phases 106 to 108; 107 and 108 are gated on the trigger. | backlog | blocked | external | - | none; missing: condition in R:56 is not yet met: Serve the stateless revision (`server/discover`, `Mcp-Method`/`Mcp-Name` headers, `resultType`, `ttlMs`/`cacheScope`) if a hosted client stops falling back; delta and prototype in `milestones/v1.14-phases/63-client-protocol-compatibility/evidence/R1-mcp-2026-07-28-findings.md`. Scheduled as v1.22 phases 106 to 108; 107 and 108 are gated on the trigger. | - | I:97 | not in sources | not in sources | R:56 | I:97 |
 | BACKLOG-CIMD | backlog | Client ID Metadata Document support to relieve the 10 registrations per hour per IP limit when a hosted client registers on every connect. Scheduled as v1.22 phases 101 to 105. Withdrawn by owner 2026-11-10; phases 104 and 105 are withdrawn. | backlog | closed | - | - | none | - | I:11 | not in sources | not in sources | R:57 | I:11 |
-| DEFERRED-63 | deferred | Phase 63 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 63` (verification_deferred_human, S:177, S:103) | - | S:177, S:103, I:50 | not in sources | /gsd:verify-work 63 | S:177, S:103 | I:50 |
-| DEFERRED-64 | deferred | Phase 64 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 64` (verification_deferred_human, S:178, S:104) | - | S:178, S:104, I:51 | not in sources | /gsd:verify-work 64 | S:178, S:104 | I:51 |
-| DEFERRED-65 | deferred | Phase 65 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 65` (verification_deferred_human, S:179, S:105) | - | S:179, S:105, I:52 | not in sources | /gsd:verify-work 65 | S:179, S:105 | I:52 |
-| DEFERRED-68 | deferred | Phase 68 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 68` (verification_deferred_human, S:180) | - | S:180, I:34 | not in sources | /gsd:verify-work 68 | S:180 | I:34 |
-| DEFERRED-69 | deferred | Phase 69 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 69` (verification_deferred_human, S:181) | - | S:181, I:35 | not in sources | /gsd:verify-work 69 | S:181 | I:35 |
-| DEFERRED-70 | deferred | Phase 70 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 70` (verification_deferred_human, S:182) | - | S:182, I:36 | not in sources | /gsd:verify-work 70 | S:182 | I:36 |
-| DEFERRED-71 | deferred | Phase 71 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 71` (verification_deferred_human, S:183) | - | S:183, I:37 | not in sources | /gsd:verify-work 71 | S:183 | I:37 |
-| DEFERRED-72 | deferred | Phase 72 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 72` (verification_deferred_human, S:184) | - | S:184, I:38 | not in sources | /gsd:verify-work 72 | S:184 | I:38 |
-| DEFERRED-73 | deferred | Phase 73 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 73` (verification_deferred_human, S:185) | - | S:185, I:39 | not in sources | /gsd:verify-work 73 | S:185 | I:39 |
-| DEFERRED-74 | deferred | Phase 74 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 74` (verification_deferred_human, S:186) | - | S:186, I:40 | not in sources | /gsd:verify-work 74 | S:186 | I:40 |
-| DEFERRED-75 | deferred | Phase 75 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 75` (verification_deferred_human, S:187) | - | S:187, I:41 | not in sources | /gsd:verify-work 75 | S:187 | I:41 |
-| DEFERRED-76 | deferred | Phase 76 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 76` (verification_deferred_human, S:188) | - | S:188, I:42 | not in sources | /gsd:verify-work 76 | S:188 | I:42 |
-| DEFERRED-110 | deferred | Phase 110 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 110` (verification_deferred_human, S:189) | - | S:189 | not in sources | /gsd:verify-work 110 | S:189 | - |
-| DEFERRED-111 | deferred | Phase 111 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 111` (verification_deferred_human, S:190) | - | S:190 | not in sources | /gsd:verify-work 111 | S:190 | - |
-| DEFERRED-112 | deferred | Phase 112 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 112` (verification_deferred_human, S:191) | - | S:191 | not in sources | /gsd:verify-work 112 | S:191 | - |
-| DEFERRED-114 | deferred | Phase 114 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 114` (verification_deferred_human, S:192) | - | S:192 | not in sources | /gsd:verify-work 114 | S:192 | - |
-| DEFERRED-108 | deferred | Phase 108 verification | accepted_tech_debt | closed | - | - | none | - | S:193, I:16 | not in sources | not in sources | S:193 | I:16 |
-| DEFERRED-104 | deferred | Phase 104 verification | withdrawn | closed | - | - | none | - | S:194, I:24 | not in sources | not in sources | S:194 | I:24 |
-| DEFERRED-81 | deferred | Phase 81 verification | gaps_found (owner waiver 2026-10-26 (v1.16 phase 81); scheduled for v1.21 test determinism under load) | blocked | external | - | none; missing: phase 81 gaps_found with no resume command (S:102): owner decision or verification evidence required | - | S:102 | not in sources | not in sources | S:102 | - |
-| DEFERRED-12 | deferred | Phase 12 verification | gaps_found | blocked | external | - | none; missing: phase 12 gaps_found with no resume command (S:106): owner decision or verification evidence required | - | S:106 | not in sources | not in sources | S:106 | - |
+| DEFERRED-63 | deferred | Phase 63 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 63` (verification_deferred_human, S:183, S:109) | - | S:183, S:109, I:50 | not in sources | /gsd:verify-work 63 | S:183, S:109 | I:50 |
+| DEFERRED-64 | deferred | Phase 64 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 64` (verification_deferred_human, S:184, S:110) | - | S:184, S:110, I:51 | not in sources | /gsd:verify-work 64 | S:184, S:110 | I:51 |
+| DEFERRED-65 | deferred | Phase 65 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 65` (verification_deferred_human, S:185, S:111) | - | S:185, S:111, I:52 | not in sources | /gsd:verify-work 65 | S:185, S:111 | I:52 |
+| DEFERRED-68 | deferred | Phase 68 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 68` (verification_deferred_human, S:186) | - | S:186, I:34 | not in sources | /gsd:verify-work 68 | S:186 | I:34 |
+| DEFERRED-69 | deferred | Phase 69 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 69` (verification_deferred_human, S:187) | - | S:187, I:35 | not in sources | /gsd:verify-work 69 | S:187 | I:35 |
+| DEFERRED-70 | deferred | Phase 70 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 70` (verification_deferred_human, S:188) | - | S:188, I:36 | not in sources | /gsd:verify-work 70 | S:188 | I:36 |
+| DEFERRED-71 | deferred | Phase 71 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 71` (verification_deferred_human, S:189) | - | S:189, I:37 | not in sources | /gsd:verify-work 71 | S:189 | I:37 |
+| DEFERRED-72 | deferred | Phase 72 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 72` (verification_deferred_human, S:190) | - | S:190, I:38 | not in sources | /gsd:verify-work 72 | S:190 | I:38 |
+| DEFERRED-73 | deferred | Phase 73 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 73` (verification_deferred_human, S:191) | - | S:191, I:39 | not in sources | /gsd:verify-work 73 | S:191 | I:39 |
+| DEFERRED-74 | deferred | Phase 74 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 74` (verification_deferred_human, S:192) | - | S:192, I:40 | not in sources | /gsd:verify-work 74 | S:192 | I:40 |
+| DEFERRED-75 | deferred | Phase 75 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 75` (verification_deferred_human, S:193) | - | S:193, I:41 | not in sources | /gsd:verify-work 75 | S:193 | I:41 |
+| DEFERRED-76 | deferred | Phase 76 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 76` (verification_deferred_human, S:194) | - | S:194, I:42 | not in sources | /gsd:verify-work 76 | S:194 | I:42 |
+| DEFERRED-110 | deferred | Phase 110 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 110` (verification_deferred_human, S:195) | - | S:195 | not in sources | /gsd:verify-work 110 | S:195 | - |
+| DEFERRED-111 | deferred | Phase 111 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 111` (verification_deferred_human, S:196) | - | S:196 | not in sources | /gsd:verify-work 111 | S:196 | - |
+| DEFERRED-112 | deferred | Phase 112 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 112` (verification_deferred_human, S:197) | - | S:197 | not in sources | /gsd:verify-work 112 | S:197 | - |
+| DEFERRED-114 | deferred | Phase 114 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 114` (verification_deferred_human, S:198) | - | S:198 | not in sources | /gsd:verify-work 114 | S:198 | - |
+| DEFERRED-108 | deferred | Phase 108 verification | accepted_tech_debt | closed | - | - | none | - | S:199, I:16 | not in sources | not in sources | S:199 | I:16 |
+| DEFERRED-104 | deferred | Phase 104 verification | withdrawn | closed | - | - | none | - | S:200, I:24 | not in sources | not in sources | S:200 | I:24 |
+| DEFERRED-81 | deferred | Phase 81 verification | gaps_found (owner waiver 2026-10-26 (v1.16 phase 81); scheduled for v1.21 test determinism under load) | blocked | external | - | none; missing: phase 81 gaps_found with no resume command (S:108): owner decision or verification evidence required | - | S:108 | not in sources | not in sources | S:108 | - |
+| DEFERRED-12 | deferred | Phase 12 verification | gaps_found | blocked | external | - | none; missing: phase 12 gaps_found with no resume command (S:112): owner decision or verification evidence required | - | S:112 | not in sources | not in sources | S:112 | - |
 
 ## Executable now
 
@@ -71,24 +71,24 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 - BACKLOG-HERMES-02 (blocked): condition in R:53 is not yet met: Live proof after a Hermes inference route is funded.
 - BACKLOG-CONNECTOR-LIVE (blocked): condition in R:55 is not yet met: First real Grok Chat and Claude Desktop connection (USER_ACTION_1, VALIDATION_1 in `ultrathink-mcp/BLOCKER_LEDGER.md`); needs the operator's accounts and is not claimed by v1.14.
 - BACKLOG-MCP-2026-07-28 (blocked): condition in R:56 is not yet met: Serve the stateless revision (`server/discover`, `Mcp-Method`/`Mcp-Name` headers, `resultType`, `ttlMs`/`cacheScope`) if a hosted client stops falling back; delta and prototype in `milestones/v1.14-phases/63-client-protocol-compatibility/evidence/R1-mcp-2026-07-28-findings.md`. Scheduled as v1.22 phases 106 to 108; 107 and 108 are gated on the trigger.
-- DEFERRED-63 (blocked): human verification pending: run `/gsd:verify-work 63` (verification_deferred_human, S:177, S:103)
-- DEFERRED-64 (blocked): human verification pending: run `/gsd:verify-work 64` (verification_deferred_human, S:178, S:104)
-- DEFERRED-65 (blocked): human verification pending: run `/gsd:verify-work 65` (verification_deferred_human, S:179, S:105)
-- DEFERRED-68 (blocked): human verification pending: run `/gsd:verify-work 68` (verification_deferred_human, S:180)
-- DEFERRED-69 (blocked): human verification pending: run `/gsd:verify-work 69` (verification_deferred_human, S:181)
-- DEFERRED-70 (blocked): human verification pending: run `/gsd:verify-work 70` (verification_deferred_human, S:182)
-- DEFERRED-71 (blocked): human verification pending: run `/gsd:verify-work 71` (verification_deferred_human, S:183)
-- DEFERRED-72 (blocked): human verification pending: run `/gsd:verify-work 72` (verification_deferred_human, S:184)
-- DEFERRED-73 (blocked): human verification pending: run `/gsd:verify-work 73` (verification_deferred_human, S:185)
-- DEFERRED-74 (blocked): human verification pending: run `/gsd:verify-work 74` (verification_deferred_human, S:186)
-- DEFERRED-75 (blocked): human verification pending: run `/gsd:verify-work 75` (verification_deferred_human, S:187)
-- DEFERRED-76 (blocked): human verification pending: run `/gsd:verify-work 76` (verification_deferred_human, S:188)
-- DEFERRED-110 (blocked): human verification pending: run `/gsd:verify-work 110` (verification_deferred_human, S:189)
-- DEFERRED-111 (blocked): human verification pending: run `/gsd:verify-work 111` (verification_deferred_human, S:190)
-- DEFERRED-112 (blocked): human verification pending: run `/gsd:verify-work 112` (verification_deferred_human, S:191)
-- DEFERRED-114 (blocked): human verification pending: run `/gsd:verify-work 114` (verification_deferred_human, S:192)
-- DEFERRED-81 (blocked): phase 81 gaps_found with no resume command (S:102): owner decision or verification evidence required
-- DEFERRED-12 (blocked): phase 12 gaps_found with no resume command (S:106): owner decision or verification evidence required
+- DEFERRED-63 (blocked): human verification pending: run `/gsd:verify-work 63` (verification_deferred_human, S:183, S:109)
+- DEFERRED-64 (blocked): human verification pending: run `/gsd:verify-work 64` (verification_deferred_human, S:184, S:110)
+- DEFERRED-65 (blocked): human verification pending: run `/gsd:verify-work 65` (verification_deferred_human, S:185, S:111)
+- DEFERRED-68 (blocked): human verification pending: run `/gsd:verify-work 68` (verification_deferred_human, S:186)
+- DEFERRED-69 (blocked): human verification pending: run `/gsd:verify-work 69` (verification_deferred_human, S:187)
+- DEFERRED-70 (blocked): human verification pending: run `/gsd:verify-work 70` (verification_deferred_human, S:188)
+- DEFERRED-71 (blocked): human verification pending: run `/gsd:verify-work 71` (verification_deferred_human, S:189)
+- DEFERRED-72 (blocked): human verification pending: run `/gsd:verify-work 72` (verification_deferred_human, S:190)
+- DEFERRED-73 (blocked): human verification pending: run `/gsd:verify-work 73` (verification_deferred_human, S:191)
+- DEFERRED-74 (blocked): human verification pending: run `/gsd:verify-work 74` (verification_deferred_human, S:192)
+- DEFERRED-75 (blocked): human verification pending: run `/gsd:verify-work 75` (verification_deferred_human, S:193)
+- DEFERRED-76 (blocked): human verification pending: run `/gsd:verify-work 76` (verification_deferred_human, S:194)
+- DEFERRED-110 (blocked): human verification pending: run `/gsd:verify-work 110` (verification_deferred_human, S:195)
+- DEFERRED-111 (blocked): human verification pending: run `/gsd:verify-work 111` (verification_deferred_human, S:196)
+- DEFERRED-112 (blocked): human verification pending: run `/gsd:verify-work 112` (verification_deferred_human, S:197)
+- DEFERRED-114 (blocked): human verification pending: run `/gsd:verify-work 114` (verification_deferred_human, S:198)
+- DEFERRED-81 (blocked): phase 81 gaps_found with no resume command (S:108): owner decision or verification evidence required
+- DEFERRED-12 (blocked): phase 12 gaps_found with no resume command (S:112): owner decision or verification evidence required
 
 ## Deferred to owner
 
@@ -116,7 +116,7 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 ## Conflicts
 
 - BACKLOG-JEV-03: own R:54 says closed ("superseded"); I:95 says open ("needs")
-- BACKLOG-CIMD: own R:57 says closed ("withdrawn"); S:241 says open ("needs", "need")
-- DEFERRED-76: own S:188 says open ("verification_deferred_human"); I:42 says closed ("passed")
-- DEFERRED-108: own S:193 says closed ("accepted_tech_debt"); I:16 says open ("needs", "pending")
-- DEFERRED-104: own S:194 says closed ("withdrawn"); S:215 says open ("human_needed", "verification_deferred_human")
+- BACKLOG-CIMD: own R:57 says closed ("withdrawn"); S:247 says open ("needs", "need")
+- DEFERRED-76: own S:194 says open ("verification_deferred_human"); I:42 says closed ("passed")
+- DEFERRED-108: own S:199 says closed ("accepted_tech_debt"); I:16 says open ("needs", "pending")
+- DEFERRED-104: own S:200 says closed ("withdrawn"); S:221 says open ("human_needed", "verification_deferred_human")
