@@ -636,3 +636,7 @@ Linear: SPE-35422 parent + SPE-35423 (resumePrds wiring), SPE-35424 (tracker-sid
 ## Phase 114 re-verification 2026-11-21 (gsd-autonomous re-entry)
 
 At origin/main f84ce7f (post PR #251): criterion 7 wiring landed — HookDeps.closeSubIssue bound, runSubIssueCloseout wrapper, TodoWrite completion hook. Live end-to-end closure run still pending (PRD payloads in graph ut-2691bd7bba-bfae4575 remain pending until prompt-submit re-sync). Phase stays human_needed. v1.24 milestones 110/111/112 remain human_needed (live Omp/owner checks).
+
+## v1.24 phases 110/111/112/114 (2026-11-25 autonomous refresh)
+
+In-repo verification at origin/main 4f07500 (post PR #251 + #253):ToT closeout wiring live (HookDeps.closeSubIssue bound; resumePrds + presence gate in production); planning auto-wait with bounded auto re-runs (3) merged. Phase 114 criterion 7: wiring landed, live end-to-end closure run still pending (PRD payloads pending until prompt-submit re-sync). Phases 110/111/112 remain human_needed (live Omp/owner checks).
