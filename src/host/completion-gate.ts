@@ -63,7 +63,7 @@ interface GateObserved {
 	readonly prdsMissingInTrackers: number;
 }
 /** Generated PRD keys whose hash-marked text was not found in the named tracker row. */
-export interface PrdTrackerPresence {
+interface PrdTrackerPresence {
 	readonly missingLinear?: readonly string[];
 	readonly missingNotion?: readonly string[];
 }
