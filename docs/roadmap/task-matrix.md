@@ -55,10 +55,9 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 | DEFERRED-76 | deferred | Phase 76 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 76` (verification_deferred_human, S:194) | - | S:194, I:42 | not in sources | /gsd:verify-work 76 | S:194 | I:42 |
 | DEFERRED-110 | deferred | Phase 110 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 110` (verification_deferred_human, S:195) | - | S:195 | not in sources | /gsd:verify-work 110 | S:195 | - |
 | DEFERRED-111 | deferred | Phase 111 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 111` (verification_deferred_human, S:196) | - | S:196 | not in sources | /gsd:verify-work 111 | S:196 | - |
-| DEFERRED-112 | deferred | Phase 112 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 112` (verification_deferred_human, S:197) | - | S:197 | not in sources | /gsd:verify-work 112 | S:197 | - |
-| DEFERRED-114 | deferred | Phase 114 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 114` (verification_deferred_human, S:198) | - | S:198 | not in sources | /gsd:verify-work 114 | S:198 | - |
-| DEFERRED-108 | deferred | Phase 108 verification | accepted_tech_debt | closed | - | - | none | - | S:199, I:16 | not in sources | not in sources | S:199 | I:16 |
-| DEFERRED-104 | deferred | Phase 104 verification | withdrawn | closed | - | - | none | - | S:200, I:24 | not in sources | not in sources | S:200 | I:24 |
+| DEFERRED-114 | deferred | Phase 114 verification | verification_deferred_human | blocked | external | - | none; missing: human verification pending: run `/gsd:verify-work 114 (UAT 1-6 pass owner-confirmed 2026-11-21; criterion 7 live run pending)` (verification_deferred_human, S:197) | - | S:197 | not in sources | /gsd:verify-work 114 (UAT 1-6 pass owner-confirmed 2026-11-21; criterion 7 live run pending) | S:197 | - |
+| DEFERRED-108 | deferred | Phase 108 verification | accepted_tech_debt | closed | - | - | none | - | S:198, I:16 | not in sources | not in sources | S:198 | I:16 |
+| DEFERRED-104 | deferred | Phase 104 verification | withdrawn | closed | - | - | none | - | S:199, I:24 | not in sources | not in sources | S:199 | I:24 |
 | DEFERRED-81 | deferred | Phase 81 verification | gaps_found (owner waiver 2026-10-26 (v1.16 phase 81); scheduled for v1.21 test determinism under load) | blocked | external | - | none; missing: phase 81 gaps_found with no resume command (S:108): owner decision or verification evidence required | - | S:108 | not in sources | not in sources | S:108 | - |
 | DEFERRED-12 | deferred | Phase 12 verification | gaps_found | blocked | external | - | none; missing: phase 12 gaps_found with no resume command (S:112): owner decision or verification evidence required | - | S:112 | not in sources | not in sources | S:112 | - |
 
@@ -85,8 +84,7 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 - DEFERRED-76 (blocked): human verification pending: run `/gsd:verify-work 76` (verification_deferred_human, S:194)
 - DEFERRED-110 (blocked): human verification pending: run `/gsd:verify-work 110` (verification_deferred_human, S:195)
 - DEFERRED-111 (blocked): human verification pending: run `/gsd:verify-work 111` (verification_deferred_human, S:196)
-- DEFERRED-112 (blocked): human verification pending: run `/gsd:verify-work 112` (verification_deferred_human, S:197)
-- DEFERRED-114 (blocked): human verification pending: run `/gsd:verify-work 114` (verification_deferred_human, S:198)
+- DEFERRED-114 (blocked): human verification pending: run `/gsd:verify-work 114 (UAT 1-6 pass owner-confirmed 2026-11-21; criterion 7 live run pending)` (verification_deferred_human, S:197)
 - DEFERRED-81 (blocked): phase 81 gaps_found with no resume command (S:108): owner decision or verification evidence required
 - DEFERRED-12 (blocked): phase 12 gaps_found with no resume command (S:112): owner decision or verification evidence required
 
@@ -116,7 +114,7 @@ Regenerate with `bun run matrix` from a checkout that has `.planning/`. `ROADMAP
 ## Conflicts
 
 - BACKLOG-JEV-03: own R:54 says closed ("superseded"); I:95 says open ("needs")
-- BACKLOG-CIMD: own R:57 says closed ("withdrawn"); S:247 says open ("needs", "need")
+- BACKLOG-CIMD: own R:57 says closed ("withdrawn"); S:246 says open ("needs", "need")
 - DEFERRED-76: own S:194 says open ("verification_deferred_human"); I:42 says closed ("passed")
-- DEFERRED-108: own S:199 says closed ("accepted_tech_debt"); I:16 says open ("needs", "pending")
-- DEFERRED-104: own S:200 says closed ("withdrawn"); S:221 says open ("human_needed", "verification_deferred_human")
+- DEFERRED-108: own S:198 says closed ("accepted_tech_debt"); I:16 says open ("needs", "pending")
+- DEFERRED-104: own S:199 says closed ("withdrawn"); S:220 says open ("human_needed", "verification_deferred_human")
