@@ -175,6 +175,8 @@ describe("omp extension", () => {
 		// The race limit is 1 ms: its timer fires by hand, and the pending message follows.
 		const running = run();
 		await manual.fire(1);
+		// The bounded auto-wait expires too: the handler defers to the pending message.
+		await manual.fire(1);
 		expect(await running).toEqual({
 			message: expect.objectContaining({ customType: "ultrathink-pending" }),
 		});
@@ -227,15 +229,15 @@ describe("omp extension", () => {
 		]);
 	});
 
-	test("slow empty plan delivers the did-not-complete notice after one retry", async () => {
+	test("slow empty plan delivers the did-not-complete notice after three relaunches", async () => {
 		const gate = controlled();
 		const { run, sent } = setup(gate.plan, 1);
 		await run();
 		gate.resolve("");
 		// hardened: the relaunched planner settles after more microtask hops than one flush covers (omp-delivery.test.ts)
 		for (let hop = 0; hop < 50 && sent.length === 0; hop++) await flush();
-		// the first attempt and its one relaunch: the planner runs exactly twice before the notice
-		expect(gate.calls()).toBe(2);
+		// the first attempt and its three relaunches: the planner runs exactly four times before the notice
+		expect(gate.calls()).toBe(4);
 		expect(sent).toHaveLength(1);
 		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
 		expect((sent[0]!.message as { content: string }).content).toBe(
@@ -424,6 +426,8 @@ describe("omp extension", () => {
 		const running = run();
 		// The race limit is 1 ms: its timer fires by hand while the plan is still held.
 		await manual.fire(1);
+		// The bounded auto-wait expires too: the handler defers to the pending message.
+		await manual.fire(1);
 		await running;
 		const pendingLine = t.line();
 		gate.resolve({
@@ -453,6 +457,8 @@ describe("omp extension", () => {
 		emit("session_start");
 		const running = run();
 		// The race limit is 1 ms: its timer fires by hand while the final plan is still held.
+		await manual.fire(1);
+		// The bounded auto-wait expires too: the handler defers to the pending message.
 		await manual.fire(1);
 		await running;
 		expect(t.line()).toContain("arrives as aside");

@@ -545,15 +545,24 @@ describe("named legacy flight identity (REV15-005)", () => {
 			// hardened: explicit notice instead of silence (omp-delivery.test.ts)
 			const old = await run();
 			expect(old).toEqual(noPlanNotice);
-			// The noticed flight is reused silently; a no-plan flight is relaunched once before its notice.
+			// The noticed flight is reused silently; a no-plan flight is relaunched three times before its notice.
 			expect(await run()).toBeUndefined();
-			expect(planner.resolutions).toHaveLength(2);
+			expect(planner.resolutions).toHaveLength(4);
 			config.grok[endpoint] = "https://SECRET-GATEWAY-B.invalid";
 			const result = await run();
 			expect(result).toEqual(noPlanNotice);
 			expect(await run()).toBeUndefined();
-			expect(planner.resolutions).toHaveLength(4);
-			expect(planner.signals.map((signal) => signal.aborted)).toEqual([true, true, true, false]);
+			expect(planner.resolutions).toHaveLength(8);
+			expect(planner.signals.map((signal) => signal.aborted)).toEqual([
+				true,
+				true,
+				true,
+				true,
+				true,
+				true,
+				true,
+				false,
+			]);
 			await command("ultrathink-status");
 			expect(
 				JSON.stringify({ old, result, resolutions: planner.resolutions, sent, notices }),
@@ -578,11 +587,11 @@ describe("named legacy flight identity (REV15-005)", () => {
 				expect(planner.resolutions).toHaveLength(1);
 				expect(planner.signals[0]?.aborted).toBe(false);
 			} else {
-				// A grok flight with no login plans nothing: it is relaunched once, then its notice is shown once.
+				// A grok flight with no login plans nothing: it is relaunched three times, then its notice is shown once.
 				expect(result).toEqual(noPlanNotice);
 				expect(await run()).toBeUndefined();
-				expect(planner.resolutions).toHaveLength(2);
-				expect(planner.signals.map((signal) => signal.aborted)).toEqual([true, false]);
+				expect(planner.resolutions).toHaveLength(4);
+				expect(planner.signals.map((signal) => signal.aborted)).toEqual([true, true, true, false]);
 			}
 		}
 	});
@@ -610,7 +619,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 			const planner = selecting();
 			const { run } = setup(planner.plan, 1_000, { config: () => config, stateDir: root });
 			// hardened: explicit notice instead of silence (omp-delivery.test.ts)
-			// The no-plan flight is relaunched once before its notice.
+			// The no-plan flight is relaunched three times before its notice.
 			expect(await run()).toEqual(noPlanNotice);
 			expect(planner.resolutions[0]).toMatchObject({
 				state: "unresolved",
@@ -619,27 +628,29 @@ describe("named legacy flight identity (REV15-005)", () => {
 			config.grok[switchName] = switchName === "fallbackToClaude";
 			const defaultModel = config.claude.model;
 			expect(await run()).toMatchObject({ message: { content: defaultModel } });
-			expect(planner.resolutions[2]).toMatchObject({
+			expect(planner.resolutions[4]).toMatchObject({
 				state: "default",
 				source: "configured-fallback",
 				transport: "claude-cli",
 			});
 			config = mergeConfig({ claude: { model: defaultModel } }, config);
 			expect(await run()).toMatchObject({ message: { content: defaultModel } });
-			expect(planner.resolutions[3]).toMatchObject({
+			expect(planner.resolutions[5]).toMatchObject({
 				state: "override",
 				source: "configured-fallback",
 				modelId: defaultModel,
 			});
 			config = mergeConfig({ claude: { model: "FALLBACK_B" } }, config);
 			expect(await run()).toMatchObject({ message: { content: "FALLBACK_B" } });
-			expect(planner.resolutions[4]).toMatchObject({
+			expect(planner.resolutions[6]).toMatchObject({
 				state: "override",
 				source: "configured-fallback",
 				modelId: "FALLBACK_B",
 			});
-			expect(planner.resolutions).toHaveLength(5);
+			expect(planner.resolutions).toHaveLength(7);
 			expect(planner.signals.map((signal) => signal.aborted)).toEqual([
+				true,
+				true,
 				true,
 				true,
 				true,
@@ -678,14 +689,14 @@ describe("named legacy flight identity (REV15-005)", () => {
 			await run();
 			expect(reads).toBe(0);
 			// hardened: explicit notice instead of silence (omp-delivery.test.ts)
-			// A grok flight with no login plans nothing: it is relaunched once. Claude and muse plan once.
-			const planned = engine === "grok" ? 2 : 1;
+			// A grok flight with no login plans nothing: it is relaunched three times. Claude and muse plan once.
+			const planned = engine === "grok" ? 4 : 1;
 			expect(requests).toHaveLength(planned);
 			expect(requests[0]).not.toHaveProperty("thinkingLevel");
 			expect(requests[0]?.config).toEqual(before);
 			expect(planner.resolutions).toHaveLength(planned);
 			expect(planner.signals.map((signal) => signal.aborted)).toEqual(
-				engine === "grok" ? [true, false] : [false],
+				engine === "grok" ? [true, true, true, false] : [false],
 			);
 		}
 	});

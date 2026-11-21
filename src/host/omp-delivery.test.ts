@@ -56,29 +56,29 @@ const KEY = planKey({ sessionId: "s1", submission: "0", prompt: "do it", cwd: "/
 const LATER = new Date(Date.now() + 60_000).toISOString();
 
 describe("omp delivery when planning does not produce a plan", () => {
-	test("a failed planner is relaunched once and the retry plan is delivered inline", async () => {
+	test("a failed planner is relaunched up to three times and the retry plan is delivered inline", async () => {
 		const planner = counting((call) => (call === 1 ? "" : UPLIFT("do it")));
 		const { run } = setup(planner.plan, 1_000, { stateDir: newRoot() });
 		expect(textOf(await run("do it"))).toBe(UPLIFT("do it"));
 		expect(planner.count()).toBe(2);
 	});
 
-	test("a planner that fails twice delivers the notice, never nothing", async () => {
+	test("a planner that fails three times delivers the notice, never nothing", async () => {
 		const planner = counting(() => "");
 		const { run } = setup(planner.plan, 1_000, { stateDir: newRoot() });
 		const text = textOf(await run("do it"));
 		expect(text).toBeDefined();
 		expect(text).toContain("did not complete");
-		expect(planner.count()).toBe(2);
+		expect(planner.count()).toBe(4);
 	});
 
-	test("a planner that throws delivers the notice and carries the error into it", async () => {
+	test("a planner that throws delivers the notice and carries the error into it after three relaunches", async () => {
 		const planner = counting(() => new Error("boom"));
 		const { run } = setup(planner.plan, 1_000, { stateDir: newRoot() });
 		const text = textOf(await run("do it"));
 		expect(text).toContain("did not complete");
 		expect(text).toContain("boom");
-		expect(planner.count()).toBe(2);
+		expect(planner.count()).toBe(4);
 	});
 
 	test("a stored plan that never reached the model is re-delivered once", async () => {
@@ -215,13 +215,13 @@ describe("omp delivery when planning does not produce a plan", () => {
 		expect(calls).toBe(1);
 	});
 
-	test("native-unavailable is a planning failure: it is retried once and the notice names the reason", async () => {
+	test("native-unavailable is a planning failure: after three relaunches the notice names the reason", async () => {
 		const planner = skipping("native-unavailable");
 		const { run } = setup(planner.plan, 1_000, { stateDir: newRoot() });
 		const text = textOf(await run("do it"));
 		expect(text).toContain("did not complete");
 		expect(text).toContain("native-unavailable");
-		expect(planner.count()).toBe(2);
+		expect(planner.count()).toBe(4);
 	});
 
 	test("a deferred deliberate skip that outlasts the race sends no aside", async () => {
