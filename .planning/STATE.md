@@ -632,3 +632,7 @@ In-repo items dispatched this run: SPE-35300, SPE-35302, SPE-35303. PR from feat
 ## ToT Codeblocked PRD robustness programme (2026-11-21)
 
 Linear: SPE-35422 parent + SPE-35423 (resumePrds wiring), SPE-35424 (tracker-side presence gate), SPE-35425 (closeSubIssue wiring), SPE-35426 (checkpoint retry + backoff), SPE-35427 (live closure run once Notion restored). Notion: 5 Sub-Issue rows in Agent Task Graph (41fbc1a0-c7ae-811a...), graph gsd-tot-robustness-2026-11-21. The 48 PRDs SPE-35034-SPE-35081 are PRD carriers linked under SPE-35301/phase 114; this programme adds the production machinery they were missing (no production caller for resumePrds/closeSubIssue).
+
+## Phase 114 re-verification 2026-11-21 (gsd-autonomous re-entry)
+
+At origin/main f84ce7f (post PR #251): criterion 7 wiring landed — HookDeps.closeSubIssue bound, runSubIssueCloseout wrapper, TodoWrite completion hook. Live end-to-end closure run still pending (PRD payloads in graph ut-2691bd7bba-bfae4575 remain pending until prompt-submit re-sync). Phase stays human_needed. v1.24 milestones 110/111/112 remain human_needed (live Omp/owner checks).

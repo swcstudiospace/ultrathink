@@ -40,7 +40,7 @@ import { planPrompt } from "./plan.ts";
 import type { PlanResponse } from "./plan.ts";
 import type { ProgressEvent } from "./progress.ts";
 
-/** Timers the test fires by hand: the race and flight-limit timers arm here instead of on the real clock. */
+/** Timers the test fires by hand: the race, auto-wait and flight-limit timers arm here instead of on the real clock. */
 type ManualTimers = {
 	timers: {
 		setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
@@ -144,7 +144,8 @@ describe("flight lifecycle (D-12)", () => {
 			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
 		});
 		gate.resolve("");
-		await flush();
+		// Up to 3 automatic relaunches settle before the one aside lands; they are microtask-only, so drain until it arrives.
+		for (let i = 0; i < 500 && sent.length === 0; i++) await Promise.resolve();
 		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
 		expect(sent).toEqual([aside(planFailedNotice("the planner produced no plan"))]);
 		expect(sent).not.toEqual([aside(EARLY_RELEASE)]);
@@ -187,7 +188,8 @@ describe("flight lifecycle (D-12)", () => {
 			message: expect.objectContaining({ customType: "ultrathink-plan" }),
 		});
 		gate.resolve("");
-		await flush();
+		// Up to 3 automatic relaunches settle before the one aside lands; they are microtask-only, so drain until it arrives.
+		for (let i = 0; i < 500 && sent.length === 0; i++) await Promise.resolve();
 		expect(sent).toEqual([aside(EARLY_RELEASE)]);
 		expect(sent).not.toEqual([aside(NO_PLAN)]);
 	});
@@ -273,6 +275,8 @@ describe("flight lifecycle (D-12)", () => {
 			{ model: live, ...runtime },
 		);
 		const racing = run();
+		await manual.fire(1);
+		// The bounded auto-wait expires too: the handler defers to the hold message and the deadline releases the flight.
 		await manual.fire(1);
 		expect(await racing).toEqual(PENDING_RESULT);
 		await called.promise;
@@ -1452,7 +1456,7 @@ describe("flight lifecycle (D-12)", () => {
 		}
 	}, 10_000);
 
-	test("cancel-matrix empty results retry once, stay quiet before the handoff, and send one did-not-complete aside after", async () => {
+	test("cancel-matrix empty results retry up to three times, stay quiet before the handoff, and send one did-not-complete aside after", async () => {
 		{
 			let calls = 0;
 			const h = setup(
@@ -1463,7 +1467,7 @@ describe("flight lifecycle (D-12)", () => {
 				50,
 				{},
 			);
-			// hardened: explicit notice instead of silence; the empty planner was relaunched once (omp-delivery.test.ts)
+			// hardened: explicit notice instead of silence; the empty planner is relaunched up to three times (omp-delivery.test.ts)
 			expect(await h.run()).toEqual({
 				message: {
 					customType: "ultrathink-plan",
@@ -1472,7 +1476,7 @@ describe("flight lifecycle (D-12)", () => {
 					attribution: "agent",
 				},
 			});
-			expect(calls).toBe(2);
+			expect(calls).toBe(4);
 			expect(h.sent).toEqual([]);
 			h.emit("session_shutdown");
 			await flush();
@@ -1483,14 +1487,22 @@ describe("flight lifecycle (D-12)", () => {
 			expect(await h.run()).toEqual(PENDING_RESULT);
 			planner.runs[0]?.gate.resolve("");
 			await flush();
-			// hardened: a failed planner is relaunched once; the relaunch's empty plan carries the notice (omp-delivery.test.ts)
+			// hardened: a failed planner is relaunched up to three times; the last relaunch's empty plan carries the notice (omp-delivery.test.ts)
 			expect(h.sent).toEqual([]);
 			expect(planner.runs).toHaveLength(2);
 			planner.runs[1]?.gate.resolve("");
 			await flush();
+			expect(h.sent).toEqual([]);
+			expect(planner.runs).toHaveLength(3);
+			planner.runs[2]?.gate.resolve("");
+			await flush();
+			expect(h.sent).toEqual([]);
+			expect(planner.runs).toHaveLength(4);
+			planner.runs[3]?.gate.resolve("");
+			await flush();
 			expect(h.sent).toEqual([aside(planFailedNotice("the planner produced no plan"))]);
 			expect(await h.run()).toBeUndefined();
-			expect(planner.runs).toHaveLength(2);
+			expect(planner.runs).toHaveLength(4);
 			await flush();
 			expect(h.sent).toEqual([aside(planFailedNotice("the planner produced no plan"))]);
 			h.emit("session_shutdown");
@@ -1551,12 +1563,12 @@ describe("flight lifecycle (D-12)", () => {
 		expect(handoff?.asideDeliverAs).toBeNull();
 	}, 120_000);
 
-	test("handoff-ordering coincident race-first dispatches race then delivers one aside", async () => {
+	test("handoff-ordering coincident race-first dispatches race, auto-waits, then delivers inline", async () => {
 		const result = await runChildLifetimeScenario({
 			cancelHung: false,
 			handoffOrder: "race-first",
 		});
-		expect(result.planAsides).toBe(1);
+		expect(result.planAsides).toBe(0);
 		expect(result.nativeCalls).toBe(0);
 		const handoff = result.handoff;
 		expect(handoff?.order).toBe("race-first");
@@ -1569,11 +1581,11 @@ describe("flight lifecycle (D-12)", () => {
 		expect(handoff?.providerFired).toBe(true);
 		expect(handoff?.raceCleared).toBe(false);
 		expect(handoff?.firedRoles).toEqual(["race", "provider"]);
-		expect(handoff?.pending).toBe(true);
-		expect(handoff?.inlineContent).toBeNull();
-		expect(handoff?.asideContent).toBe("PLAN");
-		expect(handoff?.asideCustomType).toBe("ultrathink-plan");
-		expect(handoff?.asideDeliverAs).toBe("aside");
+		expect(handoff?.pending).toBe(false);
+		expect(handoff?.inlineContent).toBe("PLAN");
+		expect(handoff?.asideContent).toBeNull();
+		expect(handoff?.asideCustomType).toBeNull();
+		expect(handoff?.asideDeliverAs).toBeNull();
 	}, 120_000);
 
 	test("handoff-ordering completion after pending delivers exactly one aside", async () => {
@@ -1662,8 +1674,8 @@ describe("flight lifecycle (D-12)", () => {
 				attribution: "agent",
 			},
 		});
-		// hardened: relaunched once before the notice (omp-delivery.test.ts)
-		expect(calls).toBe(2);
+		// hardened: relaunched up to three times before the notice (omp-delivery.test.ts)
+		expect(calls).toBe(4);
 		const line = t.line();
 		// The bar's remount, armed by session_start, is the only timer left: fire it so the count isolates the deadline.
 		await manual.fire(0);
@@ -1673,8 +1685,8 @@ describe("flight lifecycle (D-12)", () => {
 		expect(h.sent).toEqual([]);
 		expect(signal?.aborted).toBe(false);
 		expect(await h.run()).toBeUndefined();
-		// hardened: relaunched once before the notice (omp-delivery.test.ts)
-		expect(calls).toBe(2);
+		// hardened: relaunched up to three times before the notice (omp-delivery.test.ts)
+		expect(calls).toBe(4);
 		h.emit("session_shutdown");
 		await flush();
 	}, 10_000);
@@ -1750,6 +1762,8 @@ describe("flight lifecycle (D-12)", () => {
 		);
 		const racing = run();
 		expect(pendingAtPlan).toBeGreaterThanOrEqual(1);
+		await manual.fire(1);
+		// The bounded auto-wait expires too: the handler defers to the hold message.
 		await manual.fire(1);
 		expect(await racing).toEqual(PENDING_RESULT);
 	});
@@ -1855,6 +1869,8 @@ describe("completion gate (Omp before_agent_start)", () => {
 		const { run, sent } = setup(planner.plan, 1, { timers: manual.timers });
 		const running = run();
 		await manual.fire(1);
+		// The bounded auto-wait expires too: the handler defers to the explicit hold.
+		await manual.fire(1);
 		const held = await running;
 		expect(held).toEqual({
 			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
@@ -1869,7 +1885,7 @@ describe("completion gate (Omp before_agent_start)", () => {
 		expect(sent).toEqual([aside(planXml(2))]);
 	});
 
-	test("with a dialog the handler returns nothing while the plan generates, however long that takes, then returns exactly the complete plan", async () => {
+	test("a slow plan: the handler waits until the flight settles with no dialog, however long that takes, then returns exactly the complete plan", async () => {
 		const planner = slow();
 		const manual = manualTimers();
 		const host = dialogCtx();
@@ -1886,8 +1902,9 @@ describe("completion gate (Omp before_agent_start)", () => {
 			return value;
 		});
 		await manual.fire(1);
-		await until(() => host.dialogs.length === 1);
-		expect(host.dialogs[0]?.title).toContain("still planning");
+		// No confirm dialog is ever shown: the handler just waits.
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		expect(host.dialogs).toEqual([]);
 		// Five minutes of fake clock pass inside the held handler: still nothing returned, nothing sent.
 		clock += 5 * 60_000;
 		for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -1897,56 +1914,64 @@ describe("completion gate (Omp before_agent_start)", () => {
 		clock += 10 * 60_000;
 		planner.runs[0]?.gate.resolve(planXml(2));
 		expect(await running).toEqual(planMsg(planXml(2)));
-		expect(host.dialogs[0]?.signal?.aborted).toBe(true);
 		expect(sent).toEqual([]);
 	});
 
-	test("answering the dialog yes starts without the plan and cancels the flight, which then delivers nothing", async () => {
+	test("there is no Yes path that starts without the plan: the handler keeps waiting and the flight is not cancelled", async () => {
 		const planner = slow();
 		const manual = manualTimers();
 		const host = dialogCtx();
 		const { run, sent } = setup(planner.plan, 1, { timers: manual.timers }, host.ctx);
-		const running = Promise.resolve(run());
+		let returned = false;
+		const running = Promise.resolve(run()).then((value) => {
+			returned = true;
+			return value;
+		});
 		await manual.fire(1);
-		await until(() => host.dialogs.length === 1);
-		host.dialogs[0]?.answer(true);
-		expect(await running).toBeUndefined();
-		expect(planner.runs[0]?.signal.aborted).toBe(true);
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		expect(host.dialogs).toEqual([]);
+		expect(returned).toBe(false);
+		expect(planner.runs[0]?.signal.aborted).toBe(false);
 		planner.runs[0]?.gate.resolve(planXml(2));
-		await flush();
+		expect(await running).toEqual(planMsg(planXml(2)));
 		expect(sent).toEqual([]);
 	});
 
-	test("a dialog that closes at once is not a hold: the host falls back to the explicit stop message", async () => {
+	test("on a dialog-capable host the handler still waits: it never falls back to the explicit stop message", async () => {
 		const planner = slow();
 		const manual = manualTimers();
 		const host = dialogCtx("at-once");
 		const { run, sent } = setup(planner.plan, 1, { timers: manual.timers }, host.ctx);
-		const running = Promise.resolve(run());
-		await manual.fire(1);
-		expect(await running).toEqual({
-			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
+		let returned = false;
+		const running = Promise.resolve(run()).then((value) => {
+			returned = true;
+			return value;
 		});
+		await manual.fire(1);
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		expect(returned).toBe(false);
+		expect(host.dialogs).toEqual([]);
 		planner.runs[0]?.gate.resolve(planXml(1));
-		await flush();
-		expect(sent).toEqual([aside(planXml(1))]);
+		expect(await running).toEqual(planMsg(planXml(1)));
+		expect(sent).toEqual([]);
 	});
 
-	test("a newer prompt cancels the held wait: the old handler returns nothing and the old dialog closes", async () => {
+	test("a newer prompt cancels the held wait: the old handler returns nothing and no dialog was shown", async () => {
 		const planner = slow();
 		const manual = manualTimers();
 		const host = dialogCtx();
 		const h = setup(planner.plan, 1, { timers: manual.timers }, host.ctx);
 		const first = Promise.resolve(h.run("A"));
 		await manual.fire(1);
-		await until(() => host.dialogs.length === 1);
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		expect(host.dialogs).toEqual([]);
 		h.emit("turn_start");
 		const second = Promise.resolve(h.run("B"));
 		expect(await first).toBeUndefined();
 		expect(planner.runs[0]?.signal.aborted).toBe(true);
-		expect(host.dialogs[0]?.signal?.aborted).toBe(true);
 		await manual.fire(1);
 		await until(() => planner.runs.length === 2);
+		expect(host.dialogs).toEqual([]);
 		planner.runs[1]?.gate.resolve(planXml(1));
 		expect(await second).toEqual(planMsg(planXml(1)));
 		expect(h.sent).toEqual([]);
@@ -2164,7 +2189,9 @@ describe("completion gate (Omp before_agent_start)", () => {
 		);
 		const running = Promise.resolve(run());
 		await race.fire(1);
-		await until(() => host.dialogs.length === 1);
+		// The handler is waiting on the flight now, with no dialog shown.
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		expect(host.dialogs).toEqual([]);
 		// The default window is 30 minutes of silence.
 		await dog.fire(30 * 60_000);
 		const reason = "planning stalled: no progress for 30 min";

@@ -4,14 +4,13 @@
  * Omp extension. Planning runs in-process on the session's own live model: each flight snapshots the whole live Model
  * once, and every stage completes through the host's `completeSimple` with the host registry's auth resolver
  * (UT-Planning-ModelSelection 1.0.0 §7-§8). omp caps every handler at 30s and drops late results, but the planner takes
- * minutes. The cap (EXTENSION_HANDLER_TIMEOUT_MS = 30000 in the omp runner, omp 18.20.3) is paused while an extension
- * UI dialog (`ctx.ui.confirm`/`select`/`input`/`editor`/`custom`) is open, and a returned `{message}` only adds to a turn
- * that then starts: nothing `before_agent_start` returns can hold the turn. So with the CompletionGate on (default;
- * `ULTRATHINK_GATE=off` opts out) the turn never starts on a partial plan. After `raceMs` the handler holds inside a
- * confirm dialog, which pauses the cap, until the gate validated the whole plan (XML, graph, issue rows). A partial plan
- * is never released: its flight ends with a message that names what is missing. A host with no dialog (print, json, no
- * UI) cannot hold past the cap, so the turn gets an explicit stop message and the plan follows as an `aside`. With the
- * gate off the old race applies: a fast plan
+ * minutes. A returned `{message}` only adds to a turn that then starts: nothing `before_agent_start` returns can hold
+ * the turn. So with the CompletionGate on (default; `ULTRATHINK_GATE=off` opts out) the turn never starts on a partial
+ * plan. After `raceMs` the handler auto-waits for the flight's result (no dialog), within the handler budget, until
+ * the gate validated the whole plan (XML, graph, issue rows). A partial plan is never released: its flight ends with
+ * a message that names what is missing. If the wait window expires first, the turn gets the explicit stop message and
+ * the plan follows as an `aside`.
+ * With the gate off the old race applies: a fast plan
  * inline, otherwise a pending note and a later `aside`. Each flight owns its own cancellation and outer time limit. A
  * tool result that opens a PR for a planned session gets an ultrathink-sync aside. `/ultrathink-<verb>` commands
  * toggle control state or send one unplanned message.
@@ -452,7 +451,7 @@ type McpState = NonNullable<BarState["mcp"]>;
 export const PENDING =
 	"Ultrathink is still planning this prompt. If planning finishes while this request is still current, its result arrives as a separate message at a subsequent step boundary. Until then, read and investigate only: no edits and no mutating commands. If a note says planning produced nothing, proceed with the user's request as written.";
 
-/** Gate hold for a host that cannot hold the turn (no dialog): the strongest thing a handler can return is an explicit stop-and-confirm. */
+/** Gate hold when the bounded auto-wait expires with the plan still generating: the strongest thing a handler can return is an explicit stop-and-confirm. */
 export const GATE_HOLD =
 	"STOP. Ultrathink has not finished planning this prompt, so this session is on hold. Do not call any tool, edit any file or run any command, and do not act on the request. Tell the user that planning is still running and that the complete plan (uplifted prompt, graph of thought and issues) arrives as a separate message when it is done; they can run /ultrathink-quick <message> to continue without a plan. Then wait for that message.";
 
@@ -492,7 +491,7 @@ const STORE_UNWRITABLE =
  * Deliberate planner skips. `precheck-*` reasons are the uplift policy's own decisions; the rest are the user's intent
  * (a command or slash command, an empty prompt, an abort, a skill that owns the prompt, a nested child) or a child,
  * disabled or cron run. Every other skip (native-unavailable, engine-error, unsupported-host, any engine skip) is a
- * planning failure: announced and retried once.
+ * planning failure: announced and relaunched up to 3 times automatically.
  */
 const DELIBERATE_SKIP_REASONS: Record<string, true> = {
 	"child-or-disabled": true,
@@ -1658,6 +1657,8 @@ export function createOmpExtension(
 ): (pi: ExtensionAPI) => void {
 	const plan = options.plan ?? nativeEnginePlanner;
 	const raceMs = options.raceMs ?? 25_000;
+	/** Bounded auto-wait after a timed-out race: at most the race window, never more than 5s, so a default handler (25s race + this wait) stays inside omp's 30s handler cap. */
+	const autoWaitMs = Math.min(raceMs, 5_000);
 	/**
 	 * CompletionGate settings, read when a flight starts. On by default: `ULTRATHINK_GATE=off|0|false|no` opts out, the
 	 * `gate` option wins over the environment. `ULTRATHINK_GATE_INACTIVITY_MS` is the watchdog window (0 disables).
@@ -1742,8 +1743,8 @@ export function createOmpExtension(
 			tracked?: boolean;
 			/** The no-plan or stalled note, or a recovered stored plan, was already delivered for this flight. */
 			noticed?: boolean;
-			/** This flight is the relaunch of a failed planner; a submission gets no second retry. */
-			retried?: boolean;
+			/** Number of automatic relaunches already used for this submission (bounded, see MAX_RELAUNCHES). */
+			retried?: number;
 			/** Launches this flight's prompt again through the same path; set by `launch`. */
 			relaunch?: (limitMs: number) => Flight;
 			/** The planner's skip reason. A deliberate skip (deliberateSkip) is silent; any other skip is a planning failure. */
@@ -3351,7 +3352,7 @@ export function createOmpExtension(
 			}
 			if (!current(flight)) return;
 			if (result?.modelResolution) observe(flight.sessionId, result.modelResolution);
-			// A deferred flight whose planner failed with nothing to show is relaunched once; the new flight delivers its own outcome.
+			// A deferred flight whose planner failed with nothing to show is relaunched (up to 3 automatic relaunches); the new flight delivers its own outcome.
 			if (flight.deferred && flight.relaunch && retryDue(flight)) {
 				const next = retryFailed(flight, flight.relaunch);
 				next.deferred = true;
@@ -3751,64 +3752,12 @@ export function createOmpExtension(
 			return start === undefined ? false : autoRunSpawn(start, prompt, ctx);
 		};
 
-		/** A dialog that closes sooner than a person could answer is a host with no real dialog, not an answer. */
-		const MIN_DIALOG_MS = 250;
 		const heldMessage = (content: string): CustomMessage => ({
 			customType: PENDING_TYPE,
 			content,
 			display: true,
 			attribution: "agent",
 		});
-		/** Whether this host shows a modal dialog; omp pauses the handler's 30s cap while one is open. */
-		const canDialog = (ctx: ExtensionContext | undefined): boolean =>
-			ctx?.hasUI === true &&
-			(ctx.mode === "tui" || ctx.mode === "rpc") &&
-			typeof ctx.ui?.confirm === "function";
-
-		/**
-		 * Holds the handler for the unfinished plan inside a confirm dialog. The dialog pauses omp's handler cap, so the
-		 * wait can last as long as the planner needs; the plan settling dismisses it. `start`: the user chose to go on
-		 * without the plan. `unsupported`: the dialog closed at once, so this host cannot hold past the cap.
-		 */
-		const waitInDialog = async (
-			flight: Flight,
-			ctx: ExtensionContext,
-		): Promise<"settled" | "start" | "unsupported"> => {
-			for (;;) {
-				const dialog = new AbortController();
-				const shownAt = now();
-				let answer: boolean | undefined;
-				const asked = Promise.resolve(
-					ctx.ui?.confirm?.(
-						"Ultrathink is still planning",
-						"The session starts when the complete plan (prompt, graph of thought, issues) is ready. Start now without it?",
-						{ signal: dialog.signal },
-					),
-				).then(
-					(value) => {
-						answer = value;
-						return "answered" as const;
-					},
-					(error: unknown) => {
-						guard(() =>
-							ctx.ui?.notify?.(
-								planFailedNotice(`the confirmation dialog failed: ${errorText(error)}`),
-								"warning",
-							),
-						);
-						return "answered" as const;
-					},
-				);
-				const first = await Promise.race([flight.result.then(() => "settled" as const), asked]);
-				if (first === "settled") {
-					dialog.abort();
-					return "settled";
-				}
-				if (answer === true) return "start";
-				if (now() - shownAt < MIN_DIALOG_MS) return "unsupported";
-			}
-		};
-
 		/**
 		 * Runs one planner attempt raced against `raceMs`. `begin` starts the flight; the race is armed before it, so the
 		 * planner's synchronous prefix can never delay arming the delivery timer.
@@ -3831,14 +3780,26 @@ export function createOmpExtension(
 				timers.clearTimeout(timer);
 			}
 		};
+		/** Waits for the flight to settle, up to `autoWaitMs`; true when it settled in time. On expiry the caller defers the flight to its one aside; an unsettled flight never holds the handler past the window. */
+		const boundedWait = async (flight: Flight): Promise<boolean> => {
+			const expired = Promise.withResolvers<false>();
+			const timer = timers.setTimeout(() => expired.resolve(false), autoWaitMs);
+			try {
+				return await Promise.race([flight.result.then(() => true as const), expired.promise]);
+			} finally {
+				timers.clearTimeout(timer);
+			}
+		};
+		/** Bounded automatic relaunches per submission, all within the existing maxRunMs budget. */
+		const MAX_RELAUNCHES = 3;
 		/**
-		 * A failed planner earns exactly one relaunch per submission: no plan and no verdict, and nothing cancelled,
+		 * A failed planner earns up to 3 automatic relaunches per submission: no plan and no verdict, and nothing cancelled,
 		 * stalled, timed out or deliberately skipped the flight. Every other outcome keeps its own notice or silence.
 		 */
 		const retryDue = (flight: Flight): boolean => {
 			if (maxRunMs > 0 && clock.now() - flight.startedAt >= maxRunMs) return false;
 			if (
-				flight.retried ||
+				(flight.retried ?? 0) >= MAX_RELAUNCHES ||
 				flight.cancelled ||
 				flight.timedOut ||
 				deliberateSkip(flight.skipped) ||
@@ -3860,12 +3821,12 @@ export function createOmpExtension(
 				: planFailedNotice(
 						flight.gate?.reason || flight.endDetail || "the planner produced no plan",
 					);
-		/** Clears the failed flight's gate clock and launches its prompt once more with the budget left; the new flight carries the retry mark. */
+		/** Clears the failed flight's gate clock and launches its prompt again with the budget left; the new flight carries the incremented retry count. */
 		const retryFailed = (failed: Flight, relaunch: (limitMs: number) => Flight): Flight => {
-			failed.gate?.cancel("the planner failed; relaunching the prompt once");
+			failed.gate?.cancel("the planner failed; relaunching the prompt");
 			const remainingMs = maxRunMs > 0 ? maxRunMs - (clock.now() - failed.startedAt) : 0;
 			const next = relaunch(remainingMs);
-			next.retried = true;
+			next.retried = (failed.retried ?? 0) + 1;
 			// The early uplift already went inline: a relaunch that comes back empty ends with the early release, not a failure.
 			next.earlyDelivered = failed.earlyDelivered;
 			return next;
@@ -4100,7 +4061,7 @@ export function createOmpExtension(
 					}
 					return noticeOnce(same, failureNotice(same));
 				}
-				// The race is armed before the flight starts; a failed planner is relaunched once for this submission.
+				// The race is armed before the flight starts; a failed planner is relaunched up to 3 times for this submission.
 				const reuse = same;
 				let planned = await runAttempt(() => reuse ?? launchPlan(ctx));
 				for (;;) {
@@ -4108,16 +4069,12 @@ export function createOmpExtension(
 					if (flight.cancelled) return cancelledOutcome(flight);
 					const gate = flight.gate;
 					if (gate) {
-						// The turn must not start on a partial plan: wait for the whole one (dialog) or hold explicitly.
+						// The turn must not start on a partial plan: wait for the whole one, bounded by the handler budget. No dialog.
 						if (result === null && !flight.settled) {
-							const waited = canDialog(ctx) ? await waitInDialog(flight, ctx) : "unsupported";
+							const settled = await boundedWait(flight);
 							if (flight.cancelled) return cancelledOutcome(flight);
-							if (waited === "start") {
-								cancel(flight, "cancelled: the user started without the plan");
-								return;
-							}
-							if (waited === "unsupported" && !flight.settled) {
-								// No dialog: the 30s cap cannot be held past. The plan then arrives as the one aside.
+							if (!settled && !flight.settled) {
+								// The window expired with the plan still generating: it arrives as the one aside.
 								flight.deferred = true;
 								barWrite(flight.generation, () => store.pending());
 								return { message: heldMessage(GATE_HOLD) };
