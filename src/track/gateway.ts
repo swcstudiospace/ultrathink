@@ -334,3 +334,133 @@ export async function closeSubIssue(
 		closedInOrder: ["linear", "notion"],
 	};
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Production wiring (SPE-35425)
+//
+// `closeSubIssue` above is the throwing core. This wrapper is the production entry point a host calls when a
+// Sub Issue has finished: it never throws, so a tracker failure can never take the planning path down with it,
+// and it never stays silent: every outcome the host must see — a closure, a hold, or a no-op in an offline or
+// test context with no tracker callers — carries a short text for the agent.
+
+/** One ledger event: written once per closed Sub Issue, after both tracker writes resolved. */
+export interface SubIssueCloseoutLedgerEvent {
+	readonly key: string;
+	readonly linearIdentifier: string;
+	readonly notionUrl: string;
+	readonly at: string;
+	readonly closedInOrder: readonly ["linear", "notion"];
+}
+
+/**
+ * The outcome of one production closeout attempt. `holdText` (or `note`) is what the host surfaces to the
+ * agent; an empty text is a bug, never a silent outcome.
+ */
+export type SubIssueCloseoutOutcome =
+	| {
+			readonly status: "closed";
+			readonly key: string;
+			readonly result: CloseSubIssueResult;
+			/** Set when the ledger write itself failed after both tracker writes resolved (the closure still stands). */
+			readonly ledgerError?: string;
+	  }
+	| { readonly status: "already-closed"; readonly key: string }
+	| {
+			readonly status: "blocked";
+			readonly key: string;
+			readonly reasons: readonly string[];
+			readonly holdText: string;
+	  }
+	| { readonly status: "held"; readonly key: string; readonly holdText: string }
+	| { readonly status: "unavailable"; readonly key: string; readonly note: string };
+
+/** Production deps: the tracker callers plus the idempotency set and the ledger hook. */
+export interface CloseSubIssueProductionDeps extends CloseSubIssueDeps {
+	/**
+	 * Keys already closed in this process: a key in this set short-circuits to `already-closed` with no tracker
+	 * call and no ledger event. A long-lived host keeps one set per session; a one-shot host closes each event
+	 * fresh, and repeat writes stay vendor-idempotent (marking an already-Done row Done again changes nothing
+	 * the tracker holds, except the Notion `Completed` stamp the closeout sets).
+	 */
+	readonly closed?: Set<string>;
+	/** Called exactly once per closure, after both writes resolved. A throw is reported as `ledgerError`, never rethrown. */
+	readonly onLedgerEvent?: (event: SubIssueCloseoutLedgerEvent) => void;
+	readonly log?: (message: string) => void;
+}
+
+/**
+ * Produces the production closeout for one finished Sub Issue, without ever throwing:
+ * caller availability first (no caller, no writes, just a note), then `planSubIssueCloseout` gates (a blocked
+ * plan makes no tracker call at all), then `closeSubIssue` (Linear to Done, then the Notion step row to Done).
+ * A failed write returns `held` with the failure in `holdText`; the parent (node) issue is never addressed,
+ * and a failed Linear write already left the Notion row untouched inside `closeSubIssue`.
+ */
+export async function runSubIssueCloseout(
+	input: CloseSubIssueInput,
+	deps: CloseSubIssueProductionDeps,
+): Promise<SubIssueCloseoutOutcome> {
+	const key = stepKey(input.nodeId, input.step);
+	const closed = deps.closed ?? new Set<string>();
+	const log = deps.log ?? (() => undefined);
+	if (closed.has(key)) return { status: "already-closed", key };
+	if (deps.linear === undefined || deps.notion === undefined) {
+		const missing = [
+			deps.linear === undefined ? "Linear" : undefined,
+			deps.notion === undefined ? "Notion" : undefined,
+		]
+			.filter((name): name is string => name !== undefined)
+			.join(" and ");
+		return {
+			status: "unavailable",
+			key,
+			note: `Sub-Issue ${key} closeout unavailable: ${missing} tracker is not configured; no tracker call was made`,
+		};
+	}
+	const plan = planSubIssueCloseout(input, deps);
+	if (plan.blocked) {
+		return {
+			status: "blocked",
+			key: plan.key,
+			reasons: plan.reasons,
+			holdText: `HTIL hold: Sub-Issue ${key} not closed — ${plan.reasons.join("; ")}`,
+		};
+	}
+	let result: CloseSubIssueResult;
+	try {
+		result = await closeSubIssue(input, deps);
+	} catch (error) {
+		const holdText = `HTIL hold: ${error instanceof Error ? error.message : String(error)}`;
+		log(holdText);
+		return { status: "held", key, holdText };
+	}
+	closed.add(key);
+	const at = input.completedAt ?? deps.now?.() ?? new Date().toISOString();
+	let ledgerError: string | undefined;
+	if (deps.onLedgerEvent !== undefined) {
+		try {
+			deps.onLedgerEvent({
+				key: result.key,
+				linearIdentifier: result.linearIdentifier,
+				notionUrl: result.notionUrl,
+				at,
+				closedInOrder: result.closedInOrder,
+			});
+		} catch (error) {
+			ledgerError = error instanceof Error ? error.message : String(error);
+			log(`closeSubIssue ${key}: ledger event failed after both writes: ${ledgerError}`);
+		}
+	}
+	return { status: "closed", key, result, ...(ledgerError !== undefined ? { ledgerError } : {}) };
+}
+
+/**
+ * Binds one tracker configuration to a closeout function, sharing one idempotency set across every call. A
+ * session-scoped host keeps the returned function for the session; each finished Sub Issue then closes at most
+ * once per host process.
+ */
+export function createSubIssueCloser(
+	deps: CloseSubIssueProductionDeps,
+): (input: CloseSubIssueInput) => Promise<SubIssueCloseoutOutcome> {
+	const closed = deps.closed ?? new Set<string>();
+	return (input: CloseSubIssueInput) => runSubIssueCloseout(input, { ...deps, closed });
+}

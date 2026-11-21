@@ -234,20 +234,30 @@ export async function runTot(options: RunTotOptions): Promise<TotManifest> {
 				attempts: attempts - 1 + value.attempts,
 				...(value.error === undefined ? {} : { error: value.error }),
 			};
+			const checkpoint: Checkpoint = { version: CHECKPOINT_VERSION, inputHash: hash, record };
 			try {
-				const checkpoint: Checkpoint = { version: CHECKPOINT_VERSION, inputHash: hash, record };
-				writeFileAtomic(path, `${JSON.stringify(checkpoint)}\n`);
-			} catch (error) {
-				settle(
-					index,
-					"failed",
-					failureRecord(
-						request,
-						"failed",
-						record.attempts,
-						`checkpoint write failed: ${errorText(error)}`,
-					),
+				// The PRD text is already paid for: a transient checkpoint-write failure retries the write
+				// (bounded by DEFAULT_TOT_RETRY) instead of discarding the generated text.
+				await withRetry(
+					async (attempt) => {
+						if (attempt > 1) emit("retry", request.key, { attempt, wave: waveOf(request) });
+						writeFileAtomic(path, `${JSON.stringify(checkpoint)}\n`);
+					},
+					DEFAULT_TOT_RETRY,
+					{
+						...options.seams,
+						signal,
+						classify: () => ({ transient: true, reason: "checkpoint write" }),
+					},
 				);
+			} catch (error) {
+				// All write attempts failed: count the PRD failed, but keep the generated text on the
+				// record (returned and in the manifest) so it is retained for resume, not discarded.
+				settle(index, "failed", {
+					...record,
+					status: "failed",
+					error: `checkpoint write failed: ${errorText(error)}`,
+				});
 				return;
 			}
 			settle(index, "generated", record);
@@ -347,8 +357,11 @@ export async function runTot(options: RunTotOptions): Promise<TotManifest> {
 	};
 	try {
 		writeFileAtomic(join(checkpointDir, MANIFEST_FILE), `${JSON.stringify(manifest)}\n`);
-	} catch {
-		// reason: the manifest is a convenience copy of the return value; the per-PRD checkpoints are what a rerun reads
+	} catch (error) {
+		// reason: the manifest is a convenience copy of the return value; the per-PRD checkpoints are what a
+		// rerun reads. The failure is logged, the counts above still describe the run, and the checkpoints
+		// stay the authority, so a manifest-write failure never silently loses a finished PRD.
+		console.error(`tot: manifest write failed: ${errorText(error)}`);
 	}
 	return manifest;
 }

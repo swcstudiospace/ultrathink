@@ -6,6 +6,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, type UltrathinkConfig } from "../../config.ts";
 import type { ToolCaller } from "../../track/create.ts";
+import { resumePrds } from "../../track/prd-sync.ts";
+import type { SyncDeps } from "../../track/prd-types.ts";
 import { injectTrackingXml } from "../../track/render.ts";
 import type { IssueRef, TrackingRefs, TrackPlan } from "../../track/types.ts";
 import type { PrdRequest } from "./index.ts";
@@ -602,5 +604,95 @@ describe("runTotStage", () => {
 		expect(outcome.manifest.generated).toBe(2);
 		expect(readdirSync(join(dir, "tot"))).toEqual(["graph"]);
 		expect(readdirSync(join(dir, "tot", "graph")).length).toBeGreaterThan(0);
+	});
+});
+
+describe("runTotStage resume (SPE-35423)", () => {
+	/** A Linear caller whose `save_issue` for ENG-2 fails while `failuresLeft()` holds, recording saves in `events`. */
+	function flakyLinear(events: string[], failuresLeft: () => number) {
+		const descriptions = new Map<string, string>();
+		const caller: ToolCaller = {
+			async call(name, args) {
+				const id = String(args.id);
+				if (name === "get_issue") {
+					return {
+						id,
+						description: descriptions.get(id) ?? "",
+						url: `https://linear.app/t/issue/${id}`,
+					};
+				}
+				if (name === "save_issue") {
+					events.push(`save:${id}`);
+					if (id === "ENG-2" && failuresLeft() > 0) throw new Error("simulated tracker failure");
+					descriptions.set(id, String(args.description));
+					return { id };
+				}
+				throw new Error(`unexpected ${name}`);
+			},
+		};
+		return { descriptions, caller };
+	}
+
+	test("pending-ledger -> prompt-submit -> resume called -> gate proceeds only after sync", async () => {
+		const dir = makeDir("ut-tot-stage-");
+		const events: string[] = [];
+		let failures = 1;
+		const linear = flakyLinear(events, () => failures);
+		let resumeCalls = 0;
+		const tot = seams(undefined, {
+			open: () => ({ linear: linear.caller }),
+			resume: async (deps: SyncDeps) => {
+				resumeCalls++;
+				events.push("resume");
+				failures = 0;
+				return await resumePrds(deps);
+			},
+		});
+		const outcome = await runTotStage(input(3, tot, dir));
+		// The failed first save left the ledger pending; resume (after it, before the gate) re-sent from the local copy.
+		expect(resumeCalls).toBe(1);
+		const firstEng2 = events.indexOf("save:ENG-2");
+		const resumeAt = events.indexOf("resume");
+		expect(firstEng2).toBeGreaterThan(-1);
+		expect(resumeAt).toBeGreaterThan(firstEng2);
+		expect(events.lastIndexOf("save:ENG-2")).toBeGreaterThan(resumeAt);
+		// The gate (outcome) only proceeds once the resume synced the owed PRD.
+		expect(outcome.sync).toEqual({ total: 3, synced: 3, pending: 0, failed: 0 });
+		expect(outcome.error).toBeUndefined();
+		expect(linear.descriptions.get("ENG-2")).toContain("## PRD");
+	});
+
+	test("a resume that keeps failing is a counted hold naming the owed key, never a throw", async () => {
+		const dir = makeDir("ut-tot-stage-");
+		const events: string[] = [];
+		const linear = flakyLinear(events, () => 1);
+		let resumeCalls = 0;
+		const tot = seams(undefined, {
+			open: () => ({ linear: linear.caller }),
+			resume: async (deps: SyncDeps) => {
+				resumeCalls++;
+				return await resumePrds(deps);
+			},
+		});
+		const outcome = await runTotStage(input(3, tot, dir));
+		expect(resumeCalls).toBe(1);
+		expect(outcome.manifest.generated).toBe(3);
+		expect(outcome.sync.failed).toBeGreaterThan(0);
+		expect(outcome.error).toContain("PRD_RESUME_FAILED");
+		expect(outcome.error).toContain("n1.2");
+		expect(linear.descriptions.has("ENG-2")).toBe(false);
+	});
+
+	test("a resume that throws is a counted hold, never a throw", async () => {
+		const dir = makeDir("ut-tot-stage-");
+		const linear = fakeLinear();
+		const tot = seams(linear, {
+			resume: async () => {
+				throw new Error("resume exploded");
+			},
+		});
+		const outcome = await runTotStage(input(2, tot, dir));
+		expect(outcome.manifest.generated).toBe(2);
+		expect(outcome.error).toContain("PRD_RESUME_FAILED");
 	});
 });

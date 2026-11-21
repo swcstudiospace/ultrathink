@@ -628,3 +628,7 @@ No per-phase Linear Issue/Sub-Issue existed for any outstanding phase (verified 
 Production-grade bar: every sub-issue carries Given/When/Then acceptance + boring-design constraints (atomic writes, bounded buffers, fail-closed, redaction, audit strip). Human/owner subs (110,111,114-c7,68–75,108) stay human_needed until live evidence or owner sign-off; they are tracked, not closed.
 
 In-repo items dispatched this run: SPE-35300, SPE-35302, SPE-35303. PR from feat/gsd-linear-program-2026-11-20 to main after green CI.
+
+## ToT Codeblocked PRD robustness programme (2026-11-21)
+
+Linear: SPE-35422 parent + SPE-35423 (resumePrds wiring), SPE-35424 (tracker-side presence gate), SPE-35425 (closeSubIssue wiring), SPE-35426 (checkpoint retry + backoff), SPE-35427 (live closure run once Notion restored). Notion: 5 Sub-Issue rows in Agent Task Graph (41fbc1a0-c7ae-811a...), graph gsd-tot-robustness-2026-11-21. The 48 PRDs SPE-35034-SPE-35081 are PRD carriers linked under SPE-35301/phase 114; this programme adds the production machinery they were missing (no production caller for resumePrds/closeSubIssue).

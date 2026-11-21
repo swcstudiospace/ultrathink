@@ -59,6 +59,13 @@ interface GateObserved {
 	readonly pendingRows: number;
 	readonly prds: number;
 	readonly prdsFailed: number;
+	/** Generated PRD keys whose hash-marked text was not found in a checked tracker row. */
+	readonly prdsMissingInTrackers: number;
+}
+/** Generated PRD keys whose hash-marked text was not found in the named tracker row. */
+interface PrdTrackerPresence {
+	readonly missingLinear?: readonly string[];
+	readonly missingNotion?: readonly string[];
 }
 
 interface GateArtifacts {
@@ -70,6 +77,8 @@ interface GateArtifacts {
 	readonly prd?: TotManifest;
 	/** How many of those PRDs reached their tracker rows. The gate releases only with none failed and none pending. */
 	readonly prdSync?: SyncSummary;
+	/** Tracker-side PRD presence for generated keys; absent means that check did not run. */
+	readonly prdPresence?: PrdTrackerPresence;
 	/** A reason the plan is known to be degraded (for example a fallback graph); it makes the plan a partial failure. */
 	readonly degraded?: string;
 }
@@ -134,7 +143,15 @@ export function validateArtifacts(
 		return {
 			state: "failed_or_cancelled",
 			problems: [{ severity: "fatal", code: "empty", detail: "the plan is empty" }],
-			observed: { nodes: 0, issues: 0, subIssues: 0, pendingRows: 0, prds: 0, prdsFailed: 0 },
+			observed: {
+				nodes: 0,
+				issues: 0,
+				subIssues: 0,
+				pendingRows: 0,
+				prds: 0,
+				prdsFailed: 0,
+				prdsMissingInTrackers: 0,
+			},
 		};
 	}
 	const checked = checkUpliftXml(text, "");
@@ -173,6 +190,11 @@ export function validateArtifacts(
 	const graph = graphBlock ? scope.slice(graphBlock.start, graphBlock.end) : "";
 	const issues = issuesBlock ? scope.slice(issuesBlock.start, issuesBlock.end) : "";
 	const prd = artifacts.prd;
+	const presence = artifacts.prdPresence;
+	const missingInTrackers = new Set<string>([
+		...(presence?.missingLinear ?? []),
+		...(presence?.missingNotion ?? []),
+	]);
 	const observed: GateObserved = {
 		nodes: count(NODE_RE, graph),
 		issues: count(ISSUE_RE, issues),
@@ -180,6 +202,7 @@ export function validateArtifacts(
 		pendingRows: count(PENDING_ROW_RE, issues),
 		prds: prd ? prd.records.filter((record) => record.status === "generated").length : 0,
 		prdsFailed: prd ? prd.records.filter((record) => record.status === "failed").length : 0,
+		prdsMissingInTrackers: missingInTrackers.size,
 	};
 	const expected = artifacts.expected;
 	const short = (name: string, want: number | undefined, have: number): void => {
@@ -236,6 +259,20 @@ export function validateArtifacts(
 			code: "prds_sync_pending",
 			detail: `${syncPending} PRDs are still waiting for the tracker`,
 		});
+	// Local manifest counts alone never release: a generated PRD whose hash-marked text is not in its tracker row is a
+	// hold, even when the sync summary reported it delivered. Keys are named per tracker, secret-free.
+	if (missingInTrackers.size > 0) {
+		const parts: string[] = [];
+		if ((presence?.missingLinear?.length ?? 0) > 0)
+			parts.push(`Linear: ${presence?.missingLinear?.join(", ")}`);
+		if ((presence?.missingNotion?.length ?? 0) > 0)
+			parts.push(`Notion: ${presence?.missingNotion?.join(", ")}`);
+		problems.push({
+			severity: "partial",
+			code: "prds_not_in_trackers",
+			detail: `PRD text not present in tracker rows (${parts.join("; ")})`,
+		});
+	}
 	if (artifacts.degraded)
 		problems.push({ severity: "partial", code: "degraded", detail: artifacts.degraded });
 	const state = problems.some((p) => p.severity === "fatal")
