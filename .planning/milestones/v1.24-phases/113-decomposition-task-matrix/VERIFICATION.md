@@ -1,11 +1,11 @@
 ---
 phase: 113-decomposition-task-matrix
-verified: 2026-11-20T01:36:53Z
+verified: 2026-11-21T23:44:04Z
 status: passed
 score: 3/3 success criteria met
 behavior_unverified: 0
 overrides_applied: 0
-code_root_commit: c216dc3
+code_root_commit: f98e3a8
 covered_files:
   - .planning/PHASES-INVENTORY.md
   - .planning/REQUIREMENTS.md
@@ -13,14 +13,16 @@ covered_files:
   - .planning/STATE.md
   - .planning/milestones/v1.24-phases/113-decomposition-task-matrix/113-01-PLAN.md
   - .planning/milestones/v1.24-phases/113-decomposition-task-matrix/113-01-SUMMARY.md
+  - .planning/phases/113-decomposition-task-matrix/113-01-PLAN.md
+  - .planning/phases/113-decomposition-task-matrix/113-01-SUMMARY.md
   - docs/roadmap/task-matrix.md
   - scripts/build-task-matrix.test.ts
   - scripts/build-task-matrix.ts
-covered_digest: "v4:sha256:f5e35ce14efbba6d9bc3d6ebab506678f3792418057189c9b1157afca15126b2"
+covered_digest: "v4:sha256:ee3b77e923fc10585af29f9df4485efd5348be39de3b3989dbdd5a823bbc9f65"
 re_verification:
   previous_status: passed
   previous_score: "3/3 success criteria met"
-  previous_code_root_commit: aa4792e
+  previous_code_root_commit: c216dc3
   gaps_closed:
     - "Drift from PR #248 (the aa4792e refresh itself merged at c216dc3, changing covered files STATE.md frontmatter `stopped_at`/`last_updated`/`state_head` and the Session block, plus VERIFICATION.md itself): matrix regenerated with `bun run matrix`; output is byte-identical to the committed file (idempotent), so no content drift. Row inventory unchanged (phase=6 backlog=10 deferred=20, 36 total); PHASE-114 and DEFERRED-114 rows intact"
     - "No semantic drift at c216dc3: ROADMAP.md is byte-identical to the aa4792e run (`sha256 1d1451c7…` in both trees); STATE.md Deferred Verification rows are the same 18 rows at the same lines S:183-200; STATE.md session/frontmatter changes are bookkeeping outside the v2 fingerprint scope (shared planning docs are excluded from the digest by #4623) and do not move any cited line"
@@ -38,7 +40,7 @@ residual_limits:
     affects_criteria: none
 ---
 
-# Phase 113: Decomposition task matrix — Verification (re-verification at c216dc3)
+# Phase 113: Decomposition task matrix — Verification (re-verification at f98e3a8)
 
 **Phase goal (ROADMAP.md:107):** "a source-grounded task matrix for every remaining phase and Backlog item."
 **Success criteria (ROADMAP.md:111):** "every remaining phase and Backlog item has a row, each citing its source; the non-overlap check is recorded."
