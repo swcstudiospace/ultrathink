@@ -2,7 +2,13 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import type { ToolCaller } from "./create.ts";
-import { closeSubIssue, planSubIssueCloseout } from "./gateway.ts";
+import {
+	closeSubIssue,
+	createSubIssueCloser,
+	planSubIssueCloseout,
+	runSubIssueCloseout,
+	type SubIssueCloseoutLedgerEvent,
+} from "./gateway.ts";
 import type { TrackingRefs } from "./types.ts";
 
 const NODE = "n1";
@@ -155,5 +161,113 @@ describe("closeSubIssue", () => {
 			),
 		).rejects.toThrow(`closeSubIssue ${KEY}: linear ENG-2 not marked done: linear down`);
 		expect(order).toEqual(["linear:save_issue:ENG-2:Done"]);
+	});
+});
+
+describe("runSubIssueCloseout (production)", () => {
+	test("completion closes once, in order, with one ledger event; a second attempt is a no-op", async () => {
+		const order: string[] = [];
+		const { linear, notion } = recording(order);
+		const events: SubIssueCloseoutLedgerEvent[] = [];
+		const closed = new Set<string>();
+		const input = {
+			refs: refs(),
+			nodeId: NODE,
+			step: STEP,
+			prdPresent: true,
+			completedAt: "2026-11-19T00:00:00.000Z",
+		};
+		const first = await runSubIssueCloseout(input, {
+			linear,
+			notion,
+			closed,
+			onLedgerEvent: (event) => events.push(event),
+			now: () => "2026-11-19T00:00:00.000Z",
+		});
+		expect(first).toMatchObject({
+			status: "closed",
+			key: KEY,
+			result: { linearIdentifier: "ENG-2", closedInOrder: ["linear", "notion"] },
+		});
+		expect(order).toEqual([
+			"linear:save_issue:ENG-2:Done",
+			"notion:notion-update-page:12345678-1234-1234-1234-123412345678:Done:Done:2026-11-19T00:00:00.000Z",
+		]);
+		expect(events).toEqual([
+			{
+				key: KEY,
+				linearIdentifier: "ENG-2",
+				notionUrl: NOTION_URL,
+				at: "2026-11-19T00:00:00.000Z",
+				closedInOrder: ["linear", "notion"],
+			},
+		]);
+		const second = await runSubIssueCloseout(input, {
+			linear,
+			notion,
+			closed,
+			onLedgerEvent: (event) => events.push(event),
+		});
+		expect(second).toEqual({ status: "already-closed", key: KEY });
+		expect(order).toHaveLength(2);
+		expect(events).toHaveLength(1);
+	});
+
+	test("a bound closer shares its idempotency set across calls", async () => {
+		const order: string[] = [];
+		const { linear, notion } = recording(order);
+		const close = createSubIssueCloser({ linear, notion });
+		const input = { refs: refs(), nodeId: NODE, step: STEP, prdPresent: true };
+		expect(await close(input)).toMatchObject({ status: "closed", key: KEY });
+		expect(await close(input)).toEqual({ status: "already-closed", key: KEY });
+		expect(order).toHaveLength(2);
+	});
+
+	test("a blocked plan makes no tracker call and surfaces an HTIL hold", async () => {
+		const order: string[] = [];
+		const { linear, notion } = recording(order);
+		const events: SubIssueCloseoutLedgerEvent[] = [];
+		const outcome = await runSubIssueCloseout(
+			{ refs: refs(), nodeId: NODE, step: STEP, prdPresent: false },
+			{ linear, notion, onLedgerEvent: (event) => events.push(event) },
+		);
+		expect(outcome.status).toBe("blocked");
+		if (outcome.status === "blocked") {
+			expect(outcome.holdText).toBe(
+				`HTIL hold: Sub-Issue ${KEY} not closed — PRD for ${KEY} is not present on its tracker rows`,
+			);
+			expect(outcome.reasons).toEqual([`PRD for ${KEY} is not present on its tracker rows`]);
+		}
+		expect(order).toEqual([]);
+		expect(events).toEqual([]);
+	});
+
+	test("no callers degrade to a no-op note with no tracker call", async () => {
+		const outcome = await runSubIssueCloseout(
+			{ refs: refs(), nodeId: NODE, step: STEP, prdPresent: true },
+			{},
+		);
+		expect(outcome).toEqual({
+			status: "unavailable",
+			key: KEY,
+			note: `Sub-Issue ${KEY} closeout unavailable: Linear and Notion tracker is not configured; no tracker call was made`,
+		});
+	});
+
+	test("a failed Linear write is held, leaves Notion untouched, and never throws", async () => {
+		const order: string[] = [];
+		const { linear, notion } = recording(order, true);
+		const events: SubIssueCloseoutLedgerEvent[] = [];
+		const outcome = await runSubIssueCloseout(
+			{ refs: refs(), nodeId: NODE, step: STEP, prdPresent: true },
+			{ linear, notion, onLedgerEvent: (event) => events.push(event) },
+		);
+		expect(outcome).toEqual({
+			status: "held",
+			key: KEY,
+			holdText: `HTIL hold: closeSubIssue ${KEY}: linear ENG-2 not marked done: linear down`,
+		});
+		expect(order).toEqual(["linear:save_issue:ENG-2:Done"]);
+		expect(events).toEqual([]);
 	});
 });

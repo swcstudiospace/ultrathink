@@ -21,8 +21,8 @@ import { redactSecrets } from "../../redact.ts";
 import type { RetryPolicy, RetrySeams } from "../../resilience/retry.ts";
 import { isAbortError } from "../../shared.ts";
 import { type ToolCaller, stepKey } from "../../track/create.ts";
-import { syncPrds } from "../../track/prd-sync.ts";
-import type { SyncDeps, SyncSummary } from "../../track/prd-types.ts";
+import { resumePrds, syncPrds } from "../../track/prd-sync.ts";
+import type { SyncDeps, SyncReport, SyncSummary } from "../../track/prd-types.ts";
 import type { TrackingRefs, TrackPlan } from "../../track/types.ts";
 import { escapeXml, escapeXmlText } from "../../uplift/xml.ts";
 import { escapeText } from "./escape.ts";
@@ -71,6 +71,8 @@ export interface TotSeams {
 		SyncDeps,
 		"concurrency" | "linearInlineLimit" | "notionTools" | "now" | "random" | "retryPolicy" | "sleep"
 	>;
+	/** Re-sends what the ledger still owes (pending/failed) after `syncPrds`; defaults to `resumePrds`. Test seam. */
+	readonly resume?: (deps: SyncDeps) => Promise<SyncReport>;
 }
 
 /** The session's selected model: its id and, when the host knows it, its provider. */
@@ -313,7 +315,7 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 				error: held.error ?? "no tracker is reachable to receive the PRDs",
 			};
 		}
-		const report = await syncPrds(manifest.records, {
+		const syncDeps: SyncDeps = {
 			graphId: plan.graphId,
 			refs: { linear: { steps: tracking.linear.steps }, notion: { steps: tracking.notion.steps } },
 			...(callers.linear ? { linear: callers.linear } : {}),
@@ -322,11 +324,50 @@ export async function runTotStage(input: TotStageInput): Promise<PrdOutcome> {
 			...(signal ? { signal } : {}),
 			log,
 			...seams.sync,
-		});
+		};
+		const report = await syncPrds(manifest.records, syncDeps);
+		// Before gating, re-send what the ledger still owes (pending/failed) from the local PRD copies:
+		// `resumePrds` never touches a synced tracker (hash-skip), so this is idempotent. A resume failure is a
+		// counted hold naming the owed keys, never a throw: accounted into the summary the gate reads.
+		let summary = report.summary;
+		let resumeError: string | undefined;
+		try {
+			const resumed = await (seams.resume ?? resumePrds)(syncDeps);
+			const expected = new Set(requests.map((request) => request.key));
+			const stateByKey = new Map(report.keys.map((key) => [key.key, key.state]));
+			const failedKeys: string[] = [];
+			let { synced, pending, failed } = summary;
+			for (const key of resumed.keys) {
+				if (!expected.has(key.key)) continue;
+				const before = stateByKey.get(key.key);
+				if (key.state === "synced" && (before === "pending" || before === "failed")) {
+					synced++;
+					if (before === "pending") pending--;
+					else failed--;
+				} else if (key.state !== "synced" && (before === "pending" || before === "failed")) {
+					// A resume that did not sync the owed key keeps failing: `failed` (a permanent
+					// refusal) and `pending` (a retryable refusal that is still owed) alike are a
+					// counted hold, so a still-pending key moves pending -> failed (never a
+					// silent pending that the gate would not see) and is named in the error.
+					failedKeys.push(key.key);
+					if (before === "pending") {
+						pending--;
+						failed++;
+					}
+				}
+			}
+			summary = { ...summary, synced, pending, failed };
+			if (failedKeys.length > 0) resumeError = `PRD_RESUME_FAILED: ${failedKeys.join(", ")}`;
+		} catch (error) {
+			if (isAbortError(error)) throw error;
+			resumeError = `PRD_RESUME_FAILED: ${causeOf(error)}`;
+			log(`tot resume failed: ${causeOf(error)}`);
+		}
 		const held = holdPartial(
 			manifest,
-			report.summary,
+			summary,
 			requests.map((request) => request.key),
+			resumeError,
 		);
 		return { manifest, sync: held.sync, model, ...(held.error ? { error: held.error } : {}) };
 	} catch (error) {

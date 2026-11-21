@@ -30,7 +30,12 @@ import { planningTarget, type SkillInvocation } from "../uplift/skill.ts";
 import { fetchBrief } from "../substrate/brief.ts";
 import type { DecisionsFetch } from "../decisions/client.ts";
 import { clearPlanCarrier, writePlanCarrier } from "./carrier.ts";
-import { createGatewayTracker, trackCommand, type Tracker } from "../track/gateway.ts";
+import {
+	createGatewayTracker,
+	createSubIssueCloser,
+	trackCommand,
+	type Tracker,
+} from "../track/gateway.ts";
 import { createGatewayTot, type PrdOutcome, type TotSeams } from "../think/tot/stage.ts";
 import { detectHost } from "./detect.ts";
 import {
@@ -106,6 +111,8 @@ export interface PlanOptions {
 	) => Tracker | undefined;
 	/** Test seam for the Tree-of-Thought PRD stage (see HookDeps); defaults to the credentialed gateway callers when tracking runs on the default tracker. */
 	tot?: TotSeams;
+	/** Test seam for the Sub-Issue closeout (see HookDeps); defaults to the gateway closer bound to the PRD stage's callers. */
+	closeSubIssue?: HookDeps["closeSubIssue"];
 	/** Test seams for the lessons and RAGFlow lookups (see HookDeps); default to the configured Teachable Moments and RAGFlow. */
 	recall?: HookDeps["recall"];
 	ground?: HookDeps["ground"];
@@ -254,6 +261,28 @@ function buildHookDeps(turn: {
 		(host !== "hermes" && !options.createTracker && trackingEnabled(config, control, env)
 			? createGatewayTot(config)
 			: undefined);
+	// One idempotency set for the session: a Sub Issue closes at most once per host process.
+	const closedSubIssues = new Set<string>();
+	const gatewayCloseSubIssue: HookDeps["closeSubIssue"] = tot
+		? async (input) => {
+				const callers = await tot.open();
+				try {
+					return await createSubIssueCloser({
+						...(callers?.linear ? { linear: callers.linear } : {}),
+						...(callers?.notion ? { notion: callers.notion } : {}),
+						closed: closedSubIssues,
+						log,
+					})(input);
+				} finally {
+					try {
+						callers?.close?.();
+					} catch {
+						// reason: closing a tracker client is cleanup; it must not turn a finished closeout into a failure
+					}
+				}
+			}
+		: undefined;
+	const closeSubIssue = options.closeSubIssue ?? gatewayCloseSubIssue;
 	return {
 		config,
 		control,
@@ -281,6 +310,7 @@ function buildHookDeps(turn: {
 				? (options.createTracker ?? createGatewayTracker)(config, { log })
 				: undefined,
 		...(tot ? { tot } : {}),
+		...(closeSubIssue ? { closeSubIssue } : {}),
 		trackingOff: trackingOff(config, control),
 		trackCommand: trackCommand(),
 		progress: options.progress,

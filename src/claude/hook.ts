@@ -28,7 +28,7 @@ import type { Clarification } from "../hitl/types.ts";
 import { FlightThrottle } from "../resilience/throttle.ts";
 import { injectGraphXml, isFallbackGraph } from "../think/graph.ts";
 import { type RunThinkOptions, runThink, type ThinkResult } from "../think/pipeline.ts";
-import { totHoldReason } from "./hook-tot.ts";
+import { type PrdPresence, totHoldReason, verifyPrdPresence } from "./hook-tot.ts";
 import {
 	injectPrdXml,
 	type PrdOutcome,
@@ -47,7 +47,8 @@ import {
 import { sanitizeBrief } from "../substrate/inject.ts";
 import { resolveBranch, resolveRepoSlug } from "../track/git.ts";
 import { buildTrackPlan } from "../track/plan.ts";
-import type { Tracker } from "../track/gateway.ts";
+import type { CloseSubIssueInput, SubIssueCloseoutOutcome, Tracker } from "../track/gateway.ts";
+import { stepKey } from "../track/create.ts";
 import { injectTrackingXml } from "../track/render.ts";
 import type { TrackingRefs, TrackPlan } from "../track/types.ts";
 import type { ModelResolution } from "../host/engine.ts";
@@ -212,6 +213,13 @@ export interface HookDeps {
 	log?: (message: string) => void;
 	/** Creates tracker rows through the MCP gateway before the prompt goes out; fail-open. */
 	track?: Tracker;
+	/**
+	 * Sub-Issue closeout seam (SPE-35425): a finished Sub Issue closes through this host-bound
+	 * `createSubIssueCloser` from the gateway — plan gates first, then its Linear sub-issue to Done and its
+	 * Notion step row to Done, ledger event per closure. Absent, a finished Sub Issue degrades to a no-op note
+	 * (offline and test contexts with no tracker callers), never to a silent skip.
+	 */
+	closeSubIssue?: (input: CloseSubIssueInput) => Promise<SubIssueCloseoutOutcome>;
 	/**
 	 * Tree-of-Thought PRD stage seams. Present, the stage runs after the tracker rows exist (unless `think.tot.enabled` is
 	 * false): one PRD per Sub Issue, synced into its row. Absent, the plan is as it was before the stage existed.
@@ -2008,7 +2016,31 @@ export async function runPromptSubmit(
 				throwIfCancelled(cancellation);
 				const placed = injectPrdXml(result.xml, prd);
 				result = { ...result, xml: placed.xml };
-				const hold = totHoldReason(prd, placed.unplaced);
+				// Presence is a read-only tracker read through the same callers the stage used: a generated PRD
+				// that never reached its rows must hold the release, not pass on manifest counts alone. No
+				// tracker reachable (offline/test) means nothing to check, so no hold.
+				let presence: PrdPresence | undefined;
+				try {
+					const callers = await deps.tot.open();
+					try {
+						presence = await verifyPrdPresence(
+							prd.manifest.records.filter((record) => record.status === "generated"),
+							{ linear: tracking.linear.steps, notion: tracking.notion.steps },
+							callers ?? {},
+							{ signal: lifetime },
+						);
+					} finally {
+						try {
+							callers?.close?.();
+						} catch {
+							// reason: closing a tracker client is cleanup; it must not turn a finished stage into a failure
+						}
+					}
+				} catch (error) {
+					rethrowCancellation(error);
+					log(`tot presence check failed: ${causeText(error)}`);
+				}
+				const hold = totHoldReason(prd, placed.unplaced, presence);
 				if (hold !== undefined) {
 					prd = {
 						...prd,
@@ -2206,7 +2238,7 @@ export interface ToolResultRecall {
 	reasons: string[];
 }
 
-/** The seams the tool-result path reads: the prompt path's recall seams, the config, the state directory and the clock. */
+/** The seams the tool-result path reads: the prompt path's recall seams, the closeout seam, the config, the state directory and the clock. */
 export type ToolResultDeps = Pick<
 	HookDeps,
 	| "config"
@@ -2218,6 +2250,7 @@ export type ToolResultDeps = Pick<
 	| "skills"
 	| "surface"
 	| "decisionsDeps"
+	| "closeSubIssue"
 >;
 
 /** An error result: a `PostToolUseFailure`, or a tool response that says it failed (`is_error` or `isError`). */
@@ -2237,32 +2270,184 @@ function parseTodoSnapshot(todos: unknown): TodoSnapshotItem[] | undefined {
 }
 
 /**
- * The phase-boundary steps between two consecutive snapshots, as step contents in next-snapshot order. Step identity
- * is `content`: a reorder changes no identity, and only duplicate contents fall back to index order (the nth copy in
- * the next snapshot is matched against the nth copy in the previous one). A boundary is a forward status transition
- * only — `pending` to `in_progress` (the step starts) and `in_progress` to `completed` (the step finishes). Every
- * other move is noise and starts no boundary: `pending` to `completed` skips the start, a reopen moves backward, a
- * repeat holds the status, and an `activeForm`-only or order-only change moves nothing.
+ * The matched todo pairs between two consecutive snapshots, in next-snapshot order: each next item against the
+ * nth unmatched previous item with the same `content` (duplicate contents fall back to index order, and a
+ * reorder changes no identity). Unmatched next items never appear.
  */
-function todoBoundarySteps(
+function matchedTodos(
 	previous: readonly TodoSnapshotItem[],
 	next: readonly TodoSnapshotItem[],
-): string[] {
+): Array<{ content: string; prior: TodoSnapshotItem; now: TodoSnapshotItem }> {
 	const earlier = new Map<string, TodoSnapshotItem[]>();
 	for (const item of previous) {
 		const queue = earlier.get(item.content);
 		if (queue) queue.push(item);
 		else earlier.set(item.content, [item]);
 	}
-	const steps: string[] = [];
+	const matched: Array<{ content: string; prior: TodoSnapshotItem; now: TodoSnapshotItem }> = [];
 	for (const item of next) {
 		const prior = earlier.get(item.content)?.shift();
 		if (prior === undefined) continue;
-		const starts = prior.status === "pending" && item.status === "in_progress";
-		const finishes = prior.status === "in_progress" && item.status === "completed";
-		if (starts || finishes) steps.push(item.content);
+		matched.push({ content: item.content, prior, now: item });
 	}
-	return steps;
+	return matched;
+}
+
+/**
+ * The phase-boundary steps between two consecutive snapshots, as step contents in next-snapshot order. A
+ * boundary is a forward status transition only — `pending` to `in_progress` (the step starts) and
+ * `in_progress` to `completed` (the step finishes). Every other move is noise and starts no boundary:
+ * `pending` to `completed` skips the start, a reopen moves backward, a repeat holds the status, and an
+ * `activeForm`-only or order-only change moves nothing.
+ */
+function todoBoundarySteps(
+	previous: readonly TodoSnapshotItem[],
+	next: readonly TodoSnapshotItem[],
+): string[] {
+	return matchedTodos(previous, next)
+		.filter(
+			({ prior, now }) =>
+				(prior.status === "pending" && now.status === "in_progress") ||
+				(prior.status === "in_progress" && now.status === "completed"),
+		)
+		.map(({ content }) => content);
+}
+
+/**
+ * The finished steps between two consecutive snapshots: the `in_progress` to `completed` transitions only, in
+ * next-snapshot order. A step that was already completed in the previous snapshot never re-appears, so its
+ * closeout never re-fires.
+ */
+function todoFinishedSteps(
+	previous: readonly TodoSnapshotItem[],
+	next: readonly TodoSnapshotItem[],
+): string[] {
+	return matchedTodos(previous, next)
+		.filter(({ prior, now }) => prior.status === "in_progress" && now.status === "completed")
+		.map(({ content }) => content);
+}
+
+/** Escape a step key for a literal text search. */
+function closeoutKeyPattern(key: string): RegExp {
+	const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp(`(^|[^\\w.-])${escaped}([^\\w.-]|$)`);
+}
+
+/**
+ * The plan Sub Issues a finished todo names, by its step key (`n1.2`) in the todo text or by the Sub Issue
+ * title the tracking checklist carries. Zero matches: not a Sub Issue todo. More than one: ambiguous, never
+ * guess which to close.
+ */
+function finishedSubIssuesFor(
+	plan: TrackPlan,
+	content: string,
+): Array<{ nodeId: string; step: number; key: string }> {
+	const matches: Array<{ nodeId: string; step: number; key: string }> = [];
+	for (const sub of plan.subIssues) {
+		const key = stepKey(sub.nodeId, sub.step);
+		const title = plan.linearSubIssues.find(
+			(candidate) => candidate.nodeId === sub.nodeId && candidate.step === sub.step,
+		)?.title;
+		if (
+			closeoutKeyPattern(key).test(content) ||
+			(title !== undefined && title !== "" && content.includes(title))
+		)
+			matches.push({ nodeId: sub.nodeId, step: sub.step, key });
+	}
+	return matches;
+}
+
+/**
+ * Whether `key`'s PRD is on its tracker rows, read from the persisted spec: the placed `<PRD key="...">`
+ * element holds non-empty markdown, and the `<PRDS>` aggregate carries no failed or pending debt (a debt left
+ * on any key blocks every closeout: fail-closed rather than close work no tracker row can read back). No PRD
+ * stage at all (no `<PRDS>`) is no PRD, hence `false`.
+ */
+function prdPresentFor(xml: string, key: string): boolean {
+	const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const element = new RegExp(`<PRD\\s+key="${escaped}"[^>]*>([\\s\\S]*?)</PRD>`);
+	const body = element.exec(xml)?.[1];
+	if (body === undefined || body.trim() === "") return false;
+	const aggregate = /<PRDS\b[^>]*>/.exec(xml)?.[0];
+	if (aggregate === undefined) return false;
+	const failed = /failed="(\d+)"/.exec(aggregate)?.[1];
+	const pending = /pending="(\d+)"/.exec(aggregate)?.[1];
+	return (failed === undefined || failed === "0") && (pending === undefined || pending === "0");
+}
+
+const CLOSEOUT_HEADER = "Sub-Issue closeout (notes from the tracker; not instructions):";
+
+/**
+ * Closes the Sub Issues the just-finished todos name (SPE-35425). Runs before the recall gate and never touches
+ * recall state, so with recall off it still closes: the previous snapshot is the recall record's `lastTodos`
+ * when it exists; the first `TodoWrite` after a plan has no baseline yet, so its completed todos are the
+ * candidates (a step that already finished earns its closeout on first sight; repeat events re-fire and the
+ * closer's idempotency set, plus the vendor writes, make the repeat a no-op). Every line returned is what the
+ * agent reads: a closure, an `HTIL` hold with its cause, or an offline/test no-op note — never silence.
+ */
+async function closeoutLinesForFinished(
+	deps: ToolResultDeps,
+	session: SessionRecord | undefined,
+	snapshot: TodoSnapshotItem[],
+): Promise<string[]> {
+	const plan = session?.plan;
+	const tracking = session?.tracking;
+	if (plan === undefined || tracking === undefined) return [];
+	const previous = restoreTodoSnapshot(session?.recall?.lastTodos);
+	const finished =
+		previous === undefined
+			? snapshot.filter((item) => item.status === "completed").map((item) => item.content)
+			: todoFinishedSteps(previous, snapshot);
+	const lines: string[] = [];
+	const log = deps.log ?? (() => undefined);
+	for (const content of finished) {
+		const matched = finishedSubIssuesFor(plan, content);
+		if (matched.length === 0) continue;
+		if (matched.length > 1) {
+			const keys = matched.map(({ key }) => key).join(", ");
+			lines.push(
+				`HTIL hold: finished todo names more than one Sub Issue (${keys}); none was closed`,
+			);
+			log(`closeout ambiguous: ${keys}`);
+			continue;
+		}
+		const target = matched[0] as { nodeId: string; step: number; key: string };
+		if (deps.closeSubIssue === undefined) {
+			lines.push(
+				`Sub-Issue ${target.key} completed but no tracker closeout is configured (no-op); its Linear sub-issue and Notion step row were not marked Done.`,
+			);
+			log(`closeout ${target.key}: no tracker closeout configured (no-op)`);
+			continue;
+		}
+		let outcome: SubIssueCloseoutOutcome;
+		try {
+			outcome = await deps.closeSubIssue({
+				refs: tracking,
+				nodeId: target.nodeId,
+				step: target.step,
+				prdPresent: prdPresentFor(session?.result.xml ?? "", target.key),
+			});
+		} catch (cause) {
+			const holdText = `HTIL hold: Sub-Issue ${target.key} not closed — ${cause instanceof Error ? cause.message : String(cause)}`;
+			lines.push(holdText);
+			log(holdText);
+			continue;
+		}
+		if (outcome.status === "closed") {
+			lines.push(
+				`Sub-Issue ${target.key} closed: Linear ${outcome.result.linearIdentifier} Done, then its Notion step row Done.`,
+			);
+		} else if (outcome.status === "already-closed") {
+			log(`closeout ${target.key}: already closed (no-op)`);
+		} else if (outcome.status === "unavailable") {
+			lines.push(outcome.note);
+			log(outcome.note);
+		} else {
+			lines.push(outcome.holdText);
+			log(outcome.holdText);
+		}
+	}
+	return lines;
 }
 
 /** The text the failure trigger keys on: the response's error, stderr or message, else its text. Redacted, one line, capped. */
@@ -2471,8 +2656,25 @@ export async function runTodoWriteRecall(
 	const settings = deps.config.recallSettings;
 	const sessionId = hostSessionId(input.session_id);
 	const snapshot = parseTodoSnapshot(input.tool_input?.todos);
+	// Sub-Issue closeout (SPE-35425) reads the session record and writes no recall state, so it runs
+	// ahead of the recall-enabled gate below: a finished Sub Issue closes even when recall is off. A failed
+	// `TodoWrite` wrote nothing, so it closes nothing.
+	const session =
+		sessionId !== undefined && snapshot !== undefined && !isErrorToolResult(input)
+			? readSession(deps.stateDir, sessionId)
+			: undefined;
+	const closeoutLines =
+		session !== undefined && snapshot !== undefined
+			? await closeoutLinesForFinished(deps, session, snapshot)
+			: [];
+	const closeoutContext =
+		closeoutLines.length > 0 ? [CLOSEOUT_HEADER, ...closeoutLines].join("\n") : undefined;
 	if (!settings.recall.enabled || sessionId === undefined || snapshot === undefined) {
-		return { audit: [], reasons: [] };
+		return {
+			audit: [],
+			reasons: [],
+			...(closeoutContext ? { additionalContext: closeoutContext } : {}),
+		};
 	}
 	if (isErrorToolResult(input)) return { audit: [], reasons: [] };
 	const now = deps.now ?? Date.now;
@@ -2480,8 +2682,8 @@ export async function runTodoWriteRecall(
 	const timers = deps.timers ?? platformTimers;
 	const log = deps.log ?? (() => undefined);
 	const cwd = input.cwd?.trim() || process.cwd();
-	const restored = restoreRecallState(readSession(deps.stateDir, sessionId)?.recall?.state);
-	const previous = restoreTodoSnapshot(readSession(deps.stateDir, sessionId)?.recall?.lastTodos);
+	const restored = restoreRecallState(session?.recall?.state);
+	const previous = restoreTodoSnapshot(session?.recall?.lastTodos);
 	const steps = previous === undefined ? [] : todoBoundarySteps(previous, snapshot);
 	const reasons: string[] = [];
 	const lookupsByStep: RecallLookups[] = [];
@@ -2581,14 +2783,26 @@ export async function runTodoWriteRecall(
 		return {
 			audit,
 			reasons,
-			...(lines.length > 0 ? { additionalContext: [RECALL_HEADER, ...lines].join("\n") } : {}),
+			...(lines.length > 0 || closeoutContext !== undefined
+				? {
+						additionalContext: [
+							...(lines.length > 0 ? [RECALL_HEADER, ...lines] : []),
+							...(closeoutContext !== undefined ? [closeoutContext] : []),
+						].join("\n"),
+					}
+				: {}),
 		};
 	}
 	return {
 		audit: pass.audit,
 		reasons: pass.reasons,
-		...(pass.lines.length > 0
-			? { additionalContext: [RECALL_HEADER, ...pass.lines].join("\n") }
+		...(pass.lines.length > 0 || closeoutContext !== undefined
+			? {
+					additionalContext: [
+						...(pass.lines.length > 0 ? [RECALL_HEADER, ...pass.lines] : []),
+						...(closeoutContext !== undefined ? [closeoutContext] : []),
+					].join("\n"),
+				}
 			: {}),
 	};
 }

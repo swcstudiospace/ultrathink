@@ -1191,3 +1191,65 @@ describe("Plan gate review fixes (round 10)", () => {
 		).toBe(true);
 	});
 });
+
+describe("Tracker-side PRD presence gate (SPE-35424)", () => {
+	const generated = {
+		total: 1,
+		generated: 1,
+		failed: 0,
+		fallbacks: 0,
+		records: [
+			{
+				key: "n1.1",
+				hash: "h",
+				markdown: "# PRD",
+				status: "generated",
+				model: "m",
+				fallback: false,
+				attempts: 1,
+			},
+		],
+	} as const;
+	const synced = { total: 1, synced: 1, pending: 0, failed: 0 };
+
+	test("local-generated-but-tracker-missing holds, even when the sync summary says delivered", () => {
+		const verdict = validateArtifacts({
+			text: plan(),
+			expected: { nodes: 2, issues: 2, subIssues: 4, prds: 1 },
+			prd: generated,
+			prdSync: synced,
+			prdPresence: { missingLinear: ["n1.1"], missingNotion: ["n1.1"] },
+		});
+		expect(verdict.state).toBe("partial_failure");
+		expect(verdict.observed.prdsMissingInTrackers).toBe(1);
+		expect(verdict.problems).toContainEqual({
+			severity: "partial",
+			code: "prds_not_in_trackers",
+			detail: "PRD text not present in tracker rows (Linear: n1.1; Notion: n1.1)",
+		});
+	});
+
+	test("present in both trackers proceeds", () => {
+		const verdict = validateArtifacts({
+			text: plan(),
+			expected: { nodes: 2, issues: 2, subIssues: 4, prds: 1 },
+			prd: generated,
+			prdSync: synced,
+			prdPresence: { missingLinear: [], missingNotion: [] },
+		});
+		expect(verdict.state).toBe("ready");
+		expect(verdict.observed.prdsMissingInTrackers).toBe(0);
+	});
+
+	test("missing in only one tracker still holds", () => {
+		const verdict = validateArtifacts({
+			text: plan(),
+			expected: { nodes: 2, issues: 2, subIssues: 4, prds: 1 },
+			prd: generated,
+			prdSync: synced,
+			prdPresence: { missingNotion: ["n1.1"] },
+		});
+		expect(verdict.state).toBe("partial_failure");
+		expect(verdict.problems.map((problem) => problem.code)).toContain("prds_not_in_trackers");
+	});
+});

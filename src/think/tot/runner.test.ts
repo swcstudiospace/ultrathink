@@ -362,8 +362,14 @@ describe("runTot: checkpoints", () => {
 			generate: async (request) => prd(request),
 		});
 		expect(manifest).toMatchObject({ total: 2, generated: 0, failed: 2 });
-		expect(manifest.records[0]?.error).toContain("checkpoint write failed");
-		expect(manifest.records[0]?.markdown).toBe("");
+		const record = manifest.records[0];
+		expect(record?.error).toContain("checkpoint write failed");
+		expect(record?.status).toBe("failed");
+		expect(record?.markdown).toBe(prd(makeRequests(2)[0]!).markdown);
+		expect(record?.hash).toBe(sha256Hex(record?.markdown ?? ""));
+		expect(record?.model).toBe("m-1");
+		expect(record?.fallback).toBe(false);
+		expect(record?.attempts).toBe(1);
 	});
 });
 

@@ -14,7 +14,7 @@ import { graphJson, UPLIFT } from "../test.helpers.ts";
 import type { PrdOutcome, TotSeams } from "../think/tot/stage.ts";
 import type { ToolCaller } from "../track/create.ts";
 import type { Tracker } from "../track/gateway.ts";
-import { totHoldReason } from "./hook-tot.ts";
+import { prdPresenceHoldReason, totHoldReason, verifyPrdPresence } from "./hook-tot.ts";
 import type { IssueRef, TrackingRefs, TrackPlan } from "../track/types.ts";
 import type { ClaudeCompleter } from "./complete.ts";
 import {
@@ -318,5 +318,97 @@ describe("totHoldReason: unmatched keys and partial plans hold the release", () 
 		expect(totHoldReason(outcome(3, 2, "PRD_PARTIAL: 2 of 3 PRDs generated"), [])).toBe(
 			"PRD_PARTIAL: 2 of 3 PRDs generated",
 		);
+	});
+});
+
+describe("verifyPrdPresence: tracker-side presence, read-only (SPE-35424)", () => {
+	const KEY = "n1.1";
+	const HASH = "abc123";
+	const linearRegion = `<!-- ultrathink:prd:start key=${KEY} hash=${HASH} -->\n## PRD\n\ntext\n<!-- ultrathink:prd:end -->`;
+	const notionBlocks = [
+		{
+			id: "b1",
+			type: "callout",
+			callout: {
+				rich_text: [{ type: "text", text: { content: `ultrathink:prd key=${KEY} hash=${HASH}` } }],
+			},
+		},
+		{
+			id: "b2",
+			type: "paragraph",
+			paragraph: { rich_text: [{ type: "text", text: { content: "text" } }] },
+		},
+		{
+			id: "b3",
+			type: "callout",
+			callout: { rich_text: [{ type: "text", text: { content: "ultrathink:prd:end" } }] },
+		},
+	];
+	const refs = {
+		linear: {
+			[KEY]: { id: "i1", identifier: "ENG-1", url: "https://linear.app/o/issue/ENG-1", title: "t" },
+		},
+		notion: { [KEY]: "https://www.notion.so/page-0123456789abcdef0123456789abcdef" },
+	};
+
+	function outcome(total: number, generated: number): PrdOutcome {
+		return {
+			manifest: { total, generated, failed: total - generated, fallbacks: 0, records: [] },
+			sync: { total, synced: generated, pending: 0, failed: total - generated },
+			model: { modelId: "m-1", provider: "x", source: "selected", reason: "r" },
+		};
+	}
+
+	test("local-generated-but-tracker-missing holds, naming the key, and writes nothing", async () => {
+		const calls: string[] = [];
+		const linear: ToolCaller = {
+			async call(name) {
+				calls.push(`linear:${name}`);
+				return { id: "ENG-1", description: "no PRD here" };
+			},
+		};
+		const notion: ToolCaller = {
+			async call(name) {
+				calls.push(`notion:${name}`);
+				return { results: [], has_more: false };
+			},
+		};
+		const presence = await verifyPrdPresence([{ key: KEY, hash: HASH }], refs, { linear, notion });
+		expect(presence).toEqual({ missingLinear: [KEY], missingNotion: [KEY] });
+		expect(prdPresenceHoldReason(presence)).toBe(
+			`PRD text not present in tracker rows (Linear: ${KEY}; Notion: ${KEY})`,
+		);
+		expect(totHoldReason(outcome(1, 1), [], presence)).toBe(prdPresenceHoldReason(presence));
+		// Read-only: only reads were issued, never a save/append/write.
+		expect(calls).toEqual(["linear:get_issue", "notion:API-get-block-children"]);
+	});
+
+	test("both-present proceeds: no hold", async () => {
+		const linear: ToolCaller = {
+			async call(name) {
+				expect(name).toBe("get_issue");
+				return { id: "ENG-1", description: linearRegion };
+			},
+		};
+		const notion: ToolCaller = {
+			async call(name) {
+				expect(name).toBe("API-get-block-children");
+				return { results: notionBlocks, has_more: false };
+			},
+		};
+		const presence = await verifyPrdPresence([{ key: KEY, hash: HASH }], refs, { linear, notion });
+		expect(presence).toEqual({ missingLinear: [], missingNotion: [] });
+		expect(prdPresenceHoldReason(presence)).toBeUndefined();
+		expect(totHoldReason(outcome(1, 1), [], presence)).toBeUndefined();
+	});
+
+	test("a hash mismatch or an unclosed region is missing, not present", async () => {
+		const linear: ToolCaller = {
+			async call() {
+				return { id: "ENG-1", description: linearRegion.replace(HASH, "otherhash") };
+			},
+		};
+		const presence = await verifyPrdPresence([{ key: KEY, hash: HASH }], refs, { linear });
+		expect(presence.missingLinear).toEqual([KEY]);
 	});
 });
