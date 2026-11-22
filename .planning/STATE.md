@@ -639,3 +639,8 @@ At origin/main f84ce7f (post PR #251): criterion 7 wiring landed — HookDeps.cl
 ## v1.24 phases 110/111/112/114 (2026-11-25 autonomous refresh)
 
 In-repo verification at origin/main 4f07500 (post PR #251 + #253):ToT closeout wiring live (HookDeps.closeSubIssue bound; resumePrds + presence gate in production); planning auto-wait with bounded auto re-runs (3) merged. Phase 114 criterion 7: wiring landed, live end-to-end closure run still pending (PRD payloads pending until prompt-submit re-sync). Phases 110/111/112 remain human_needed (live Omp/owner checks).
+
+## ToT Removal Closeout (2026-11-22, pushed 7bc1b73)
+
+Supersedes the 2026-11-21/25 notes above: ToT/Codeblocked PRD stages removed (a2d676b), prompt hold removed (a90d092), partial plans silent at prompt (7bc1b73). No YES/NO wait dialog, no reply-proceed step, no STOP-incomplete warning. Ready plans deliver inline, late ready plans as one aside, fatal unusable plans keep a notice. Linear: SPE-35034-35081 + SPE-35301 Done with superseded-by-removal evidence (49/49), SPE-35369-75 evidence added, SPE-35423-27 already evidenced. Phase 114 stays withdrawn; no active milestone for gsd-autonomous (v1.24 archived). Gates: bun test 10195 pass / 12 skip / 0 fail, tsc 0, biome 0, knip 3 pre-existing unused in src/plugin/inventory.ts. Untracked Tab6a ADRs (docs/adr/0001-hold-*, 0002-attach-*, 0003-inventory-*) and adapters/contracts/design left untracked (numbering collision with tracked removal ADRs; never-merged per phase-109 verification).
+
