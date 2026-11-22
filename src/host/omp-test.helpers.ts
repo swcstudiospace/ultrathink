@@ -552,7 +552,7 @@ function childLifetimeSource(
 	const handoffOrder = JSON.stringify(scenario.handoffOrder ?? null);
 	const parentRootPath = JSON.stringify(parentRoot);
 	return [
-		`import { createNativeEngineSelector, GATE_HOLD } from ${ompPath};`,
+		`import { createNativeEngineSelector } from ${ompPath};`,
 		"import { fakeModel, fakeRuntime, isolatedPlanEnv, quietConfig, recorder, reply, setup, stageAnswer, userText } from " +
 			helpersPath +
 			";",
@@ -786,11 +786,10 @@ function childLifetimeSource(
 		"	await tick(25);",
 		"	check(capturedSignal !== undefined && !capturedSignal.aborted, 'flight aborted before the race');",
 		"	check(capturedIsCurrent !== undefined && capturedIsCurrent(), 'flight not current before the race');",
-		"	// The race (25s) plus the bounded auto-wait (5s) both elapse: the handler defers to the explicit hold.",
-		"	await fireThrough(30000);",
+		"	// The race (25s) elapses: the turn starts at once with 0 STOP texts and the plan follows as the one aside.",
+		"	await fireThrough(25000);",
 		"	const pending: unknown = await pendingPromise;",
-		"	check(customTypeOf(pending) === 'ultrathink-pending', 'expected the real pending handoff after the race and the bounded auto-wait');",
-		"	check(contentOf(pending) === GATE_HOLD, 'expected the gate stop-and-confirm hold at the handoff, not a turn-starting advisory');",
+		"	check(pending === undefined, 'expected the turn to start at once after the race');",
 		"	check(nativeCalls === 1, 'expected one pending native call at handoff, saw ' + nativeCalls);",
 		"	check(capturedSignal !== undefined && !capturedSignal.aborted, 'flight aborted at the handoff');",
 		"	await fireThrough(600001);",
@@ -1039,11 +1038,11 @@ function childLifetimeSource(
 		"	const outcomeContent: unknown = contentOf(outcome);",
 		"	let inlineContent: string | null = null;",
 		"	let pending = false;",
-		"	if (outcomeType === 'ultrathink-pending') {",
+		"	if (outcomeType === 'ultrathink-pending' || outcome === undefined) {",
 		"		pending = true;",
-		"		check(order === 'race-first', 'pending arrived on provider-first insertion');",
+		"		check(order === 'race-first', 'started-at-once arrived on provider-first insertion');",
 		"	} else {",
-		"		// Inline is the delivery in either insertion order: the 5s auto-wait catches the coincident settle; pending only occurs beyond that window.",
+		"		// Provider-first clears the race and delivers inline; race-first starts the turn at once with no STOP text and the plan follows as the one aside (non-blocking contract).",
 		"		check(outcomeType === 'ultrathink-plan', 'inline missing plan customType');",
 		"		check(outcomeContent === 'PLAN', 'inline lost opaque plan bytes');",
 		"		if (typeof outcomeContent === 'string') inlineContent = outcomeContent;",

@@ -7,16 +7,7 @@ import { join } from "node:path";
 import type { AssistantMessage, Effort } from "@oh-my-pi/pi-ai";
 import { readSession } from "../claude/state.ts";
 import type { GroundOutcome } from "../ragflow/types.ts";
-import {
-	createNativeEngineSelector,
-	EARLY_RELEASE,
-	GATE_HOLD,
-	gateHoldPartial,
-	gateStalled,
-	NO_PLAN,
-	PENDING,
-	planFailedNotice,
-} from "./omp.ts";
+import { createNativeEngineSelector, gateStalled } from "./omp.ts";
 import type { OmpPlan, OmpPlanRequest } from "./omp.ts";
 import type { PlanView } from "./view.ts";
 import type { ModelResolution } from "./engine.ts";
@@ -39,7 +30,7 @@ import { planPrompt } from "./plan.ts";
 import type { PlanResponse } from "./plan.ts";
 import type { ProgressEvent } from "./progress.ts";
 
-/** Timers the test fires by hand: the race, auto-wait and flight-limit timers arm here instead of on the real clock. */
+/** Timers the test fires by hand: the race and flight-limit timers arm here instead of on the real clock. */
 type ManualTimers = {
 	timers: {
 		setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
@@ -83,7 +74,6 @@ function manualTimers(): ManualTimers {
 }
 
 describe("flight lifecycle (D-12)", () => {
-	const PENDING_RESULT = { message: expect.objectContaining({ customType: "ultrathink-pending" }) };
 	const aside = (content: string) => ({
 		message: { customType: "ultrathink-plan", content, display: true, attribution: "agent" },
 		options: { deliverAs: "aside" },
@@ -107,7 +97,7 @@ describe("flight lifecycle (D-12)", () => {
 	test("the inline race only defers delivery: the flight keeps running and its plan lands as an aside", async () => {
 		const planner = gated();
 		const { run, sent } = setup(planner.plan, 1);
-		expect(await run()).toEqual(PENDING_RESULT);
+		expect(await run()).toBeUndefined();
 		expect(planner.runs[0]?.signal.aborted).toBe(false);
 		planner.runs[0]?.gate.resolve("PLAN");
 		await flush();
@@ -115,17 +105,15 @@ describe("flight lifecycle (D-12)", () => {
 		expect(planner.runs[0]?.signal.aborted).toBe(false);
 	});
 
-	test("gate on: an uplift final before the race ends is NOT delivered early; the turn is held and only the complete plan follows", async () => {
+	test("gate on: an uplift final before the race ends is NOT delivered early; the turn starts at once and only the complete plan follows", async () => {
 		const gate = Promise.withResolvers<string>();
 		const { run, sent } = setup((request) => {
 			request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
 			return gate.promise;
 		}, 1);
 		const held = await run();
-		expect(held).toEqual({
-			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
-		});
-		expect(JSON.stringify(held)).not.toContain("<UPLIFT>");
+		expect(held).toBeUndefined();
+		expect(JSON.stringify(held) ?? "").not.toContain("<UPLIFT>");
 		const finalPlan =
 			"<UPLIFT>u</UPLIFT>\n<CLARIFICATIONS>q</CLARIFICATIONS>\n<GRAPH_OF_THOUGHT>g</GRAPH_OF_THOUGHT>";
 		gate.resolve(finalPlan);
@@ -133,21 +121,22 @@ describe("flight lifecycle (D-12)", () => {
 		expect(sent).toEqual([aside(finalPlan)]);
 	});
 
-	test("gate on: an early uplift whose final plan is empty ends with the did-not-complete notice, never the early release", async () => {
+	test("gate on: an early uplift whose final plan is empty ends with one advisory aside, never the early text", async () => {
 		const gate = Promise.withResolvers<string>();
 		const { run, sent } = setup((request) => {
 			request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
 			return gate.promise;
 		}, 1);
-		expect(await run()).toEqual({
-			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
-		});
+		expect(await run()).toBeUndefined();
 		gate.resolve("");
 		// Up to 3 automatic relaunches settle before the one aside lands; they are microtask-only, so drain until it arrives.
 		for (let i = 0; i < 500 && sent.length === 0; i++) await Promise.resolve();
-		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
-		expect(sent).toEqual([aside(planFailedNotice("the planner produced no plan"))]);
-		expect(sent).not.toEqual([aside(EARLY_RELEASE)]);
+		expect(sent).toEqual([aside(gateStalled("the planner produced no plan"))]);
+		expect(sent).not.toEqual([
+			aside(
+				gateStalled("the rest of the plan could not be built; the uplifted prompt above stands"),
+			),
+		]);
 	});
 
 	test("gate off: an uplift final before the race ends goes inline now; the whole final plan follows as the one aside", async () => {
@@ -173,7 +162,7 @@ describe("flight lifecycle (D-12)", () => {
 		expect(sent).toEqual([aside(finalPlan)]);
 	});
 
-	test("gate off: an early uplift whose final plan is empty is released by one aside, never left holding", async () => {
+	test("gate off: an early uplift whose final plan is empty is released by one advisory aside", async () => {
 		const gate = Promise.withResolvers<string>();
 		const { run, sent } = setup(
 			(request) => {
@@ -189,8 +178,12 @@ describe("flight lifecycle (D-12)", () => {
 		gate.resolve("");
 		// Up to 3 automatic relaunches settle before the one aside lands; they are microtask-only, so drain until it arrives.
 		for (let i = 0; i < 500 && sent.length === 0; i++) await Promise.resolve();
-		expect(sent).toEqual([aside(EARLY_RELEASE)]);
-		expect(sent).not.toEqual([aside(NO_PLAN)]);
+		expect(sent).toEqual([
+			aside(
+				gateStalled("the rest of the plan could not be built; the uplifted prompt above stands"),
+			),
+		]);
+		expect(sent).not.toEqual([aside(gateStalled("the planner produced no plan"))]);
 	});
 
 	test("ULTRATHINK_GATE=off in the environment restores the advisory race", async () => {
@@ -198,9 +191,7 @@ describe("flight lifecycle (D-12)", () => {
 		const { run } = setup(() => gate.promise, 1, {
 			env: { read: () => ({ ...process.env, ULTRATHINK_GATE: "off" }) },
 		});
-		expect(await run()).toEqual({
-			message: expect.objectContaining({ customType: "ultrathink-pending", content: PENDING }),
-		});
+		expect(await run()).toBeUndefined();
 	});
 
 	test("an activity card is delivered nextTurn with triggerTurn false, so it never steers a running turn or starts one; the aside still carries the plan", async () => {
@@ -211,7 +202,7 @@ describe("flight lifecycle (D-12)", () => {
 			progress = onEvent;
 			return gate.promise;
 		}, 1);
-		expect(await run()).toEqual(PENDING_RESULT);
+		expect(await run()).toBeUndefined();
 		progress?.({
 			type: "activity",
 			at: 2,
@@ -275,9 +266,8 @@ describe("flight lifecycle (D-12)", () => {
 		);
 		const racing = run();
 		await manual.fire(1);
-		// The bounded auto-wait expires too: the handler defers to the hold message and the deadline releases the flight.
-		await manual.fire(1);
-		expect(await racing).toEqual(PENDING_RESULT);
+		// The race expires before the deadline: the turn starts at once and the deadline releases the flight.
+		expect(await racing).toBeUndefined();
 		await called.promise;
 		expect(rec.calls).toHaveLength(1);
 		// The deadline is fired by hand once the call is in flight: no real clock decides whether the call was made.
@@ -286,10 +276,10 @@ describe("flight lifecycle (D-12)", () => {
 		await flush();
 		expect(signal?.aborted).toBe(true);
 		expect(request?.isCurrent?.()).toBe(false);
-		expect(sent).toEqual([aside(NO_PLAN)]);
+		expect(sent).toEqual([aside(gateStalled("the planner produced no plan"))]);
 		expect(await run()).toBeUndefined();
 		expect(rec.calls).toHaveLength(1);
-		expect(sent).toEqual([aside(NO_PLAN)]);
+		expect(sent).toEqual([aside(gateStalled("the planner produced no plan"))]);
 	}, 10_000);
 
 	test("deadline delivery and timeout state ignore synchronous abort progress, late progress and a late plan", async () => {
@@ -316,11 +306,11 @@ describe("flight lifecycle (D-12)", () => {
 			t.ctx,
 		);
 		emit("session_start");
-		expect(await run()).toEqual(PENDING_RESULT);
+		expect(await run()).toBeUndefined();
 		const pendingLine = t.line();
 		await stopped.promise;
 		await flush();
-		expect(sent).toEqual([aside(NO_PLAN)]);
+		expect(sent).toEqual([aside(gateStalled("the planner produced no plan"))]);
 		const timeoutLine = t.line();
 		expect(timeoutLine).not.toBe(pendingLine);
 		progress?.({ type: "begin", at: 3, sessionId: "s1", engine: "late" });
@@ -329,14 +319,16 @@ describe("flight lifecycle (D-12)", () => {
 		gate.resolve({ context: "LATE PLAN" });
 		await flush();
 		expect(t.line()).toBe(timeoutLine);
-		expect(sent).toEqual([aside(NO_PLAN)]);
+		expect(sent).toEqual([aside(gateStalled("the planner produced no plan"))]);
 		expect(await run()).toBeUndefined();
 	}, 1_000);
 
-	test("a deadline before the inline race returns one no-plan result without waiting for the planner", async () => {
+	test("a deadline before the inline race returns one advisory result without waiting for the planner", async () => {
 		const planner = gated();
 		const { run, sent } = setup(planner.plan, 500, { maxRunMs: 5 });
-		expect(await run()).toEqual({ message: aside(NO_PLAN).message });
+		expect(await run()).toEqual({
+			message: aside(gateStalled("the planner produced no plan")).message,
+		});
 		expect(planner.runs[0]?.signal.aborted).toBe(true);
 		expect(planner.runs[0]?.request.isCurrent?.()).toBe(false);
 		expect(await run()).toBeUndefined();
@@ -346,11 +338,11 @@ describe("flight lifecycle (D-12)", () => {
 		expect(planner.runs).toHaveLength(1);
 	}, 1_000);
 
-	test("a superseded noncooperative flight cannot send a no-plan note at its deadline", async () => {
+	test("a superseded noncooperative flight cannot send an advisory note at its deadline", async () => {
 		const planner = gated();
 		const { run, sent } = setup(planner.plan, 1, { maxRunMs: 20 });
-		expect(await run("A")).toEqual(PENDING_RESULT);
-		expect(await run("B")).toEqual(PENDING_RESULT);
+		expect(await run("A")).toBeUndefined();
+		expect(await run("B")).toBeUndefined();
 		expect(planner.runs[0]?.signal.aborted).toBe(true);
 		const current = planner.runs[1]!;
 		// The newer flight's deadline follows the old one, without a sleep or polling loop.
@@ -359,10 +351,10 @@ describe("flight lifecycle (D-12)", () => {
 				current.signal.addEventListener("abort", () => resolve(), { once: true }),
 			);
 		await flush();
-		expect(sent).toEqual([aside(NO_PLAN)]);
+		expect(sent).toEqual([aside(gateStalled("the planner produced no plan"))]);
 		for (const entry of planner.runs) entry.gate.resolve(`LATE ${entry.request.prompt}`);
 		await flush();
-		expect(sent).toEqual([aside(NO_PLAN)]);
+		expect(sent).toEqual([aside(gateStalled("the planner produced no plan"))]);
 	}, 1_000);
 
 	test("a follow-up the planner would skip does not cancel the plan still being built", async () => {
@@ -412,9 +404,9 @@ describe("flight lifecycle (D-12)", () => {
 		const { runtime } = fakeRuntime([live], { current: () => live });
 		const planner = gated();
 		const { run } = setup(planner.plan, 1, {}, { ...runtime });
-		expect(await run()).toEqual(PENDING_RESULT);
+		expect(await run()).toBeUndefined();
 		live = { ...live };
-		expect(await run()).toEqual(PENDING_RESULT);
+		expect(await run()).toBeUndefined();
 		expect(planner.runs).toHaveLength(1);
 		expect(planner.runs[0]?.signal.aborted).toBe(false);
 	});
@@ -428,12 +420,12 @@ describe("flight lifecycle (D-12)", () => {
 			let level: OmpPlanRequest["thinkingLevel"] = before;
 			const planner = gated();
 			const { run, sent } = setup(planner.plan, 1, {}, {}, { getThinkingLevel: () => level });
-			expect(await run()).toEqual(PENDING_RESULT);
-			expect(await run()).toEqual(PENDING_RESULT);
+			expect(await run()).toBeUndefined();
+			expect(await run()).toBeUndefined();
 			expect(planner.runs).toHaveLength(1);
 			expect(planner.runs[0]?.request.thinkingLevel).toBe(before);
 			level = after;
-			expect(await run()).toEqual(PENDING_RESULT);
+			expect(await run()).toBeUndefined();
 			expect(planner.runs).toHaveLength(2);
 			expect(planner.runs[0]?.request.thinkingLevel).toBe(before);
 			expect(planner.runs[0]?.signal.aborted).toBe(true);
@@ -480,7 +472,7 @@ describe("flight lifecycle (D-12)", () => {
 		const { run, sent } = setup(planner.plan, 1, {}, { ...runtime });
 		await run();
 		live = fakeModel("anthropic", "opus-x");
-		expect(await run()).toEqual(PENDING_RESULT);
+		expect(await run()).toBeUndefined();
 		expect(
 			planner.runs.map((entry) => [entry.request.model?.provider, entry.signal.aborted]),
 		).toEqual([
@@ -705,7 +697,7 @@ describe("flight lifecycle (D-12)", () => {
 					},
 				);
 				try {
-					expect(await run("add a widget")).toEqual(PENDING_RESULT);
+					expect(await run("add a widget")).toBeUndefined();
 					await uplifted.promise;
 					expect(rec.calls).toHaveLength(1);
 					expect(lookupSignal?.aborted).toBe(false);
@@ -1108,7 +1100,7 @@ describe("flight lifecycle (D-12)", () => {
 			{
 				const planner = gated();
 				const h = setup(planner.plan, 10, outer.extra);
-				expect(await h.run("A")).toEqual(PENDING_RESULT);
+				expect(await h.run("A")).toBeUndefined();
 				expect(h.sent).toEqual([]);
 				h.emit("turn_start");
 				const nextPromise = h.run("B");
@@ -1117,7 +1109,7 @@ describe("flight lifecycle (D-12)", () => {
 				planner.runs[0]?.gate.resolve("LATE A");
 				await flush();
 				expect(h.sent).toEqual([]);
-				expect(await nextPromise).toEqual(PENDING_RESULT);
+				expect(await nextPromise).toBeUndefined();
 				planner.runs[1]?.gate.resolve("PLAN B");
 				await flush();
 				expect(h.sent).toEqual([aside("PLAN B")]);
@@ -1130,7 +1122,7 @@ describe("flight lifecycle (D-12)", () => {
 			{
 				const planner = gated();
 				const h = setup(planner.plan, 10, outer.extra);
-				expect(await h.run("takeoff")).toEqual(PENDING_RESULT);
+				expect(await h.run("takeoff")).toBeUndefined();
 				h.command("ultrathink-quick", "takeoff");
 				h.emit("turn_start");
 				expect(await h.run("takeoff")).toBeUndefined();
@@ -1156,7 +1148,7 @@ describe("flight lifecycle (D-12)", () => {
 					outer.extra,
 					{ ...runtime },
 				);
-				expect(await h.run()).toEqual(PENDING_RESULT);
+				expect(await h.run()).toBeUndefined();
 				live = fakeModel("acme", "sol-2");
 				const nextPromise = h.run();
 				await flush();
@@ -1173,7 +1165,7 @@ describe("flight lifecycle (D-12)", () => {
 				seen[0]?.({ type: "end", at: 5, outcome: "planned", modelResolution: STALE_RESOLUTION });
 				planner.runs[0]?.gate.resolve("LATE PLAN");
 				await flush();
-				expect(await nextPromise).toEqual(PENDING_RESULT);
+				expect(await nextPromise).toBeUndefined();
 				planner.runs[1]?.gate.resolve("PLAN B");
 				await flush();
 				expect(h.sent).toEqual([aside("PLAN B")]);
@@ -1184,7 +1176,7 @@ describe("flight lifecycle (D-12)", () => {
 			{
 				const planner = gated();
 				const h = setup(planner.plan, 10, outer.extra);
-				expect(await h.run("A")).toEqual(PENDING_RESULT);
+				expect(await h.run("A")).toBeUndefined();
 				h.emit("turn_start");
 				const runB = h.run("B");
 				await flush();
@@ -1197,7 +1189,7 @@ describe("flight lifecycle (D-12)", () => {
 				planner.runs[1]?.gate.resolve("LATE B");
 				await flush();
 				expect(h.sent).toEqual([]);
-				expect(await runC).toEqual(PENDING_RESULT);
+				expect(await runC).toBeUndefined();
 				planner.runs[2]?.gate.resolve("PLAN C");
 				await flush();
 				expect(h.sent).toEqual([aside("PLAN C")]);
@@ -1216,7 +1208,7 @@ describe("flight lifecycle (D-12)", () => {
 					10,
 					outer.extra,
 				);
-				expect(await h.run()).toEqual(PENDING_RESULT);
+				expect(await h.run()).toBeUndefined();
 				h.emit("session_shutdown");
 				progress?.({ type: "stage", at: 9, stage: "think", phase: "start" });
 				gate.reject(new Error("late boom"));
@@ -1239,10 +1231,10 @@ describe("flight lifecycle (D-12)", () => {
 			t.ctx,
 		);
 		h.emit("session_start");
-		expect(await h.run("A")).toEqual(PENDING_RESULT);
+		expect(await h.run("A")).toBeUndefined();
 		h.emit("turn_start");
 		const nextPromise = h.run("B");
-		expect(await nextPromise).toEqual(PENDING_RESULT);
+		expect(await nextPromise).toBeUndefined();
 		const successorLine = t.line();
 		expect(planner.runs[0]?.signal.aborted).toBe(true);
 		expect(seen).toHaveLength(2);
@@ -1470,7 +1462,7 @@ describe("flight lifecycle (D-12)", () => {
 			expect(await h.run()).toEqual({
 				message: {
 					customType: "ultrathink-plan",
-					content: planFailedNotice("the planner produced no plan"),
+					content: gateStalled("the planner produced no plan"),
 					display: true,
 					attribution: "agent",
 				},
@@ -1483,7 +1475,7 @@ describe("flight lifecycle (D-12)", () => {
 		{
 			const planner = gated();
 			const h = setup(planner.plan, 1, {});
-			expect(await h.run()).toEqual(PENDING_RESULT);
+			expect(await h.run()).toBeUndefined();
 			planner.runs[0]?.gate.resolve("");
 			await flush();
 			// hardened: a failed planner is relaunched up to three times; the last relaunch's empty plan carries the notice (omp-delivery.test.ts)
@@ -1499,11 +1491,11 @@ describe("flight lifecycle (D-12)", () => {
 			expect(planner.runs).toHaveLength(4);
 			planner.runs[3]?.gate.resolve("");
 			await flush();
-			expect(h.sent).toEqual([aside(planFailedNotice("the planner produced no plan"))]);
+			expect(h.sent).toEqual([aside(gateStalled("the planner produced no plan"))]);
 			expect(await h.run()).toBeUndefined();
 			expect(planner.runs).toHaveLength(4);
 			await flush();
-			expect(h.sent).toEqual([aside(planFailedNotice("the planner produced no plan"))]);
+			expect(h.sent).toEqual([aside(gateStalled("the planner produced no plan"))]);
 			h.emit("session_shutdown");
 			await flush();
 		}
@@ -1562,12 +1554,12 @@ describe("flight lifecycle (D-12)", () => {
 		expect(handoff?.asideDeliverAs).toBeNull();
 	}, 120_000);
 
-	test("handoff-ordering coincident race-first dispatches race, auto-waits, then delivers inline", async () => {
+	test("handoff-ordering coincident race-first dispatches race then starts the turn at once; the coincident plan follows as one aside", async () => {
 		const result = await runChildLifetimeScenario({
 			cancelHung: false,
 			handoffOrder: "race-first",
 		});
-		expect(result.planAsides).toBe(0);
+		expect(result.planAsides).toBe(1);
 		expect(result.nativeCalls).toBe(0);
 		const handoff = result.handoff;
 		expect(handoff?.order).toBe("race-first");
@@ -1580,17 +1572,17 @@ describe("flight lifecycle (D-12)", () => {
 		expect(handoff?.providerFired).toBe(true);
 		expect(handoff?.raceCleared).toBe(false);
 		expect(handoff?.firedRoles).toEqual(["race", "provider"]);
-		expect(handoff?.pending).toBe(false);
-		expect(handoff?.inlineContent).toBe("PLAN");
-		expect(handoff?.asideContent).toBeNull();
-		expect(handoff?.asideCustomType).toBeNull();
-		expect(handoff?.asideDeliverAs).toBeNull();
+		expect(handoff?.pending).toBe(true);
+		expect(handoff?.inlineContent).toBeNull();
+		expect(handoff?.asideContent).toBe("PLAN");
+		expect(handoff?.asideCustomType).toBe("ultrathink-plan");
+		expect(handoff?.asideDeliverAs).toBe("aside");
 	}, 120_000);
 
-	test("handoff-ordering completion after pending delivers exactly one aside", async () => {
+	test("handoff-ordering completion after starting at once delivers exactly one aside", async () => {
 		const planner = gated();
 		const h = setup(planner.plan, 1, {});
-		expect(await h.run()).toEqual(PENDING_RESULT);
+		expect(await h.run()).toBeUndefined();
 		planner.runs[0]?.gate.resolve("PLAN");
 		await flush();
 		expect(h.sent).toEqual([aside("PLAN")]);
@@ -1602,13 +1594,12 @@ describe("flight lifecycle (D-12)", () => {
 		await flush();
 	}, 10_000);
 
-	test("handoff-ordering resolve-then-reenter in the same tick after pending keeps one aside", async () => {
+	test("handoff-ordering resolve-then-reenter in the same tick after starting at once keeps one aside", async () => {
 		const planner = gated();
 		const h = setup(planner.plan, 1, {});
-		expect(await h.run()).toEqual(PENDING_RESULT);
+		expect(await h.run()).toBeUndefined();
 		planner.runs[0]?.gate.resolve("PLAN");
-		expect(await h.run()).toEqual(PENDING_RESULT);
-		expect(planner.runs).toHaveLength(1);
+		expect(await h.run()).toBeUndefined();
 		await flush();
 		expect(h.sent).toEqual([aside("PLAN")]);
 		await flush();
@@ -1668,7 +1659,7 @@ describe("flight lifecycle (D-12)", () => {
 		expect(await h.run()).toEqual({
 			message: {
 				customType: "ultrathink-plan",
-				content: planFailedNotice("the planner failed: boom"),
+				content: gateStalled("the planner failed: boom"),
 				display: true,
 				attribution: "agent",
 			},
@@ -1762,9 +1753,8 @@ describe("flight lifecycle (D-12)", () => {
 		const racing = run();
 		expect(pendingAtPlan).toBeGreaterThanOrEqual(1);
 		await manual.fire(1);
-		// The bounded auto-wait expires too: the handler defers to the hold message.
-		await manual.fire(1);
-		expect(await racing).toEqual(PENDING_RESULT);
+		// The race expires: the turn starts at once and the plan follows as the one aside.
+		expect(await racing).toBeUndefined();
 	});
 
 	test("a rejected aside reads aside-failed, never delivered, and the plan stays deliverable (L6-09)", async () => {
@@ -1776,7 +1766,7 @@ describe("flight lifecycle (D-12)", () => {
 		} as unknown as Parameters<typeof setup>[4];
 		const { run, emit } = setup(() => gate.promise, 1, {}, t.ctx, rejecting);
 		emit("session_start");
-		expect(await run()).toEqual(PENDING_RESULT);
+		expect(await run()).toBeUndefined();
 		gate.resolve("PLAN");
 		await flush();
 		expect(t.line()).toContain("skipped · aside failed");
@@ -1786,7 +1776,7 @@ describe("flight lifecycle (D-12)", () => {
 	});
 });
 
-/** The Omp completion gate: the session never starts on a plan that is still generating, partial or cut off. */
+/** The Omp completion gate: prompts proceed at once, the plan arrives inline-if-ready else as an aside, validation is advisory-only. */
 describe("completion gate (Omp before_agent_start)", () => {
 	const SPEC =
 		"<SYSTEM_ROLE>r</SYSTEM_ROLE><CONTEXT>c</CONTEXT><SCOPE>s</SCOPE><CONSTRAINTS>k</CONSTRAINTS><ACCEPTANCE_CRITERIA>a</ACCEPTANCE_CRITERIA>";
@@ -1862,20 +1852,15 @@ describe("completion gate (Omp before_agent_start)", () => {
 		expect(condition()).toBe(true);
 	}
 
-	test("reproduces the old early start: a plan slower than the race gets an explicit hold, never an advisory, and nothing else until the plan is complete", async () => {
+	test("a plan slower than the race starts the turn at once with 0 STOP texts; the complete plan follows as the one aside", async () => {
 		const planner = slow();
 		const manual = manualTimers();
 		const { run, sent } = setup(planner.plan, 1, { timers: manual.timers });
 		const running = run();
 		await manual.fire(1);
-		// The bounded auto-wait expires too: the handler defers to the explicit hold.
-		await manual.fire(1);
-		const held = await running;
-		expect(held).toEqual({
-			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
-		});
-		expect(GATE_HOLD).toStartWith("STOP.");
-		expect(GATE_HOLD).not.toContain("read and investigate");
+		// No confirm dialog is ever shown and no STOP text is returned: the turn starts at once.
+		const started = await running;
+		expect(started).toBeUndefined();
 		expect(sent).toEqual([]);
 		// The planner keeps running; the complete plan is the one aside.
 		expect(planner.runs[0]?.signal.aborted).toBe(false);
@@ -1884,7 +1869,7 @@ describe("completion gate (Omp before_agent_start)", () => {
 		expect(sent).toEqual([aside(planXml(2))]);
 	});
 
-	test("a slow plan: the handler waits until the flight settles with no dialog, however long that takes, then returns exactly the complete plan", async () => {
+	test("a slow plan: the handler returns at once with no dialog, however long planning takes, then the complete plan arrives as the one aside", async () => {
 		const planner = slow();
 		const manual = manualTimers();
 		const host = dialogCtx();
@@ -1901,22 +1886,22 @@ describe("completion gate (Omp before_agent_start)", () => {
 			return value;
 		});
 		await manual.fire(1);
-		// No confirm dialog is ever shown: the handler just waits.
+		// No confirm dialog is ever shown: the handler returns at once.
 		for (let i = 0; i < 20; i++) await Promise.resolve();
 		expect(host.dialogs).toEqual([]);
-		// Five minutes of fake clock pass inside the held handler: still nothing returned, nothing sent.
 		clock += 5 * 60_000;
 		for (let i = 0; i < 20; i++) await Promise.resolve();
-		expect(returned).toBe(false);
+		expect(returned).toBe(true);
+		expect(await running).toBeUndefined();
 		expect(sent).toEqual([]);
 		expect(planner.runs[0]?.signal.aborted).toBe(false);
 		clock += 10 * 60_000;
 		planner.runs[0]?.gate.resolve(planXml(2));
-		expect(await running).toEqual(planMsg(planXml(2)));
-		expect(sent).toEqual([]);
+		await flush();
+		expect(sent).toEqual([aside(planXml(2))]);
 	});
 
-	test("there is no Yes path that starts without the plan: the handler keeps waiting and the flight is not cancelled", async () => {
+	test("there is no Yes path that starts without the plan: the turn starts at once and the flight is not cancelled", async () => {
 		const planner = slow();
 		const manual = manualTimers();
 		const host = dialogCtx();
@@ -1929,14 +1914,15 @@ describe("completion gate (Omp before_agent_start)", () => {
 		await manual.fire(1);
 		for (let i = 0; i < 20; i++) await Promise.resolve();
 		expect(host.dialogs).toEqual([]);
-		expect(returned).toBe(false);
+		expect(returned).toBe(true);
+		expect(await running).toBeUndefined();
 		expect(planner.runs[0]?.signal.aborted).toBe(false);
 		planner.runs[0]?.gate.resolve(planXml(2));
-		expect(await running).toEqual(planMsg(planXml(2)));
-		expect(sent).toEqual([]);
+		await flush();
+		expect(sent).toEqual([aside(planXml(2))]);
 	});
 
-	test("on a dialog-capable host the handler still waits: it never falls back to the explicit stop message", async () => {
+	test("on a dialog-capable host the handler still returns at once: it never falls back to a STOP message", async () => {
 		const planner = slow();
 		const manual = manualTimers();
 		const host = dialogCtx("at-once");
@@ -1948,14 +1934,15 @@ describe("completion gate (Omp before_agent_start)", () => {
 		});
 		await manual.fire(1);
 		for (let i = 0; i < 20; i++) await Promise.resolve();
-		expect(returned).toBe(false);
+		expect(returned).toBe(true);
+		expect(await running).toBeUndefined();
 		expect(host.dialogs).toEqual([]);
 		planner.runs[0]?.gate.resolve(planXml(1));
-		expect(await running).toEqual(planMsg(planXml(1)));
-		expect(sent).toEqual([]);
+		await flush();
+		expect(sent).toEqual([aside(planXml(1))]);
 	});
 
-	test("a newer prompt cancels the held wait: the old handler returns nothing and no dialog was shown", async () => {
+	test("a newer prompt supersedes the deferred flight: the old turn already started and no dialog was shown", async () => {
 		const planner = slow();
 		const manual = manualTimers();
 		const host = dialogCtx();
@@ -1964,25 +1951,25 @@ describe("completion gate (Omp before_agent_start)", () => {
 		await manual.fire(1);
 		for (let i = 0; i < 20; i++) await Promise.resolve();
 		expect(host.dialogs).toEqual([]);
+		expect(await first).toBeUndefined();
 		h.emit("turn_start");
 		const second = Promise.resolve(h.run("B"));
-		expect(await first).toBeUndefined();
 		expect(planner.runs[0]?.signal.aborted).toBe(true);
 		await manual.fire(1);
 		await until(() => planner.runs.length === 2);
 		expect(host.dialogs).toEqual([]);
+		expect(await second).toBeUndefined();
 		planner.runs[1]?.gate.resolve(planXml(1));
-		expect(await second).toEqual(planMsg(planXml(1)));
-		expect(h.sent).toEqual([]);
+		await flush();
+		expect(h.sent).toEqual([aside(planXml(1))]);
 	});
 
-	test("a failed planner fails open: the turn is not held for a plan that will never come", async () => {
+	test("a failed planner fails open: the turn starts at once with 1 advisory note, never held for a plan that will never come", async () => {
 		const { run, sent } = setup(() => Promise.reject(new Error("provider down")), 1_000);
-		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
 		expect(await run()).toEqual({
 			message: {
 				customType: "ultrathink-plan",
-				content: planFailedNotice("the planner failed: provider down"),
+				content: gateStalled("the planner failed: provider down"),
 				display: true,
 				attribution: "agent",
 			},
@@ -1990,79 +1977,79 @@ describe("completion gate (Omp before_agent_start)", () => {
 		expect(sent).toEqual([]);
 	});
 
-	test("a partial plan (fewer nodes than planned) is held with nothing applied, and a later prompt never releases it", async () => {
+	test("a partial plan (fewer nodes than planned) yields 1 advisory aside with nothing applied, and a later prompt never releases it", async () => {
 		const view = viewOf(2);
 		const { run, sent, emit } = setup(async () => ({ context: planXml(1), view }), 1_000);
-		const held = await run();
-		expect(held).toEqual({
-			message: expect.objectContaining({
-				customType: "ultrathink-pending",
-				content: gateHoldPartial("1 of 2 nodes", true),
-			}),
-		});
-		expect(JSON.stringify(held)).not.toContain("BUILD_PROMPT");
-		// A later prompt is a new submission: it never releases the held plan.
-		emit("turn_start");
-		expect(await run("proceed")).toEqual(held);
-		expect(sent).toEqual([]);
-	});
-
-	test("a cut-off plan is unusable: it is never injected or released, and a later prompt does not start the session with it", async () => {
-		const cut = planXml(2).replace("</BUILD_PROMPT>", "");
-		const { run, sent, emit } = setup(async () => cut, 1_000);
-		const held = await run();
-		expect(held).toEqual({
-			message: expect.objectContaining({
-				customType: "ultrathink-pending",
-				content: gateHoldPartial("the uplift XML root is never closed", false),
-			}),
-		});
-		expect(JSON.stringify(held)).not.toContain("SYSTEM_ROLE");
-		emit("turn_start");
-		expect(await run("proceed")).toEqual(held);
-		expect(sent).toEqual([]);
-	});
-
-	test("a partial plan never opens a confirmation: it is held, the user is warned, and no dialog is offered", async () => {
-		const view = viewOf(2);
-		const host = dialogCtx();
-		const { run, sent } = setup(async () => ({ context: planXml(1), view }), 1_000, {}, host.ctx);
-		expect(await run()).toEqual({
-			message: expect.objectContaining({
-				customType: "ultrathink-pending",
-				content: gateHoldPartial("1 of 2 nodes", true),
-			}),
-		});
-		expect(host.dialogs).toEqual([]);
-		expect(host.notices).toContainEqual({
-			text: gateHoldPartial("1 of 2 nodes", true),
-			level: "warning",
-		});
-		expect(sent).toEqual([]);
-	});
-
-	test("a partial plan that finishes after a no-dialog hold is shown, never sent as a turn-starting aside", async () => {
-		const planner = slow();
-		const { run, sent } = setup(planner.plan, 1);
-		expect(await run()).toEqual({
-			message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
-		});
-		planner.runs[0]?.gate.resolve({ context: planXml(1), view: viewOf(2) });
+		const ADVISORY = "Plan note: 1 of 2 nodes. The request continues as written.";
+		// Advisory-only: no tracker-pending or incomplete-plan notice in the prompt-turn message.
+		expect(await run()).toBeUndefined();
 		await flush();
 		expect(sent).toEqual([
 			{
-				message: {
-					customType: "ultrathink-pending",
-					content: gateHoldPartial("1 of 2 nodes", true),
-					display: true,
-					attribution: "agent",
-				},
-				options: { triggerTurn: false },
+				message: expect.objectContaining({ customType: "ultrathink-plan", content: ADVISORY }),
+				options: { deliverAs: "aside" },
+			},
+		]);
+		expect(JSON.stringify(sent)).not.toContain("SYSTEM_ROLE");
+		// A later prompt is a new submission: it never releases the partial plan.
+		emit("turn_start");
+		expect(await run("proceed")).toBeUndefined();
+		await flush();
+		expect(sent.every((entry) => JSON.stringify(entry).includes(ADVISORY))).toBe(true);
+	});
+
+	test("a cut-off plan is unusable: it yields 1 advisory note and is never injected, and a later prompt does not start with it", async () => {
+		const cut = planXml(2).replace("</BUILD_PROMPT>", "");
+		const { run, sent, emit } = setup(async () => cut, 1_000);
+		const advisory = await run();
+		expect(advisory).toEqual({
+			message: expect.objectContaining({
+				customType: "ultrathink-plan",
+				content: gateStalled("plan unusable: the uplift XML root is never closed"),
+			}),
+		});
+		expect(JSON.stringify(advisory)).not.toContain("SYSTEM_ROLE");
+		emit("turn_start");
+		expect(await run("proceed")).toEqual(advisory);
+		expect(sent).toEqual([]);
+	});
+
+	test("a partial plan never opens a confirmation: it yields 1 advisory aside with 0 blocked turns and no dialog", async () => {
+		const view = viewOf(2);
+		const host = dialogCtx();
+		const { run, sent } = setup(async () => ({ context: planXml(1), view }), 1_000, {}, host.ctx);
+		const ADVISORY = "Plan note: 1 of 2 nodes. The request continues as written.";
+		expect(await run()).toBeUndefined();
+		await flush();
+		expect(sent).toEqual([
+			{
+				message: expect.objectContaining({ customType: "ultrathink-plan", content: ADVISORY }),
+				options: { deliverAs: "aside" },
+			},
+		]);
+		expect(host.dialogs).toEqual([]);
+		expect(host.notices).toEqual([]);
+	});
+
+	test("a partial plan that finishes after the turn started arrives as one advisory aside", async () => {
+		const planner = slow();
+		const { run, sent } = setup(planner.plan, 1);
+		expect(await run()).toBeUndefined();
+		planner.runs[0]?.gate.resolve({ context: planXml(1), view: viewOf(2) });
+		await flush();
+		// The advisory aside carries the partial view as details alongside the note; match content, not exact shape.
+		expect(sent).toEqual([
+			{
+				message: expect.objectContaining({
+					customType: "ultrathink-plan",
+					content: "Plan note: 1 of 2 nodes. The request continues as written.",
+				}),
+				options: { deliverAs: "aside" },
 			},
 		]);
 	});
 
-	test("the inactivity watchdog fails loudly: the planner is stopped, the user is told, and the held turn carries the reason", async () => {
+	test("the inactivity watchdog fails loudly: the planner is stopped, the user is told, and the turn already started", async () => {
 		const planner = slow();
 		const race = manualTimers();
 		const dog = manualTimers();
@@ -2075,20 +2062,22 @@ describe("completion gate (Omp before_agent_start)", () => {
 		);
 		const running = Promise.resolve(run());
 		await race.fire(1);
-		// The handler is waiting on the flight now, with no dialog shown.
+		// The handler returned at once, with no dialog shown, and the flight continues in the background.
 		for (let i = 0; i < 20; i++) await Promise.resolve();
 		expect(host.dialogs).toEqual([]);
+		expect(await running).toBeUndefined();
 		// The default window is 30 minutes of silence.
 		await dog.fire(30 * 60_000);
 		const reason = "planning stalled: no progress for 30 min";
-		expect(await running).toEqual(planMsg(gateStalled(reason)));
 		expect(planner.runs[0]?.signal.aborted).toBe(true);
 		expect(host.notices).toEqual([{ text: gateStalled(reason), level: "error" }]);
+		await flush();
 		expect(sent).toEqual([
 			{
 				message: { content: gateStalled(reason), display: true },
 				options: { triggerTurn: false },
 			},
+			aside(gateStalled(reason)),
 		]);
 	});
 

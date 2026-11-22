@@ -36,7 +36,7 @@ import type { ModelIntent, ModelResolution, SelectedEngine } from "./engine.ts";
 import {
 	createNativeEnginePlanner,
 	createNativeEngineSelector,
-	planFailedNotice,
+	gateStalled,
 	QUICK_USAGE,
 	repoOfPath,
 } from "./omp.ts";
@@ -128,7 +128,7 @@ describe("omp extension", () => {
 		expect(await run()).toEqual({
 			message: {
 				customType: "ultrathink-plan",
-				content: planFailedNotice("the planner produced no plan"),
+				content: gateStalled("the planner produced no plan"),
 				display: true,
 				attribution: "agent",
 			},
@@ -172,14 +172,10 @@ describe("omp extension", () => {
 			1,
 			{ maxRunMs: 0, timers: manual.timers },
 		);
-		// The race limit is 1 ms: its timer fires by hand, and the pending message follows.
+		// The race limit is 1 ms: its timer fires by hand; the turn starts at once with no hold text.
 		const running = run();
 		await manual.fire(1);
-		// The bounded auto-wait expires too: the handler defers to the pending message.
-		await manual.fire(1);
-		expect(await running).toEqual({
-			message: expect.objectContaining({ customType: "ultrathink-pending" }),
-		});
+		expect(await running).toBeUndefined();
 		// With maxRunMs 0 the flight arms no limit timer, so none is pending once the race has ended.
 		expect(manual.pending()).toBe(0);
 		expect(runs[0]?.signal.aborted).toBe(false);
@@ -200,19 +196,10 @@ describe("omp extension", () => {
 		]);
 	});
 
-	test("slow plan returns pending then delivers aside once", async () => {
+	test("slow plan starts the turn at once then delivers aside once", async () => {
 		const gate = controlled();
 		const { run, sent } = setup(gate.plan, 1);
-		const result: unknown = await run();
-		const message: unknown =
-			typeof result === "object" && result !== null && "message" in result
-				? result.message
-				: undefined;
-		const customType: unknown =
-			typeof message === "object" && message !== null && "customType" in message
-				? message.customType
-				: undefined;
-		expect(customType).toBe("ultrathink-pending");
+		expect(await run()).toBeUndefined();
 		expect(sent).toHaveLength(0);
 		gate.resolve("PLAN");
 		await flush();
@@ -241,7 +228,7 @@ describe("omp extension", () => {
 		expect(sent).toHaveLength(1);
 		// hardened: explicit notice instead of silence (omp-delivery.test.ts)
 		expect((sent[0]!.message as { content: string }).content).toBe(
-			planFailedNotice("the planner produced no plan"),
+			gateStalled("the planner produced no plan"),
 		);
 	});
 
@@ -256,11 +243,6 @@ describe("omp extension", () => {
 		expect(sent.length).toBeLessThanOrEqual(1);
 	});
 
-	const PENDING_MSG = {
-		customType: "ultrathink-pending",
-		display: true,
-		attribution: "agent",
-	} as const;
 	const PLAN_MSG = {
 		customType: "ultrathink-plan",
 		content: `PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="Do thing"/>\n</GRAPH_OF_THOUGHT>`,
@@ -268,15 +250,15 @@ describe("omp extension", () => {
 		attribution: "agent",
 	} as const;
 
-	test("re-entry after pending returns pending again without inline plan", async () => {
+	test("re-entry after starting at once returns undefined again without inline plan", async () => {
 		const gate = controlled();
 		const { run, sent } = setup(gate.plan, 1);
-		expect(await run()).toEqual({ message: expect.objectContaining(PENDING_MSG) });
+		expect(await run()).toBeUndefined();
 		const second = run();
 		gate.resolve(
 			`PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="Do thing"/>\n</GRAPH_OF_THOUGHT>`,
 		);
-		expect(await second).toEqual({ message: expect.objectContaining(PENDING_MSG) });
+		expect(await second).toBeUndefined();
 		await flush();
 		expect(gate.calls()).toBe(1);
 		expect(sent).toEqual([{ message: PLAN_MSG, options: { deliverAs: "aside" } }]);
@@ -326,7 +308,7 @@ describe("omp extension", () => {
 			() => (++calls === 1 ? first.promise : Promise.resolve("PLAN 2")),
 			1,
 		);
-		expect(await run()).toEqual({ message: expect.objectContaining(PENDING_MSG) });
+		expect(await run()).toBeUndefined();
 		emit("turn_start");
 		first.resolve("PLAN 1");
 		await flush();
@@ -417,18 +399,16 @@ describe("omp extension", () => {
 		expect(t.renders()).toBeGreaterThan(0);
 	});
 
-	test("slow plan shows pending then delivers the view via aside", async () => {
+	test("slow plan starts the turn at once then delivers the view via aside", async () => {
 		const t = tuiCtx();
 		const gate = Promise.withResolvers<OmpPlan>();
 		const manual = manualTimers();
 		const { run, sent, emit } = setup(() => gate.promise, 1, { timers: manual.timers }, t.ctx);
 		emit("session_start");
 		const running = run();
-		// The race limit is 1 ms: its timer fires by hand while the plan is still held.
+		// The race limit is 1 ms: its timer fires by hand while the plan is still held; the turn starts at once.
 		await manual.fire(1);
-		// The bounded auto-wait expires too: the handler defers to the pending message.
-		await manual.fire(1);
-		await running;
+		expect(await running).toBeUndefined();
 		const pendingLine = t.line();
 		gate.resolve({
 			context: `PLAN\n<GRAPH_OF_THOUGHT>\n<NODE id="n1" kind="task" title="Do thing"/>\n</GRAPH_OF_THOUGHT>`,
@@ -441,7 +421,7 @@ describe("omp extension", () => {
 		expect(t.line()).not.toBe(pendingLine);
 	});
 
-	test("an uplift final before the race leaves the status line pending until the whole plan arrives as an aside", async () => {
+	test("an uplift final before the race starts the turn at once until the whole plan arrives as an aside", async () => {
 		const t = tuiCtx();
 		const gate = Promise.withResolvers<OmpPlan>();
 		const manual = manualTimers();
@@ -456,11 +436,9 @@ describe("omp extension", () => {
 		);
 		emit("session_start");
 		const running = run();
-		// The race limit is 1 ms: its timer fires by hand while the final plan is still held.
+		// The race limit is 1 ms: its timer fires by hand while the final plan is still held; the turn starts at once.
 		await manual.fire(1);
-		// The bounded auto-wait expires too: the handler defers to the pending message.
-		await manual.fire(1);
-		await running;
+		expect(await running).toBeUndefined();
 		expect(t.line()).toContain("arrives as aside");
 		gate.resolve({ context: "PLAN", view: VIEW });
 		await flush();
@@ -504,6 +482,8 @@ describe("omp extension", () => {
 		expect(t.renders() - before).toBe(2);
 		gate.resolve({ context: "PLAN", view: VIEW });
 		await result;
+		// The aside settles asynchronously after the turn starts; drain until the store leaves planning.
+		for (let hop = 0; hop < 100; hop++) await flush();
 		clock += 60_000;
 		before = t.renders();
 		tick?.();
@@ -2259,7 +2239,7 @@ describe("status and the default planner (§9 paths 5-6)", () => {
 			expect(await run("add a widget")).toEqual({
 				message: {
 					customType: "ultrathink-plan",
-					content: planFailedNotice("native-unavailable"),
+					content: gateStalled("native-unavailable"),
 					display: true,
 					attribution: "agent",
 				},
@@ -2455,10 +2435,8 @@ describe("swarm auto-run", () => {
 				{ ...t.ctx, cwd },
 			);
 			emit("session_start");
-			// Seed a pending plan from a non-SDLC prompt: deferred, still current, gate unresolved.
-			expect(await run("what does this repo do")).toEqual({
-				message: expect.objectContaining({ customType: "ultrathink-pending" }),
-			});
+			// Seed a pending plan from a non-SDLC prompt: the turn starts at once, gate unresolved.
+			expect(await run("what does this repo do")).toBeUndefined();
 			// The spawn owns this submission: the older flight is cancelled superseded and nothing is planned.
 			expect(await run("build a health endpoint")).toBeUndefined();
 			expect(t.line()).toContain("superseded");
@@ -2500,9 +2478,7 @@ describe("swarm auto-run", () => {
 				},
 				{ hasUI: true, cwd },
 			);
-			expect(await run("build a health endpoint")).toEqual({
-				message: expect.objectContaining({ customType: "ultrathink-pending" }),
-			});
+			expect(await run("build a health endpoint")).toBeUndefined();
 			expect(cardContent(sent, 0)).toBe("Swarm lanes — 0/1 spawned");
 			expect(gate.calls()).toBe(1);
 		} finally {
@@ -2670,9 +2646,7 @@ describe("swarm auto-run", () => {
 		try {
 			const gate = controlled();
 			const { run, sent } = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
-			expect(await run("build a health endpoint")).toEqual({
-				message: expect.objectContaining({ customType: "ultrathink-pending" }),
-			});
+			expect(await run("build a health endpoint")).toBeUndefined();
 			expect(swarmCards(sent)).toBe(0);
 			expect(laneDirNames(stateDir)).toEqual([]);
 			expect(gate.calls()).toBe(1);
@@ -2788,9 +2762,7 @@ describe("swarm auto-run", () => {
 				// Auto-run hits the same cap: it stays silent, spawns nothing and lets the turn plan.
 				const gate = controlled();
 				const auto = setup(gate.plan, 1, { config: autoRunConfig }, { hasUI: true, cwd });
-				expect(await auto.run("build a health endpoint")).toEqual({
-					message: expect.objectContaining({ customType: "ultrathink-pending" }),
-				});
+				expect(await auto.run("build a health endpoint")).toBeUndefined();
 				expect(swarmCards(auto.sent)).toBe(0);
 				expect(laneDirNames(stateDir)).toEqual(["aaaaaaaa-1-live0"]);
 			} finally {
@@ -3005,9 +2977,7 @@ describe("swarm auto-run", () => {
 				},
 				{ hasUI: true, cwd },
 			);
-			expect(await run("build a health endpoint")).toEqual({
-				message: expect.objectContaining({ customType: "ultrathink-pending" }),
-			});
+			expect(await run("build a health endpoint")).toBeUndefined();
 			expect(spawned).toEqual([]);
 			expect(swarmCards(sent)).toBe(0);
 			expect(laneDirNames(stateDir)).toEqual([".lane-lock"]);

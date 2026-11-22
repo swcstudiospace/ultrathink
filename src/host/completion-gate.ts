@@ -1,23 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 /**
- * CompletionGate: the host-neutral rule that a session only starts once the whole plan exists. "Whole" means the
+ * CompletionGate: the host-neutral advisory validator. A "whole" plan means the
  * uplifted XML, the Graph of Thought, and the issue and sub-issue rows.
  *
- * The gate never starts anything itself. A host stages artifacts into it while a planner runs, the gate validates
+ * The gate never starts or stops anything itself. A host stages artifacts into it while a planner runs, the gate validates
  * them, and the host asks `release()` for the content to inject. `release()` hands the staged content over exactly
- * once, and only from `ready`: a session starts only when the whole plan is ready. A partial plan is reported with
+ * once, and only from `ready`. Validation failure yields an advisory note and the session proceeds with 0 blocked
+ * turns; the host delivers the released plan inline-if-ready else as an aside. A partial plan is reported with
  * the problems that keep it from being whole, and it is never released. Nothing staged is readable any other way,
  * so no half-built plan can reach a prompt.
  *
  * States: `generating` -> `validating` -> `ready` | `partial_failure` | `failed_or_cancelled`.
+ * `waiting_for_plan` is retained as an advisory pass-through value for transition compatibility and never blocks a prompt.
  *
  * An inactivity watchdog fails the gate loudly when nothing touches it for `inactivityMs` (default 30 minutes, 0
  * disables). Progress for a human goes out through `onProgress` listeners only: a side channel that is never part
  * of the prompt.
  */
 import { createHash } from "node:crypto";
-import { redactSecrets } from "../redact.ts";
 import { checkUpliftXml } from "../uplift/xml.ts";
 
 export type GateState =
@@ -217,6 +218,21 @@ export function validateArtifacts(
 	return { state, problems, observed };
 }
 
+/**
+ * One advisory note for an incomplete (partial) plan (blueprint §3.3): information only, never an
+ * instruction. The note names the missing items and says the request continues. Fatal verdicts keep
+ * the host's unusable-plan notice.
+ */
+export function planAdvisoryNote(detail: string): string {
+	const text = detail.trim() || "the plan is incomplete";
+	return `Plan note: ${text}. The request continues as written.`;
+}
+
+/** The one advisory note for a partial verdict: every partial problem joined, then the request continues. */
+export function advisoryNoteForVerdict(verdict: GateVerdict): string {
+	return planAdvisoryNote(verdict.problems.map((problem) => problem.detail).join("; "));
+}
+
 /** Timer port, structurally the one the Omp host already injects. */
 export interface GateTimers {
 	setTimeout(fn: () => void, ms: number): NodeJS.Timeout;
@@ -235,12 +251,6 @@ export interface CompletionGateOptions {
 	readonly validate?: (artifacts: GateArtifacts) => GateVerdict;
 	/** Called once, loudly, when the watchdog failed the gate; the host must stop the planner and tell the user. */
 	readonly onStall?: (reason: string) => void;
-	/** Bounded Plan-gate polling: interval between re-checks while waiting_for_plan. Default 2000. */
-	readonly pollIntervalMs?: number;
-	/** Bounded Plan-gate polling: max attempts before blocked-with-reason. Default 30. */
-	readonly maxPollAttempts?: number;
-	/** Plan source re-polled while waiting_for_plan; undefined means submitPlan() drives the gate. */
-	readonly planProvider?: () => string | undefined;
 	/** Clock for transition timestamps; defaults to Date.now. Test seam. */
 	readonly now?: () => number;
 }
@@ -312,16 +322,9 @@ export class CompletionGate {
 	readonly #timers: GateTimers;
 	readonly #validate: (artifacts: GateArtifacts) => GateVerdict;
 	readonly #onStall: ((reason: string) => void) | undefined;
-	readonly #planPollIntervalMs: number;
-	readonly #planMaxPollAttempts: number;
-	readonly #planProvider: (() => string | undefined) | undefined;
 	readonly #now: () => number;
 	#plan: PlanGatePlan | undefined;
 	#pendingPlan: PlanGatePlan | undefined;
-	#pollAttempts = 0;
-	#pollTimer: NodeJS.Timeout | undefined;
-	#blocked = false;
-	#blockReason = "";
 	#validationEvidence: string | undefined;
 	readonly #transitions: GateTransition[] = [];
 
@@ -331,16 +334,7 @@ export class CompletionGate {
 		this.#timers = options.timers ?? PLATFORM_TIMERS;
 		this.#validate = options.validate ?? ((artifacts) => validateArtifacts(artifacts));
 		this.#onStall = options.onStall;
-		this.#planProvider = options.planProvider;
 		this.#now = options.now ?? Date.now;
-		const pollInterval = options.pollIntervalMs ?? 2000;
-		this.#planPollIntervalMs =
-			Number.isFinite(pollInterval) && pollInterval > 0
-				? Math.min(pollInterval, MAX_TIMER_MS)
-				: 2000;
-		const maxPolls = options.maxPollAttempts ?? 30;
-		this.#planMaxPollAttempts =
-			Number.isFinite(maxPolls) && maxPolls > 0 ? Math.floor(maxPolls) : 30;
 		// A rejected settlement is impossible: every terminal path resolves.
 		this.#arm();
 	}
@@ -390,18 +384,6 @@ export class CompletionGate {
 		return this.#plan?.planId;
 	}
 
-	get pollAttempts(): number {
-		return this.#pollAttempts;
-	}
-
-	get blocked(): boolean {
-		return this.#blocked;
-	}
-
-	get blockReason(): string {
-		return this.#blockReason;
-	}
-
 	/** True once validation evidence was recorded for the complete() step. */
 	get hasValidationEvidence(): boolean {
 		return this.#validationEvidence !== undefined;
@@ -425,11 +407,11 @@ export class CompletionGate {
 	}
 
 	/**
-	 * Hard state machine: only listed edges pass. Executing before plan_validated and
+	 * State machine: only listed edges pass. Executing before plan_validated and
 	 * complete without validation evidence are always rejected; every attempt is logged.
 	 * Any accepted transition to waiting_for_plan centralizes quarantine here: it
-	 * clears the plan/pending records and (except on the waiting self path, which
-	 * preserves the poll budget) starts bounded polling.
+	 * clears the plan/pending records. `waiting_for_plan` is an advisory pass-through
+	 * that never blocks a prompt; a later `submitPlan` auto-advances to ready.
 	 */
 	tryTransition(to: GateState, actor = "system", reason = ""): boolean {
 		const from = this.#state;
@@ -454,33 +436,21 @@ export class CompletionGate {
 		// after ready->executing->validating, complete requires evidence recorded in this cycle.
 		if (to === "executing" || to === "validating") this.#validationEvidence = undefined;
 		this.#state = to;
-		if (from === "waiting_for_plan" && to !== "waiting_for_plan") {
-			this.#blocked = false;
-			this.#blockReason = "";
-			this.#stopPolling();
-		}
 		if (to === "waiting_for_plan") {
 			// Centralized quarantine: every accepted entry into waiting_for_plan drops any
 			// prior plan/pending record, so plan_validated/ready guards below (which
-			// require one of those records) cannot re-admit the stale plan. A fresh
-			// entry from any other state also starts bounded polling with a fresh
-			// budget. The waiting->waiting self path only clears the records: it
-			// preserves the in-flight poll budget/blocked state, so an invalid
-			// candidate re-quarantining while already waiting (submitPlan/pollOnce)
-			// cannot reset the bounded polling it is supposed to exhaust.
+			// require one of those records) cannot re-admit the stale plan.
 			this.#plan = undefined;
 			this.#pendingPlan = undefined;
 			this.#released = false;
-			if (from !== "waiting_for_plan") this.#startPolling();
 		}
 		this.#emit(entry.reason || `${from} -> ${to}`);
 		return true;
 	}
 
-	/** Enter waiting_for_plan (missing/stale/unparseable/fails checklist) and start bounded polling.
+	/** Enter waiting_for_plan (missing/stale/unparseable/fails checklist) as an advisory pass-through that never blocks a prompt.
 	 * Quarantine itself lives in tryTransition, so this is a thin wrapper: a raw
-	 * tryTransition("waiting_for_plan") gets the identical clear-and-poll behaviour,
-	 * and the waiting->waiting self path preserves the in-flight poll budget. */
+	 * tryTransition("waiting_for_plan") gets the identical clear behaviour. */
 	enterWaitingForPlan(
 		actor = "system",
 		reason = "plan missing, stale, unparseable or failing checklist",
@@ -513,8 +483,7 @@ export class CompletionGate {
 			// stays authoritative for the running/terminal gate.
 			const reason = `plan quarantined: ${verdict.problems.join("; ")}`;
 			if (this.#state === "waiting_for_plan") {
-				// Self-quarantine: tryTransition clears any plan/pending record but preserves
-				// the in-flight poll budget, so this cannot reset bounded polling.
+				// Self-quarantine: tryTransition clears any plan/pending record.
 				this.tryTransition("waiting_for_plan", actor, reason);
 			} else if (!this.enterWaitingForPlan(actor, reason)) {
 				this.#emit(`plan quarantined (rejected, no held state): ${verdict.problems.join("; ")}`);
@@ -579,58 +548,7 @@ export class CompletionGate {
 		this.#plan = plan;
 		this.#pendingPlan = undefined;
 		this.tryTransition("ready", actor, "auto-use validated plan");
-		this.#stopPolling();
 		return plan;
-	}
-
-	/** One bounded poll tick (host timer or test): re-check provider, auto-resume or block. */
-	pollOnce(): PlanGatePlan | undefined {
-		if (this.#state !== "waiting_for_plan") return undefined;
-		// A manual tick supersedes any armed poll timer; the re-arm below leaves at most one handle.
-		this.#stopPolling();
-		this.#pollAttempts++;
-		let candidate: string | undefined;
-		try {
-			candidate = this.#planProvider?.();
-		} catch (error) {
-			// A throwing provider must never stall silently: stop polling, block loudly with the
-			// provider error, emit it, and stay waiting_for_plan.
-			const detail = redactSecrets(error instanceof Error ? error.message : String(error))
-				.replace(/\s+/g, " ")
-				.trim()
-				.slice(0, 300);
-			this.#blocked = true;
-			this.#blockReason = `waiting_for_plan blocked: plan provider threw: ${detail} (never silent)`;
-			this.#stopPolling();
-			this.#emit(this.#blockReason);
-			return undefined;
-		}
-		if (candidate !== undefined) {
-			let accepted: PlanGatePlan | undefined;
-			try {
-				accepted = this.submitPlan(candidate);
-			} catch (error) {
-				const detail = redactSecrets(error instanceof Error ? error.message : String(error))
-					.replace(/\s+/g, " ")
-					.trim()
-					.slice(0, 300);
-				this.#blocked = true;
-				this.#blockReason = `waiting_for_plan blocked: plan submission failed: ${detail} (never silent)`;
-				this.#stopPolling();
-				this.#emit(this.#blockReason);
-				return undefined;
-			}
-			if (accepted) return accepted;
-		}
-		if (this.#pollAttempts >= this.#planMaxPollAttempts) {
-			this.#blocked = true;
-			this.#blockReason = `waiting_for_plan blocked after ${this.#pollAttempts} attempts: no valid Plan (never silent)`;
-			this.#stopPolling();
-			this.#emit(this.#blockReason);
-		} else {
-			this.#armPollTimer();
-		}
-		return undefined;
 	}
 
 	/** Execution context for every worker: identical plan id/hash or undefined when not ready.
@@ -682,32 +600,6 @@ export class CompletionGate {
 
 	completeExecution(actor = "system", reason = "execution complete"): boolean {
 		return this.tryTransition("complete", actor, reason);
-	}
-
-	#startPolling(): void {
-		this.#pollAttempts = 0;
-		this.#blocked = false;
-		this.#blockReason = "";
-		this.#stopPolling();
-		this.#armPollTimer();
-	}
-
-	#armPollTimer(): void {
-		if (this.#state !== "waiting_for_plan") return;
-		// Clear any prior handle first: arming must never leave two poll timers live.
-		this.#stopPolling();
-		const timer = this.#timers.setTimeout(() => {
-			this.#pollTimer = undefined;
-			this.pollOnce();
-		}, this.#planPollIntervalMs);
-		(timer as { unref?: () => void } | undefined)?.unref?.();
-		this.#pollTimer = timer;
-	}
-
-	#stopPolling(): void {
-		if (this.#pollTimer === undefined) return;
-		this.#timers.clearTimeout(this.#pollTimer);
-		this.#pollTimer = undefined;
 	}
 
 	/** Subscribes to side-channel progress; returns the unsubscribe function. */
@@ -873,7 +765,7 @@ function describe(problems: readonly GateProblem[]): string {
 	return ordered.map((problem) => problem.detail).join("; ");
 }
 
-/** Allowed hard-state-machine edges: the strict spec chain
+/** Allowed state-machine edges: the strict spec chain
  * discovering->discussing->planning->waiting_for_plan->plan_validated->ready->executing->validating->complete,
  * plus legacy generating (the entry state, which may enter discovering, waiting_for_plan — for an invalid
  * first candidate or, inside submitPlan, as the transit hop for a directly submitted valid Plan — or

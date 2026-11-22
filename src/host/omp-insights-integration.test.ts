@@ -39,7 +39,7 @@ import {
 	type InsightDashboard,
 	type InsightDashboardCallbacks,
 } from "./omp-dashboard.ts";
-import { GATE_HOLD, type OmpPlan, type OmpPlanRequest, type OmpPlanner } from "./omp.ts";
+import type { OmpPlan, OmpPlanRequest, OmpPlanner } from "./omp.ts";
 import { INSIGHT_TYPE } from "./omp-render.ts";
 import {
 	readInsightSnapshot,
@@ -800,14 +800,11 @@ describe("session switch and shutdown", () => {
 			return "PLANNED CONTEXT";
 		};
 		const suite = buildSuite({ plan });
-		const raced = (await suite.harness.run("plan this while the dashboard is open")) as {
-			message?: unknown;
-		};
+		const raced = await suite.harness.run("plan this while the dashboard is open");
 		expect(flightSignals).toHaveLength(1);
-		// The gate holds the turn with the stop-and-confirm message (no dialog here): it is the inline race delivery, not a
-		// transcript send, and it starts nothing on a partial plan.
-		expect(propOf(raced.message, "customType")).toBe("ultrathink-pending");
-		expect(textOf(raced.message)).toBe(GATE_HOLD);
+		// The turn starts at once with 0 STOP texts: it is the inline race delivery, not a
+		// transcript send, and nothing partial is started.
+		expect(raced).toBeUndefined();
 
 		const host = uiHost();
 		const { ctx } = sessionCtx({
@@ -1187,12 +1184,11 @@ describe("existing behavior preserved", () => {
 		expect(textOf(suite.harness.sent.at(-1)?.message)).toContain("top-level Omp session");
 	});
 
-	test("controlled planner still races: the gate holds the turn and the plan arrives as the one aside", async () => {
+	test("controlled planner still races: the turn starts at once and the plan arrives as the one aside", async () => {
 		const flight = controlled();
 		const suite = buildSuite({ plan: flight.plan });
-		const result = (await suite.harness.run("planned prompt")) as { message?: unknown };
-		expect(propOf(result.message, "customType")).toBe("ultrathink-pending");
-		expect(textOf(result.message)).toBe(GATE_HOLD);
+		const result = await suite.harness.run("planned prompt");
+		expect(result).toBeUndefined();
 		flight.resolve("ASYNC PLAN");
 		await flush();
 		const plans = suite.harness.sent.filter(
@@ -1203,11 +1199,11 @@ describe("existing behavior preserved", () => {
 		expect(propOf(plans[0]?.options, "deliverAs")).toBe("aside");
 	});
 
-	test("gate off: the old race applies, a pending note now and the plan as an aside later", async () => {
+	test("gate off: the old race applies, the turn starts at once and the plan arrives as an aside later", async () => {
 		const flight = controlled();
 		const suite = buildSuite({ plan: flight.plan, gate: false });
-		const result = (await suite.harness.run("planned prompt")) as { message?: unknown };
-		expect(textOf(result.message)).toContain("still planning");
+		const result = await suite.harness.run("planned prompt");
+		expect(result).toBeUndefined();
 		flight.resolve("ASYNC PLAN");
 		await flush();
 		expect(
