@@ -12,7 +12,6 @@ const STAGE_NAMES = [
 	"clarify",
 	"plan",
 	"track",
-	"tot",
 	"state",
 ] as const;
 export type StageName = (typeof STAGE_NAMES)[number];

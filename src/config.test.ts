@@ -2635,61 +2635,34 @@ describe("models.tot is removed", () => {
 	});
 });
 
-describe("think.tot (Tree-of-Thought PRD stage)", () => {
-	test("defaults: follows tracking (no explicit enabled), 4 at a time, the template's own limits", () => {
-		const { tot } = defaultConfig().think;
-		expect(tot).toEqual({ concurrency: 4, maxPrdChars: 6000, maxPrdLines: 150 });
-		expect(Object.hasOwn(tot, "enabled")).toBe(false);
-		expect(defaultConfig().think.tot).not.toBe(defaultConfig().think.tot);
-	});
-
-	test("a config without think.tot keeps every default, and the GoT settings are untouched by it", () => {
-		const merged = mergeConfig({ think: { fillRetries: 4 } }, defaultConfig());
-		expect(merged.think.tot).toEqual(defaultConfig().think.tot);
-		expect(merged.think.fillRetries).toBe(4);
-	});
-
-	test("enabled takes a boolean only; the limits take integers within bounds, anything else keeps the lower value", () => {
-		const base = defaultConfig();
-		const set = mergeConfig(
-			{ think: { tot: { enabled: false, concurrency: 8, maxPrdChars: 9000, maxPrdLines: 200 } } },
-			base,
-		).think.tot;
-		expect(set).toEqual({ enabled: false, concurrency: 8, maxPrdChars: 9000, maxPrdLines: 200 });
-		for (const bad of [0, 17, 1.5, "4", null, Number.NaN]) {
-			expect(
-				mergeConfig({ think: { tot: { concurrency: bad } } }, base).think.tot.concurrency,
-			).toBe(4);
-		}
-		for (const bad of [10, 100_001, "6000", null]) {
-			expect(
-				mergeConfig({ think: { tot: { maxPrdChars: bad } } }, base).think.tot.maxPrdChars,
-			).toBe(6000);
-		}
-		for (const bad of [5, 2001, 0.5, "150"]) {
-			expect(
-				mergeConfig({ think: { tot: { maxPrdLines: bad } } }, base).think.tot.maxPrdLines,
-			).toBe(150);
-		}
-		expect(
-			Object.hasOwn(mergeConfig({ think: { tot: { enabled: "yes" } } }, base).think.tot, "enabled"),
-		).toBe(false);
-	});
-
-	test("a layer keeps what a lower layer set: enabled and limits merge per field", () => {
-		const lower = mergeConfig(
-			{ think: { tot: { enabled: true, concurrency: 2 } } },
-			defaultConfig(),
-		);
-		const merged = mergeConfig({ think: { tot: { maxPrdLines: 90 } } }, lower).think.tot;
-		expect(merged).toEqual({ enabled: true, concurrency: 2, maxPrdChars: 6000, maxPrdLines: 90 });
-	});
-
-	test("a non-object think.tot is ignored", () => {
-		for (const tot of [null, [], "x", 1]) {
-			expect(mergeConfig({ think: { tot } }, defaultConfig()).think.tot).toEqual(
-				defaultConfig().think.tot,
+describe("think tot is retired", () => {
+	test("a configured think tot section is reported by the doctor check as removed and ignored", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ut-config-think-tot-"));
+		try {
+			mkdirSync(join(dir, "xdg", "ultrathink"), { recursive: true });
+			writeFileSync(
+				join(dir, "xdg", "ultrathink", "config.json"),
+				JSON.stringify({ think: { tot: { enabled: false } } }),
 			);
+			const findings = checkConfig({
+				env: {
+					HOME: join(dir, "home"),
+					XDG_CONFIG_HOME: join(dir, "xdg"),
+					CLAUDE_CONFIG_DIR: join(dir, "claude"),
+				},
+				cwd: join(dir, "project"),
+				now: () => 0,
+				which: () => undefined,
+				bunVersion: "1.2.0",
+				runVersion: () => undefined,
+			});
+			const warnings = findings.filter(
+				(finding) => finding.level === "warn" || finding.level === "error",
+			);
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]?.title).toContain("removed and ignored");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

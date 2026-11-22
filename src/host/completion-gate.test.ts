@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import type { TotManifest } from "../think/tot/types.ts";
 import {
 	CompletionGate,
 	DEFAULT_GATE_INACTIVITY_MS,
@@ -137,40 +136,6 @@ describe("validateArtifacts", () => {
 		);
 	});
 
-	test("PRDs: a missing or failed PRD is partial, a full set is ready", () => {
-		const record = (key: string, status: "generated" | "failed") => ({
-			key,
-			hash: "h",
-			markdown: "m",
-			status,
-			model: "m",
-			fallback: false,
-			attempts: 1,
-		});
-		const manifest = (statuses: ("generated" | "failed")[]): TotManifest => ({
-			total: statuses.length,
-			generated: statuses.filter((status) => status === "generated").length,
-			failed: statuses.filter((status) => status === "failed").length,
-			fallbacks: 0,
-			records: statuses.map((status, i) => record(`n1.${i + 1}`, status)),
-		});
-		const expected = { ...FULL, prds: 4 };
-		expect(
-			validateArtifacts({
-				text: plan(),
-				expected,
-				prd: manifest(["generated", "generated", "generated", "generated"]),
-			}).state,
-		).toBe("ready");
-		const partial = validateArtifacts({
-			text: plan(),
-			expected,
-			prd: manifest(["generated", "generated", "generated", "failed"]),
-		});
-		expect(partial.state).toBe("partial_failure");
-		expect(partial.problems.map((problem) => problem.code)).toEqual(["prds_short", "prds_failed"]);
-	});
-
 	test("plain text with no counts expected has nothing to count and is ready", () => {
 		expect(validateArtifacts({ text: "PLAN" }).state).toBe("ready");
 	});
@@ -300,27 +265,9 @@ describe("CompletionGate", () => {
 		}
 	});
 
-	test("a pending row, a failed PRD or a degraded node never releases, whatever the options", () => {
-		const failedPrd: TotManifest = {
-			total: 1,
-			generated: 0,
-			failed: 1,
-			fallbacks: 0,
-			records: [
-				{
-					key: "n1.1",
-					hash: "h",
-					markdown: "m",
-					status: "failed",
-					model: "m",
-					fallback: false,
-					attempts: 1,
-				},
-			],
-		};
+	test("a pending row or a degraded node never releases, whatever the options", () => {
 		const cases = [
 			{ artifacts: { text: plan({ pending: true }), expected: FULL }, code: "rows_pending" },
-			{ artifacts: { text: plan(), expected: FULL, prd: failedPrd }, code: "prds_failed" },
 			{
 				artifacts: {
 					text: plan().replace('<NODE id="n1"', '<NODE degraded="true" id="n1"'),
@@ -1189,67 +1136,5 @@ describe("Plan gate review fixes (round 10)", () => {
 					entry.label.includes("failed_or_cancelled"),
 			),
 		).toBe(true);
-	});
-});
-
-describe("Tracker-side PRD presence gate (SPE-35424)", () => {
-	const generated = {
-		total: 1,
-		generated: 1,
-		failed: 0,
-		fallbacks: 0,
-		records: [
-			{
-				key: "n1.1",
-				hash: "h",
-				markdown: "# PRD",
-				status: "generated",
-				model: "m",
-				fallback: false,
-				attempts: 1,
-			},
-		],
-	} as const;
-	const synced = { total: 1, synced: 1, pending: 0, failed: 0 };
-
-	test("local-generated-but-tracker-missing holds, even when the sync summary says delivered", () => {
-		const verdict = validateArtifacts({
-			text: plan(),
-			expected: { nodes: 2, issues: 2, subIssues: 4, prds: 1 },
-			prd: generated,
-			prdSync: synced,
-			prdPresence: { missingLinear: ["n1.1"], missingNotion: ["n1.1"] },
-		});
-		expect(verdict.state).toBe("partial_failure");
-		expect(verdict.observed.prdsMissingInTrackers).toBe(1);
-		expect(verdict.problems).toContainEqual({
-			severity: "partial",
-			code: "prds_not_in_trackers",
-			detail: "PRD text not present in tracker rows (Linear: n1.1; Notion: n1.1)",
-		});
-	});
-
-	test("present in both trackers proceeds", () => {
-		const verdict = validateArtifacts({
-			text: plan(),
-			expected: { nodes: 2, issues: 2, subIssues: 4, prds: 1 },
-			prd: generated,
-			prdSync: synced,
-			prdPresence: { missingLinear: [], missingNotion: [] },
-		});
-		expect(verdict.state).toBe("ready");
-		expect(verdict.observed.prdsMissingInTrackers).toBe(0);
-	});
-
-	test("missing in only one tracker still holds", () => {
-		const verdict = validateArtifacts({
-			text: plan(),
-			expected: { nodes: 2, issues: 2, subIssues: 4, prds: 1 },
-			prd: generated,
-			prdSync: synced,
-			prdPresence: { missingNotion: ["n1.1"] },
-		});
-		expect(verdict.state).toBe("partial_failure");
-		expect(verdict.problems.map((problem) => problem.code)).toContain("prds_not_in_trackers");
 	});
 });

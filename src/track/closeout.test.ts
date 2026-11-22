@@ -75,27 +75,10 @@ describe("planSubIssueCloseout", () => {
 	test("a ready step plans both writes", () => {
 		const { linear, notion } = recording([]);
 		const plan = planSubIssueCloseout(
-			{ refs: refs(), nodeId: NODE, step: STEP, prdPresent: true },
+			{ refs: refs(), nodeId: NODE, step: STEP },
 			{ linear, notion },
 		);
 		expect(plan).toMatchObject({ blocked: false, key: KEY, linearIdentifier: "ENG-2" });
-	});
-
-	test("a missing PRD blocks before any tracker call", async () => {
-		const order: string[] = [];
-		const { linear, notion } = recording(order);
-		const plan = planSubIssueCloseout(
-			{ refs: refs(), nodeId: NODE, step: STEP, prdPresent: false },
-			{ linear, notion },
-		);
-		expect(plan.blocked).toBe(true);
-		await expect(
-			closeSubIssue(
-				{ refs: refs(), nodeId: NODE, step: STEP, prdPresent: false },
-				{ linear, notion },
-			),
-		).rejects.toThrow(`closeSubIssue ${KEY}: PRD for ${KEY} is not present`);
-		expect(order).toEqual([]);
 	});
 
 	test("a missing tracker row blocks: the sub-issue is never marked done", async () => {
@@ -104,20 +87,14 @@ describe("planSubIssueCloseout", () => {
 		const noNotion = refs();
 		noNotion.notion.steps = {};
 		await expect(
-			closeSubIssue(
-				{ refs: noNotion, nodeId: NODE, step: STEP, prdPresent: true },
-				{ linear, notion },
-			),
+			closeSubIssue({ refs: noNotion, nodeId: NODE, step: STEP }, { linear, notion }),
 		).rejects.toThrow(`closeSubIssue ${KEY}: no Notion step row recorded for ${KEY}`);
 		expect(order).toEqual([]);
 
 		const noLinear = refs();
 		noLinear.linear.steps = {};
 		await expect(
-			closeSubIssue(
-				{ refs: noLinear, nodeId: NODE, step: STEP, prdPresent: true },
-				{ linear, notion },
-			),
+			closeSubIssue({ refs: noLinear, nodeId: NODE, step: STEP }, { linear, notion }),
 		).rejects.toThrow(`closeSubIssue ${KEY}: no Linear sub-issue row recorded for ${KEY}`);
 		expect(order).toEqual([]);
 	});
@@ -132,7 +109,6 @@ describe("closeSubIssue", () => {
 				refs: refs(),
 				nodeId: NODE,
 				step: STEP,
-				prdPresent: true,
 				completedAt: "2026-11-19T00:00:00.000Z",
 			},
 			{ linear, notion },
@@ -155,12 +131,8 @@ describe("closeSubIssue", () => {
 		const order: string[] = [];
 		const { linear, notion } = recording(order, true);
 		await expect(
-			closeSubIssue(
-				{ refs: refs(), nodeId: NODE, step: STEP, prdPresent: true },
-				{ linear, notion },
-			),
+			closeSubIssue({ refs: refs(), nodeId: NODE, step: STEP }, { linear, notion }),
 		).rejects.toThrow(`closeSubIssue ${KEY}: linear ENG-2 not marked done: linear down`);
-		expect(order).toEqual(["linear:save_issue:ENG-2:Done"]);
 	});
 });
 
@@ -174,7 +146,6 @@ describe("runSubIssueCloseout (production)", () => {
 			refs: refs(),
 			nodeId: NODE,
 			step: STEP,
-			prdPresent: true,
 			completedAt: "2026-11-19T00:00:00.000Z",
 		};
 		const first = await runSubIssueCloseout(input, {
@@ -217,7 +188,7 @@ describe("runSubIssueCloseout (production)", () => {
 		const order: string[] = [];
 		const { linear, notion } = recording(order);
 		const close = createSubIssueCloser({ linear, notion });
-		const input = { refs: refs(), nodeId: NODE, step: STEP, prdPresent: true };
+		const input = { refs: refs(), nodeId: NODE, step: STEP };
 		expect(await close(input)).toMatchObject({ status: "closed", key: KEY });
 		expect(await close(input)).toEqual({ status: "already-closed", key: KEY });
 		expect(order).toHaveLength(2);
@@ -227,26 +198,25 @@ describe("runSubIssueCloseout (production)", () => {
 		const order: string[] = [];
 		const { linear, notion } = recording(order);
 		const events: SubIssueCloseoutLedgerEvent[] = [];
+		const noNotion = refs();
+		noNotion.notion.steps = {};
 		const outcome = await runSubIssueCloseout(
-			{ refs: refs(), nodeId: NODE, step: STEP, prdPresent: false },
+			{ refs: noNotion, nodeId: NODE, step: STEP },
 			{ linear, notion, onLedgerEvent: (event) => events.push(event) },
 		);
 		expect(outcome.status).toBe("blocked");
 		if (outcome.status === "blocked") {
 			expect(outcome.holdText).toBe(
-				`HTIL hold: Sub-Issue ${KEY} not closed — PRD for ${KEY} is not present on its tracker rows`,
+				`HTIL hold: Sub-Issue ${KEY} not closed — no Notion step row recorded for ${KEY}`,
 			);
-			expect(outcome.reasons).toEqual([`PRD for ${KEY} is not present on its tracker rows`]);
+			expect(outcome.reasons).toEqual([`no Notion step row recorded for ${KEY}`]);
 		}
 		expect(order).toEqual([]);
 		expect(events).toEqual([]);
 	});
 
 	test("no callers degrade to a no-op note with no tracker call", async () => {
-		const outcome = await runSubIssueCloseout(
-			{ refs: refs(), nodeId: NODE, step: STEP, prdPresent: true },
-			{},
-		);
+		const outcome = await runSubIssueCloseout({ refs: refs(), nodeId: NODE, step: STEP }, {});
 		expect(outcome).toEqual({
 			status: "unavailable",
 			key: KEY,
@@ -259,7 +229,7 @@ describe("runSubIssueCloseout (production)", () => {
 		const { linear, notion } = recording(order, true);
 		const events: SubIssueCloseoutLedgerEvent[] = [];
 		const outcome = await runSubIssueCloseout(
-			{ refs: refs(), nodeId: NODE, step: STEP, prdPresent: true },
+			{ refs: refs(), nodeId: NODE, step: STEP },
 			{ linear, notion, onLedgerEvent: (event) => events.push(event) },
 		);
 		expect(outcome).toEqual({

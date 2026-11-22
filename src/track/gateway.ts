@@ -190,20 +190,13 @@ export interface CloseSubIssueInput {
 	readonly refs: Pick<TrackingRefs, "linear" | "notion">;
 	readonly nodeId: string;
 	readonly step: number;
-	/**
-	 * Whether the step's PRD is already present on both configured trackers. Callers derive this from the
-	 * PRD sync outcome for the step key (the `SyncReport` key with state `synced`, e.g. `PrdOutcome.sync`
-	 * in src/think/tot/stage.ts): a step whose PRD never reached its rows must not be closed, or the
-	 * tracker would show Done for work no one can read back.
-	 */
-	readonly prdPresent: boolean;
 	/** ISO timestamp for the Notion `Completed` property; defaults to now. */
 	readonly completedAt?: string;
 	readonly signal?: AbortSignal;
 }
 
 /** Tracker callers and the vendor spellings, for the closeout. The defaults follow the repo's existing
- *  MCP call patterns (`save_issue` like src/track/create.ts and src/track/prd-sync.ts, `notion-update-page`
+ *  MCP call patterns (`save_issue` like src/track/create.ts, `notion-update-page`
  *  like the `notion-*` family in src/mcp/notion-db.ts); override only when a hosted server renames a field. */
 export interface CloseSubIssueDeps {
 	readonly linear?: ToolCaller;
@@ -233,7 +226,7 @@ export type SubIssueCloseoutPlan =
 	| { blocked: true; key: string; reasons: string[] };
 
 /**
- * Whether `input` may close its Sub Issue: the PRD is present, both step rows exist (a missing or blocked
+ * Whether `input` may close its Sub Issue: both step rows exist (a missing or blocked
  * tracker row never marks the sub-issue done), and both callers are configured. Returns every blocking
  * reason, never a bare boolean, so the caller can report why nothing was closed.
  */
@@ -243,7 +236,6 @@ export function planSubIssueCloseout(
 ): SubIssueCloseoutPlan {
 	const key = stepKey(input.nodeId, input.step);
 	const reasons: string[] = [];
-	if (!input.prdPresent) reasons.push(`PRD for ${key} is not present on its tracker rows`);
 	const linearRef = input.refs.linear.steps[key];
 	if (!linearRef?.identifier) reasons.push(`no Linear sub-issue row recorded for ${key}`);
 	const notionUrl = input.refs.notion.steps[key];
@@ -278,7 +270,7 @@ function closeoutError(key: string, message: string): Error {
 /**
  * Closes one finished Sub Issue: moves its Linear sub-issue to Done, then sets its Notion step row to
  * `Status`/`Linear State` `"Done"` with `Completed` set. Throws (starting with `closeSubIssue <key>:`) when
- * the PRD is absent, a step row is missing, a tracker is not configured, or a write fails; a refused or
+ * a step row is missing, a tracker is not configured, or a write fails; a refused or
  * failed closeout makes no tracker call beyond the one that failed, in particular a failed Linear write
  * leaves the Notion row untouched. The parent (node) issue is never addressed.
  */

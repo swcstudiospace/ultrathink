@@ -158,7 +158,6 @@ import {
 	type GateExpected,
 } from "./completion-gate.ts";
 import { resolveStateDir } from "./paths.ts";
-import type { PrdOutcome } from "../think/tot/stage.ts";
 import { planPrompt, wouldSkipPlanning, type PlanResponse } from "./plan.ts";
 import { claimPlan, loadPlan, planKey, savePlan } from "./plan-store.ts";
 import type { ProgressEvent } from "./progress.ts";
@@ -400,8 +399,6 @@ export interface OmpPlanRequest {
 export interface OmpPlan {
 	context: string;
 	view?: PlanView;
-	/** Tree-of-Thought PRD outcome the completion gate reads; absent when the stage did not run. */
-	prd?: PrdOutcome;
 	/** The safe selection record (§9) for display and `/ultrathink-status`; never the Model. */
 	modelResolution?: ModelResolution;
 	/** Stable skip code when nothing was planned, including an unresolved selection. */
@@ -1160,7 +1157,6 @@ function toOmpPlan(response: PlanResponse): OmpPlan {
 	return {
 		context: response.context,
 		...(response.view ? { view: response.view } : {}),
-		...(response.prd ? { prd: response.prd } : {}),
 		...(modelResolution ? { modelResolution } : {}),
 		...(response.skipped ? { skipped: response.skipped } : {}),
 		...(response.summary ? { summary: response.summary } : {}),
@@ -1755,8 +1751,6 @@ export function createOmpExtension(
 			deliveredInline?: boolean;
 			/** When planning began (clock ms): a relaunch gets only the budget that is left. */
 			startedAt: number;
-			/** The Tree-of-Thought PRD outcome of the settled plan; it makes the gate wait for every PRD to be delivered. */
-			prd?: PrdOutcome;
 			/** What the gate released for this flight; kept so a host re-run of the same submission gets the same plan. */
 			releasedText?: string;
 			/** Validated identity of the gate-released plan text; kept with `releasedText` for re-delivery. */
@@ -3112,10 +3106,8 @@ export function createOmpExtension(
 		/** The counts a complete plan must reach, from the plan view the planner returned; none without one. */
 		const gateExpected = (flight: Flight): GateExpected => {
 			const nodes = flight.view?.nodes;
-			const prds = flight.prd ? { prds: flight.prd.manifest.total } : {};
-			if (!nodes || nodes.length === 0) return prds;
+			if (!nodes || nodes.length === 0) return {};
 			return {
-				...prds,
 				nodes: nodes.length,
 				...(flight.tracked
 					? {
@@ -3326,19 +3318,12 @@ export function createOmpExtension(
 			flight.skipped = result?.skipped;
 			const settledView = result?.view && withUncertaintyPanel(flight, result.view);
 			flight.view = settledView instanceof Promise ? await settledView : settledView;
-			flight.prd = result?.prd;
 			const gate = flight.gate;
-			const prdRefusal = flight.prd?.error;
-			if (prdRefusal)
-				guard(() =>
-					flight.ctx?.ui?.notify?.(`Tree-of-Thought PRDs did not run: ${prdRefusal}`, "warning"),
-				);
 			if (gate?.state === "generating") {
 				if (flight.content)
 					gate.complete({
 						text: flight.content,
 						expected: gateExpected(flight),
-						...(flight.prd ? { prd: flight.prd.manifest, prdSync: flight.prd.sync } : {}),
 						...(flight.view?.source === "fallback"
 							? { degraded: "the plan fell back to the built-in template instead of the model" }
 							: {}),

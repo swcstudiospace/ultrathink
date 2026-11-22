@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SWC Studio
 /**
  * CompletionGate: the host-neutral rule that a session only starts once the whole plan exists. "Whole" means the
- * uplifted XML, the Graph of Thought, the issue and sub-issue rows and, when the Tree-of-Thought stage ran, every PRD.
+ * uplifted XML, the Graph of Thought, and the issue and sub-issue rows.
  *
  * The gate never starts anything itself. A host stages artifacts into it while a planner runs, the gate validates
  * them, and the host asks `release()` for the content to inject. `release()` hands the staged content over exactly
@@ -17,9 +17,7 @@
  * of the prompt.
  */
 import { createHash } from "node:crypto";
-import type { TotManifest } from "../think/tot/types.ts";
 import { redactSecrets } from "../redact.ts";
-import type { SyncSummary } from "../track/prd-types.ts";
 import { checkUpliftXml } from "../uplift/xml.ts";
 
 export type GateState =
@@ -47,7 +45,6 @@ export interface GateExpected {
 	readonly nodes?: number;
 	readonly issues?: number;
 	readonly subIssues?: number;
-	readonly prds?: number;
 }
 
 /** What the validator counted in the staged artifacts. */
@@ -57,15 +54,6 @@ interface GateObserved {
 	readonly subIssues: number;
 	/** Issue and sub-issue rows still marked `status="pending"`: the tracker never confirmed them. */
 	readonly pendingRows: number;
-	readonly prds: number;
-	readonly prdsFailed: number;
-	/** Generated PRD keys whose hash-marked text was not found in a checked tracker row. */
-	readonly prdsMissingInTrackers: number;
-}
-/** Generated PRD keys whose hash-marked text was not found in the named tracker row. */
-interface PrdTrackerPresence {
-	readonly missingLinear?: readonly string[];
-	readonly missingNotion?: readonly string[];
 }
 
 interface GateArtifacts {
@@ -73,12 +61,6 @@ interface GateArtifacts {
 	readonly text: string;
 	/** Expected counts; with none, only the structural checks run. */
 	readonly expected?: GateExpected;
-	/** The Tree-of-Thought PRD manifest, when that stage ran. */
-	readonly prd?: TotManifest;
-	/** How many of those PRDs reached their tracker rows. The gate releases only with none failed and none pending. */
-	readonly prdSync?: SyncSummary;
-	/** Tracker-side PRD presence for generated keys; absent means that check did not run. */
-	readonly prdPresence?: PrdTrackerPresence;
 	/** A reason the plan is known to be degraded (for example a fallback graph); it makes the plan a partial failure. */
 	readonly degraded?: string;
 }
@@ -131,7 +113,7 @@ function blockBetween(
 /**
  * Validates staged artifacts: the XML must be well formed and closed (`checkUpliftXml`), the graph and issue blocks
  * must be closed, and the counts must match the manifest. A broken structure is fatal; a short count, a pending
- * tracker row, a degraded node or a failed PRD is a partial failure.
+ * tracker row or a degraded node is a partial failure.
  */
 export function validateArtifacts(
 	artifacts: GateArtifacts,
@@ -148,9 +130,6 @@ export function validateArtifacts(
 				issues: 0,
 				subIssues: 0,
 				pendingRows: 0,
-				prds: 0,
-				prdsFailed: 0,
-				prdsMissingInTrackers: 0,
 			},
 		};
 	}
@@ -189,20 +168,11 @@ export function validateArtifacts(
 	}
 	const graph = graphBlock ? scope.slice(graphBlock.start, graphBlock.end) : "";
 	const issues = issuesBlock ? scope.slice(issuesBlock.start, issuesBlock.end) : "";
-	const prd = artifacts.prd;
-	const presence = artifacts.prdPresence;
-	const missingInTrackers = new Set<string>([
-		...(presence?.missingLinear ?? []),
-		...(presence?.missingNotion ?? []),
-	]);
 	const observed: GateObserved = {
 		nodes: count(NODE_RE, graph),
 		issues: count(ISSUE_RE, issues),
 		subIssues: count(SUBISSUE_RE, issues),
 		pendingRows: count(PENDING_ROW_RE, issues),
-		prds: prd ? prd.records.filter((record) => record.status === "generated").length : 0,
-		prdsFailed: prd ? prd.records.filter((record) => record.status === "failed").length : 0,
-		prdsMissingInTrackers: missingInTrackers.size,
 	};
 	const expected = artifacts.expected;
 	const short = (name: string, want: number | undefined, have: number): void => {
@@ -217,7 +187,6 @@ export function validateArtifacts(
 	short("nodes", expected?.nodes, observed.nodes);
 	short("issues", expected?.issues, observed.issues);
 	short("subIssues", expected?.subIssues, observed.subIssues);
-	short("prds", expected?.prds, observed.prds);
 	if (observed.pendingRows > 0)
 		problems.push({
 			severity: "partial",
@@ -238,41 +207,6 @@ export function validateArtifacts(
 			code: "nodes_degraded",
 			detail: `${degradedNodes} nodes carry a degraded reasoning fill`,
 		});
-	if (observed.prdsFailed > 0)
-		problems.push({
-			severity: "partial",
-			code: "prds_failed",
-			detail: `${observed.prdsFailed} PRDs failed`,
-		});
-	// The sync summary counts a failed PRD as failed too; only the tracker-side failures beyond those are new here.
-	const syncFailed = Math.max(0, (artifacts.prdSync?.failed ?? 0) - observed.prdsFailed);
-	if (syncFailed > 0)
-		problems.push({
-			severity: "partial",
-			code: "prds_sync_failed",
-			detail: `${syncFailed} PRDs were not delivered to the tracker`,
-		});
-	const syncPending = artifacts.prdSync?.pending ?? 0;
-	if (syncPending > 0)
-		problems.push({
-			severity: "partial",
-			code: "prds_sync_pending",
-			detail: `${syncPending} PRDs are still waiting for the tracker`,
-		});
-	// Local manifest counts alone never release: a generated PRD whose hash-marked text is not in its tracker row is a
-	// hold, even when the sync summary reported it delivered. Keys are named per tracker, secret-free.
-	if (missingInTrackers.size > 0) {
-		const parts: string[] = [];
-		if ((presence?.missingLinear?.length ?? 0) > 0)
-			parts.push(`Linear: ${presence?.missingLinear?.join(", ")}`);
-		if ((presence?.missingNotion?.length ?? 0) > 0)
-			parts.push(`Notion: ${presence?.missingNotion?.join(", ")}`);
-		problems.push({
-			severity: "partial",
-			code: "prds_not_in_trackers",
-			detail: `PRD text not present in tracker rows (${parts.join("; ")})`,
-		});
-	}
 	if (artifacts.degraded)
 		problems.push({ severity: "partial", code: "degraded", detail: artifacts.degraded });
 	const state = problems.some((p) => p.severity === "fatal")
@@ -473,7 +407,7 @@ export class CompletionGate {
 		return this.#validationEvidence !== undefined;
 	}
 
-	/** Record for STATE.md / SUMMARY / Linear PRD / Notion prompt. Empty until a plan validates.
+	/** Record for STATE.md / SUMMARY / Linear issue / Notion prompt. Empty until a plan validates.
 	 * When a validated checklist `#plan` coexists with staged artifacts, `#plan` is the release
 	 * authority: `release()` returns `#plan.text`, so this record (and the worker contexts) attribute
 	 * exactly that text. Only a legacy staged-only gate (no `#plan`) records nothing. */

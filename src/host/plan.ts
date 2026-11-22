@@ -30,13 +30,14 @@ import { planningTarget, type SkillInvocation } from "../uplift/skill.ts";
 import { fetchBrief } from "../substrate/brief.ts";
 import type { DecisionsFetch } from "../decisions/client.ts";
 import { clearPlanCarrier, writePlanCarrier } from "./carrier.ts";
+import { createMcpClientIfCredentialed } from "../mcp/client.ts";
+import { storePath as defaultStorePath } from "../mcp/store.ts";
 import {
 	createGatewayTracker,
 	createSubIssueCloser,
 	trackCommand,
 	type Tracker,
 } from "../track/gateway.ts";
-import { createGatewayTot, type PrdOutcome, type TotSeams } from "../think/tot/stage.ts";
 import { detectHost } from "./detect.ts";
 import {
 	type ModelResolution,
@@ -77,8 +78,6 @@ export interface PlanResponse {
 	summary?: string;
 	/** Display-only projection for host UIs; the model reads `context`. */
 	view?: PlanView;
-	/** Tree-of-Thought PRD outcome (manifest and tracker sync) for the completion gate; absent when the stage did not run. */
-	prd?: PrdOutcome;
 	/**
 	 * Safe selection record (§6) on a planned prompt, a selection skip (unresolved, with the notice as `summary`) and any
 	 * skip, cancellation or error after selection; absent on deterministic skips decided before an engine was selected.
@@ -109,9 +108,7 @@ export interface PlanOptions {
 		config: UltrathinkConfig,
 		deps?: { log?: (message: string) => void },
 	) => Tracker | undefined;
-	/** Test seam for the Tree-of-Thought PRD stage (see HookDeps); defaults to the credentialed gateway callers when tracking runs on the default tracker. */
-	tot?: TotSeams;
-	/** Test seam for the Sub-Issue closeout (see HookDeps); defaults to the gateway closer bound to the PRD stage's callers. */
+	/** Test seam for the Sub-Issue closeout (see HookDeps); defaults to the gateway closer bound to the credentialed tracker callers. */
 	closeSubIssue?: HookDeps["closeSubIssue"];
 	/** Test seams for the lessons and RAGFlow lookups (see HookDeps); default to the configured Teachable Moments and RAGFlow. */
 	recall?: HookDeps["recall"];
@@ -240,7 +237,7 @@ function precheckTarget(
 
 /**
  * The `runPromptSubmit` deps of one planned turn: the captured config, control and state directory, the selected engine
- * and its resolution, and the host's seams. The trackers and the PRD stage are built here, after selection.
+ * and its resolution, and the host's seams. The trackers are built here, after selection.
  */
 function buildHookDeps(turn: {
 	host: HostId;
@@ -255,27 +252,36 @@ function buildHookDeps(turn: {
 }): HookDeps {
 	const { host, env, config, control, engine, resolution, stateDir, armedSkip, options } = turn;
 	const log = debugLog(env);
-	// The PRD stage writes through the same trackers as the rows: an injected tracker (a test) keeps it off unless a seam is given.
-	const tot =
-		options.tot ??
-		(host !== "hermes" && !options.createTracker && trackingEnabled(config, control, env)
-			? createGatewayTot(config)
-			: undefined);
+	// The Sub-Issue closeout writes through the same trackers as the rows: an injected tracker (a test) keeps the
+	// gateway closer off, so a test never opens real credentialed clients.
+	const closeoutEnabled =
+		host !== "hermes" && !options.createTracker && trackingEnabled(config, control, env);
 	// One idempotency set for the session: a Sub Issue closes at most once per host process.
 	const closedSubIssues = new Set<string>();
-	const gatewayCloseSubIssue: HookDeps["closeSubIssue"] = tot
+	const gatewayCloseSubIssue: HookDeps["closeSubIssue"] = closeoutEnabled
 		? async (input) => {
-				const callers = await tot.open();
+				const clientDeps = { storePath: defaultStorePath() };
+				const linear = config.linear.team.trim()
+					? createMcpClientIfCredentialed("linear", clientDeps)
+					: undefined;
+				const notion = config.notion.dataSourceUrl.trim()
+					? createMcpClientIfCredentialed("notion", clientDeps)
+					: undefined;
 				try {
 					return await createSubIssueCloser({
-						...(callers?.linear ? { linear: callers.linear } : {}),
-						...(callers?.notion ? { notion: callers.notion } : {}),
+						...(linear ? { linear } : {}),
+						...(notion ? { notion } : {}),
 						closed: closedSubIssues,
 						log,
 					})(input);
 				} finally {
 					try {
-						callers?.close?.();
+						linear?.close();
+					} catch {
+						// reason: closing a tracker client is cleanup; it must not turn a finished closeout into a failure
+					}
+					try {
+						notion?.close();
 					} catch {
 						// reason: closing a tracker client is cleanup; it must not turn a finished closeout into a failure
 					}
@@ -309,7 +315,6 @@ function buildHookDeps(turn: {
 			host !== "hermes" && trackingEnabled(config, control, env)
 				? (options.createTracker ?? createGatewayTracker)(config, { log })
 				: undefined,
-		...(tot ? { tot } : {}),
 		...(closeSubIssue ? { closeSubIssue } : {}),
 		trackingOff: trackingOff(config, control),
 		trackCommand: trackCommand(),
@@ -326,8 +331,8 @@ function buildHookDeps(turn: {
 }
 
 /**
- * The caller's response for a planned turn: the context, the plan's paths and carrier, the record's view and the PRD
- * outcome. The carrier is written here: a pointer for hosts that drop the context, fail-open.
+ * The caller's response for a planned turn: the context, the plan's paths and carrier, and the record's view.
+ * The carrier is written here: a pointer for hosts that drop the context, fail-open.
  */
 function projectPlanResponse(
 	host: HostId,
@@ -371,7 +376,6 @@ function projectPlanResponse(
 					},
 				}
 			: {}),
-		...(result.prd ? { prd: result.prd } : {}),
 	};
 }
 

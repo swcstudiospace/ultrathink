@@ -871,7 +871,7 @@ describe("tracking", () => {
 			expect(out).toContain(SUB_ISSUE_WORK_ORDER);
 			expect(out).toMatch(/step order/i);
 			expect(out).toMatch(/one at a time/i);
-			expect(out).toMatch(/PRD/);
+			expect(out).toMatch(/specification/);
 			expect(out).toMatch(/clos/i);
 			expect(out).toContain("ultrathink-sync");
 		}
