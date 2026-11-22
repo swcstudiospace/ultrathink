@@ -34,9 +34,9 @@ See: .planning/PROJECT.md (updated 2026-10-31)
 
 ## Graph Association (GSD phases to Ultrathink graphId) — Tab6a complete for v1.23
 
-GSD phases link directly to Ultrathink graph for ToT PRDs (Tab6a). Per tab6a-blueprint.md `tot-prd` and phase-loop, the GSD discuss/plan/execute/verify loop uses the graphId from Ultrathink plan; ToT PRDs are attached via XML <spec graph="...">. PhaseLoopState declares graphId.
+GSD phases link directly to Ultrathink graph (Tab6a). Per tab6a-blueprint.md and phase-loop, the GSD discuss/plan/execute/verify loop uses the graphId from Ultrathink plan. PhaseLoopState declares graphId.
 
-**Tab6a (graphId association, ToT PRD, Omp gate, GSD 18 adapters) marked complete for v1.23 plugin portability.** Direct GoT execution (n2/n4/n6 waves); no new GSD phases. Verified green. Example graphId: `gsd-n6-18-plugin-connection` (n6 GSD 18-plugin + Tab6a). Other: `ut-mvjgzhcd-8e516812`.
+**Tab6a (graphId association, Omp gate, GSD 18 adapters) marked complete for v1.23 plugin portability.** Direct GoT execution (n2/n4/n6 waves); no new GSD phases. Verified green. Example graphId: `gsd-n6-18-plugin-connection` (n6 GSD 18-plugin + Tab6a). Other: `ut-mvjgzhcd-8e516812`.
 
 See STATE end (Tab6a GoT close 2026-11-16), .planning/milestones/v1.23-plugin-portability.md (updated status and Graph Association), docs/gsd-review.md.
 
@@ -75,7 +75,7 @@ v1.22 approved 2026-10-31 (settled; do not re-ask):
 - Still OPEN, gates not defaults: OD-1, OD-3, OD-11, OD-12; technical verifications TV-1 to TV-3.
 
 Historical: verified v1.8 decisions and the W01 proof correction remain in `PROJECT.md` and `milestones/v1.8-phases/`.
-- [Phase 108]: Tab6a (graphId assoc + ToT PRD + Omp gate + GSD 18 adapters) marked complete for v1.23 via doc reconciliation in STATE/ROADMAP/v1.23-plugin-portability.md; gsd-n6-18-plugin-connection example; no new phases
+- [Phase 108]: Tab6a (graphId assoc + Omp gate + GSD 18 adapters) marked complete for v1.23 via doc reconciliation in STATE/ROADMAP/v1.23-plugin-portability.md; gsd-n6-18-plugin-connection example; no new phases
 - [Phase 110]: Phase 113 re-verified passed at 03ec003 (digest 6820502c); PHASE-114 row added to matrix; residual N5 records PHASE-114 executable-bucket misclassification vs STATE deferred status
 
 ### Pending Todos
@@ -111,7 +111,7 @@ Items acknowledged and deferred at milestone close, most recent first:
 | verification_gaps | 65/65-VERIFICATION.md | human_needed | 2026-10-21 | v1.14 |
 | verification_gaps | 12/12-VERIFICATION.md | gaps_found | 2026-10-03 | v1.3 |
 
-**v1.23 Tab6a reconciliation (2026-11-17):** Tab6a (graphId association, ToT PRD, Omp gate, GSD 18 adapters) marked complete. No new deferred items; prior plugin gaps now covered by Tab6a GoT + v1.23 milestone doc updates. See updated Graph Association and .planning/milestones/v1.23-plugin-portability.md. gsd-n6-18-plugin-connection referenced.
+**v1.23 Tab6a reconciliation (2026-11-17):** Tab6a (graphId association, Omp gate, GSD 18 adapters) marked complete. No new deferred items; prior plugin gaps now covered by Tab6a GoT + v1.23 milestone doc updates. See updated Graph Association and .planning/milestones/v1.23-plugin-portability.md. gsd-n6-18-plugin-connection referenced.
 
 Last session: 2026-11-17T00:16:29.779Z
 Stopped at: Completed 113-decomposition-task-matrix verification refresh at 03ec003

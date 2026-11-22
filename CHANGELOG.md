@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Ship owner decisions (`resolve --owner`, `merge` and `run` with `--owner-override`) name only an owner listed in the new `ship.owners` key (user files only). Until it is set, these decisions are refused and nothing is written.
 - The Omp completion gate releases a plan only when the whole plan is ready. A partial plan is held with the list of what is missing; there is no `proceed` or confirm path. The `ULTRATHINK_GATE_ALLOW_PARTIAL` variable is removed.
-- Tree-of-Thought PRDs use the session's selected model on every host. The cheapest-model routing, the `models.tot` candidate and model settings, and the price refusal are removed. PRDs are written from the Sub Issue text with no repository check, and `PRD_TEMPLATE_VERSION` is 3.
+- Removed the Tree-of-Thought code-blocked PRD stage (`src/think/tot/`) and idempotent PRD sync (`src/track/prd-sync.ts`): no PRD is generated, placed in the uplifted XML, synced to Linear/Notion, or gated on. The think pipeline is Graph of Thought plus Chain of Thought only, the completion gate validates the uplifted XML, GoT graph and issue/sub-issue rows without PRD verdicts (`prds_failed`, `prds_sync_failed`, `prds_sync_pending`, `prds_not_in_trackers` are gone), and `think.tot` config is ignored with a doctor warning. PRD text already synced into tracker rows is orphaned and never updated again. See `docs/adr/0002-remove-tree-of-thought-and-codeblocked-prd.md`. The cheapest-model routing, `models.tot` key and price refusal were already removed earlier.
 
 ## [1.21.2] - 2026-11-08
 

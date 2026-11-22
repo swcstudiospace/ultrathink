@@ -27,6 +27,7 @@ const BACKEND_SECTIONS = ["hindsight", "ragflow", "substrate"] as const;
 const OBSOLETE_KEYS: Readonly<Record<string, readonly string[]>> = {
 	grok: ["shuntBaseUrl", "shuntModel", "shuntMaxTokens"],
 	decisions: ["provider"],
+	think: ["tot"],
 };
 
 function kindOf(value: unknown): string {
@@ -290,7 +291,7 @@ function checkModels(out: Collector, value: unknown, effective: Json): void {
 				"warn",
 				"ignored",
 				"models.tot",
-				"models.tot is no longer read: Tree-of-Thought uses the selected model",
+				"models.tot is no longer read: Tree-of-Thought has been removed; the key is ignored",
 				`File: ${out.layer.path}`,
 			);
 		} else {

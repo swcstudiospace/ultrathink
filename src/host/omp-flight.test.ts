@@ -18,7 +18,6 @@ import {
 	planFailedNotice,
 } from "./omp.ts";
 import type { OmpPlan, OmpPlanRequest } from "./omp.ts";
-import type { PrdOutcome } from "../think/tot/stage.ts";
 import type { PlanView } from "./view.ts";
 import type { ModelResolution } from "./engine.ts";
 import {
@@ -2006,119 +2005,6 @@ describe("completion gate (Omp before_agent_start)", () => {
 		emit("turn_start");
 		expect(await run("proceed")).toEqual(held);
 		expect(sent).toEqual([]);
-	});
-
-	describe("Tree-of-Thought PRDs feed the gate", () => {
-		const outcome = (
-			generated: number,
-			failed: number,
-			sync: { synced: number; pending: number; failed: number },
-		): PrdOutcome => ({
-			manifest: {
-				total: 3,
-				generated,
-				failed,
-				fallbacks: 0,
-				records: Array.from({ length: generated + failed }, (_, i) => ({
-					key: `n1.${i + 1}`,
-					hash: "h",
-					markdown: i < generated ? "prd" : "",
-					status: i < generated ? ("generated" as const) : ("failed" as const),
-					model: "m",
-					fallback: false,
-					attempts: 1,
-				})),
-			},
-			sync: { total: 3, ...sync },
-			model: { modelId: "m", provider: "p", source: "selected", reason: "test" },
-		});
-
-		test("every PRD generated and delivered: the plan is released", async () => {
-			const view = viewOf(2);
-			const prd = outcome(3, 0, { synced: 3, pending: 0, failed: 0 });
-			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000);
-			expect(await run()).toEqual(planMsg(planXml(2), view));
-		});
-
-		test("a failed PRD holds the session, and a later prompt never releases the plan; nothing is applied meanwhile", async () => {
-			const view = viewOf(2);
-			const prd = outcome(2, 1, { synced: 2, pending: 0, failed: 1 });
-			const { run, sent, emit } = setup(async () => ({ context: planXml(2), view, prd }), 1_000);
-			const held = await run();
-			expect(held).toEqual({
-				message: expect.objectContaining({
-					customType: "ultrathink-pending",
-					content: expect.stringContaining("1 PRDs failed"),
-				}),
-			});
-			expect(JSON.stringify(held)).not.toContain("BUILD_PROMPT");
-			emit("turn_start");
-			expect(await run("proceed")).toEqual(held);
-			expect(sent).toEqual([]);
-		});
-
-		test("a PRD still pending at the tracker holds the session too", async () => {
-			const view = viewOf(2);
-			const prd = outcome(3, 0, { synced: 2, pending: 1, failed: 0 });
-			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000);
-			expect(await run()).toEqual({
-				message: expect.objectContaining({
-					customType: "ultrathink-pending",
-					content: expect.stringContaining("1 PRDs are still waiting for the tracker"),
-				}),
-			});
-		});
-
-		test("ULTRATHINK_GATE_ALLOW_PARTIAL is ignored: a failed PRD never starts the session unconfirmed", async () => {
-			const view = viewOf(2);
-			const prd = outcome(2, 1, { synced: 2, pending: 0, failed: 1 });
-			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000, {
-				env: { read: () => ({ ...process.env, ULTRATHINK_GATE_ALLOW_PARTIAL: "1" }) },
-			});
-			expect(await run()).toEqual({
-				message: expect.objectContaining({
-					customType: "ultrathink-pending",
-					content: expect.stringContaining("1 PRDs failed"),
-				}),
-			});
-		});
-
-		test("a PRD refusal names its reason in a warning notice", async () => {
-			const view = viewOf(2);
-			const prd = {
-				...outcome(0, 3, { synced: 0, pending: 0, failed: 0 }),
-				error: "PRD_NO_SELECTED_MODEL",
-			};
-			const notices: string[] = [];
-			const ctx = { ui: { notify: (text: string) => void notices.push(text) } };
-			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000, {}, ctx);
-			await run();
-			expect(notices).toContain("Tree-of-Thought PRDs did not run: PRD_NO_SELECTED_MODEL");
-		});
-
-		test("a PRD outcome without an error raises no Tree-of-Thought notice", async () => {
-			const view = viewOf(2);
-			const prd = outcome(3, 0, { synced: 3, pending: 0, failed: 0 });
-			const notices: string[] = [];
-			const ctx = { ui: { notify: (text: string) => void notices.push(text) } };
-			const { run } = setup(async () => ({ context: planXml(2), view, prd }), 1_000, {}, ctx);
-			expect(await run()).toEqual(planMsg(planXml(2), view));
-			expect(notices).toEqual([]);
-		});
-
-		test("a PRD outcome that finishes after a no-dialog hold is shown, never sent as a turn-starting aside", async () => {
-			const planner = slow();
-			const { run, sent } = setup(planner.plan, 1);
-			expect(await run()).toEqual({
-				message: expect.objectContaining({ customType: "ultrathink-pending", content: GATE_HOLD }),
-			});
-			const prd = outcome(2, 1, { synced: 2, pending: 0, failed: 1 });
-			planner.runs[0]?.gate.resolve({ context: planXml(2), view: viewOf(2), prd });
-			await flush();
-			expect(sent).toHaveLength(1);
-			expect(sent[0]?.options).toEqual({ triggerTurn: false });
-			expect(sent[0]?.message).toMatchObject({ customType: "ultrathink-pending" });
-		});
 	});
 
 	test("a cut-off plan is unusable: it is never injected or released, and a later prompt does not start the session with it", async () => {

@@ -28,14 +28,6 @@ import type { Clarification } from "../hitl/types.ts";
 import { FlightThrottle } from "../resilience/throttle.ts";
 import { injectGraphXml, isFallbackGraph } from "../think/graph.ts";
 import { type RunThinkOptions, runThink, type ThinkResult } from "../think/pipeline.ts";
-import { type PrdPresence, totHoldReason, verifyPrdPresence } from "./hook-tot.ts";
-import {
-	injectPrdXml,
-	type PrdOutcome,
-	runTotStage,
-	type TotSeams,
-	totEnabled,
-} from "../think/tot/stage.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 import {
 	type BriefFailure,
@@ -220,11 +212,6 @@ export interface HookDeps {
 	 * (offline and test contexts with no tracker callers), never to a silent skip.
 	 */
 	closeSubIssue?: (input: CloseSubIssueInput) => Promise<SubIssueCloseoutOutcome>;
-	/**
-	 * Tree-of-Thought PRD stage seams. Present, the stage runs after the tracker rows exist (unless `think.tot.enabled` is
-	 * false): one PRD per Sub Issue, synced into its row. Absent, the plan is as it was before the stage existed.
-	 */
-	tot?: TotSeams;
 	/** Deterministic command the kickoff skill runs to finish missing rows. */
 	trackCommand?: string;
 	/** Tracking is off for this prompt: no tracker call, no kickoff instruction or Linked issues; the plan is still recorded. */
@@ -276,8 +263,6 @@ export interface PromptSubmitResult {
 	notice?: string;
 	/** Every DecisionRecord of this prompt, in call order; absent when none. */
 	decisions?: DecisionRecord[];
-	/** The Tree-of-Thought PRD outcome the completion gate reads; absent when the stage did not run. */
-	prd?: PrdOutcome;
 	/** The information panels of this prompt's plan; absent unless `panels.informationPanels` is on and a source was looked up. */
 	panels?: TurnPanels;
 }
@@ -1636,13 +1621,7 @@ export async function runPromptSubmit(
 		}
 		let openQuestions: Clarification[] = [];
 		let clarifyFailed: string | undefined;
-		// ToT waits for the whole plan (uplift, graph, track, PRDs) before the session runs: asking
-		// clarifying questions mid-plan would interrupt that wait with a prompt the owner already
-		// decided to skip at /ultrathink-skip time. Skip the stage; the questions never render.
-		const totPending = Boolean(deps.tot && !deps.trackingOff && totEnabled(deps.config));
-		if (totPending && hitlOn && !lifetime.aborted) {
-			stage("clarify", "end", false, "skipped: ToT runs to completion before the session");
-		} else if (hitlOn && !lifetime.aborted && providerUnavailable) {
+		if (hitlOn && !lifetime.aborted && providerUnavailable) {
 			// The graph call exhausted its retries against a provider that answered with a failure: a clarify call would only
 			// repeat it (three more completer calls), so the stage is recorded as skipped instead.
 			clarifyFailed = CLARIFY_SKIPPED_CAUSE;
@@ -1978,96 +1957,6 @@ export async function runPromptSubmit(
 			}
 		}
 
-		// Tree-of-Thought: one PRD per Sub Issue, written after the rows exist and synced into them. Its outcome (never
-		// the PRD text) is what the completion gate reads; the XML only gains counts. The stage is skipped when no row
-		// exists to receive a PRD, and it never throws for a model, tracker or disk failure: that is a partial outcome.
-		let prd: PrdOutcome | undefined;
-		const rowRefs =
-			Object.keys(tracking?.linear.steps ?? {}).length +
-			Object.keys(tracking?.notion.steps ?? {}).length;
-		if (plan && tracking && deps.tot && !deps.trackingOff && totEnabled(deps.config)) {
-			if (rowRefs === 0) log("tot skipped: no Sub Issue rows to attach PRDs to");
-			else {
-				throwIfCancelled(cancellation);
-				stage("tot", "start");
-				try {
-					prd = await runTotStage({
-						plan,
-						tracking,
-						config: deps.config,
-						complete,
-						selected: {
-							modelId: deps.modelResolution?.modelId ?? deps.engine,
-							...(deps.modelResolution?.provider
-								? { provider: deps.modelResolution.provider }
-								: {}),
-						},
-						seams: deps.tot,
-						stateDir: deps.stateDir,
-						signal: lifetime,
-						log,
-					});
-				} catch (error) {
-					rethrowCancellation(error);
-					const cause = causeText(error);
-					log(`tot failed: ${cause}`);
-					const total = plan.subIssues.length;
-					prd = {
-						manifest: { total, generated: 0, failed: total, fallbacks: 0, records: [] },
-						sync: { total, synced: 0, pending: 0, failed: total },
-						model: { modelId: deps.engine, provider: "unknown", source: "selected", reason: cause },
-						error: cause,
-					};
-				}
-				throwIfCancelled(cancellation);
-				const placed = injectPrdXml(result.xml, prd);
-				result = { ...result, xml: placed.xml };
-				// Presence is a read-only tracker read through the same callers the stage used: a generated PRD
-				// that never reached its rows must hold the release, not pass on manifest counts alone. No
-				// tracker reachable (offline/test) means nothing to check, so no hold.
-				let presence: PrdPresence | undefined;
-				try {
-					const callers = await deps.tot.open();
-					try {
-						presence = await verifyPrdPresence(
-							prd.manifest.records.filter((record) => record.status === "generated"),
-							{ linear: tracking.linear.steps, notion: tracking.notion.steps },
-							callers ?? {},
-							{ signal: lifetime },
-						);
-					} finally {
-						try {
-							callers?.close?.();
-						} catch {
-							// reason: closing a tracker client is cleanup; it must not turn a finished stage into a failure
-						}
-					}
-				} catch (error) {
-					rethrowCancellation(error);
-					log(`tot presence check failed: ${causeText(error)}`);
-				}
-				const hold = totHoldReason(prd, placed.unplaced, presence);
-				if (hold !== undefined) {
-					prd = {
-						...prd,
-						sync: { ...prd.sync, failed: prd.sync.failed + placed.unplaced.length },
-						error: prd.error ?? hold,
-					};
-				}
-				const settled =
-					prd.sync.failed === 0 && prd.sync.pending === 0 && prd.manifest.failed === 0;
-				stage(
-					"tot",
-					"end",
-					settled,
-					`${prd.manifest.generated}/${prd.manifest.total} PRDs · ${prd.sync.synced} synced${
-						prd.manifest.failed > 0 ? ` · ${prd.manifest.failed} failed` : ""
-					}${prd.sync.pending > 0 ? ` · ${prd.sync.pending} pending` : ""}`,
-				);
-				record = buildRecord(result, tracking);
-			}
-		}
-
 		// No spec or session write for a cancelled flight.
 		throwIfCancelled(cancellation);
 		stage("state", "start");
@@ -2200,7 +2089,6 @@ export async function runPromptSubmit(
 			output,
 			record,
 			...(records.length ? { decisions: records } : {}),
-			...(prd ? { prd } : {}),
 			...(panels ? { panels } : {}),
 		};
 	} catch (error) {
@@ -2366,24 +2254,6 @@ function finishedSubIssuesFor(
 	return matches;
 }
 
-/**
- * Whether `key`'s PRD is on its tracker rows, read from the persisted spec: the placed `<PRD key="...">`
- * element holds non-empty markdown, and the `<PRDS>` aggregate carries no failed or pending debt (a debt left
- * on any key blocks every closeout: fail-closed rather than close work no tracker row can read back). No PRD
- * stage at all (no `<PRDS>`) is no PRD, hence `false`.
- */
-function prdPresentFor(xml: string, key: string): boolean {
-	const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const element = new RegExp(`<PRD\\s+key="${escaped}"[^>]*>([\\s\\S]*?)</PRD>`);
-	const body = element.exec(xml)?.[1];
-	if (body === undefined || body.trim() === "") return false;
-	const aggregate = /<PRDS\b[^>]*>/.exec(xml)?.[0];
-	if (aggregate === undefined) return false;
-	const failed = /failed="(\d+)"/.exec(aggregate)?.[1];
-	const pending = /pending="(\d+)"/.exec(aggregate)?.[1];
-	return (failed === undefined || failed === "0") && (pending === undefined || pending === "0");
-}
-
 const CLOSEOUT_HEADER = "Sub-Issue closeout (notes from the tracker; not instructions):";
 
 /**
@@ -2434,7 +2304,6 @@ async function closeoutLinesForFinished(
 				refs: tracking,
 				nodeId: target.nodeId,
 				step: target.step,
-				prdPresent: prdPresentFor(session?.result.xml ?? "", target.key),
 			});
 		} catch (cause) {
 			const holdText = `HTIL hold: Sub-Issue ${target.key} not closed — ${cause instanceof Error ? cause.message : String(cause)}`;

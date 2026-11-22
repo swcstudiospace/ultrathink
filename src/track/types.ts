@@ -57,8 +57,9 @@ export interface TrackPlan {
 	linearSubIssues: LinearSubIssuePlan[];
 	/**
 	 * Published-Linear dependency edges between GoT nodes: a node's id maps to the ids of the nodes it is
-	 * `blockedBy`. The ToT stage releases a node's PRDs only once every PRD of each dependency node exists;
-	 * absent when the graph had no dependency edges, which keeps edge-free plans on the legacy queue.
+	 * `blockedBy`. Absent when the graph had no dependency edges. A dependent node's Linear issue carries a
+	 * `blockedBy` link only for dependencies that already have issues; a link whose dependency had no issue
+	 * when the node was created is kept as a pending link and made once the dependency's issue exists.
 	 */
 	dependencies?: Record<string, readonly string[]>;
 	hitl: HitlPlan;

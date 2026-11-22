@@ -195,21 +195,6 @@ export interface HostModelOverride {
 }
 
 /**
- * The Tree-of-Thought PRD stage (`think.tot`): one PRD per CoT Sub Issue, written after the tracker rows exist and synced
- * into them. `enabled` left unset follows tracking (on when tracking produced rows, so off when tracking is off); an
- * explicit boolean wins. `concurrency` is the PRDs written at once (1-16); `maxPrdChars` and `maxPrdLines` bound one PRD.
- */
-export interface TotConfig {
-	enabled?: boolean;
-	concurrency: number;
-	maxPrdChars: number;
-	maxPrdLines: number;
-}
-
-/** `think` with the Tree-of-Thought stage settings; `ThinkConfig` stays the GoT/CoT part every think stage reads. */
-export type ThinkSettings = ThinkConfig & { tot: TotConfig };
-
-/**
  * Planning model selection (`models` in any config layer). `hosts` targets an existing host; `providerDefaults` maps an
  * exact credential provider id to the selector native Omp planning uses when the live model is unusable. Neither can
  * define endpoints, headers or credentials, and no legacy CLI route consumes `providerDefaults` (its eligible set is empty).
@@ -227,7 +212,7 @@ export interface UltrathinkConfig {
 	claude: ClaudeConfig;
 	grok: GrokConfig;
 	hitl: HitlConfig;
-	think: ThinkSettings;
+	think: ThinkConfig;
 	notion: NotionConfig;
 	linear: LinearConfig;
 	track: TrackConfig;
@@ -269,9 +254,6 @@ const THINK_RESILIENCE_DEFAULTS: Pick<ThinkConfig, "fillRetries" | "repair"> = {
 	repair: true,
 };
 
-/** Defaults for `think.tot`; the limits mirror the PRD template's own (150 lines, 6000 characters) and 4 PRDs at a time. */
-const DEFAULT_TOT_CONFIG: TotConfig = { concurrency: 4, maxPrdChars: 6000, maxPrdLines: 150 };
-
 export function defaultConfig(): UltrathinkConfig {
 	return {
 		uplift: {
@@ -287,7 +269,6 @@ export function defaultConfig(): UltrathinkConfig {
 			engine: "auto",
 			reasoningCeiling: "inherit",
 			...THINK_RESILIENCE_DEFAULTS,
-			tot: { ...DEFAULT_TOT_CONFIG },
 		},
 		claude: { ...DEFAULT_CLAUDE_CONFIG },
 		grok: { ...DEFAULT_GROK_CONFIG, fallbackModels: [...DEFAULT_GROK_CONFIG.fallbackModels] },
