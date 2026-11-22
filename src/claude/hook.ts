@@ -1636,7 +1636,13 @@ export async function runPromptSubmit(
 		}
 		let openQuestions: Clarification[] = [];
 		let clarifyFailed: string | undefined;
-		if (hitlOn && !lifetime.aborted && providerUnavailable) {
+		// ToT waits for the whole plan (uplift, graph, track, PRDs) before the session runs: asking
+		// clarifying questions mid-plan would interrupt that wait with a prompt the owner already
+		// decided to skip at /ultrathink-skip time. Skip the stage; the questions never render.
+		const totPending = Boolean(deps.tot && !deps.trackingOff && totEnabled(deps.config));
+		if (totPending && hitlOn && !lifetime.aborted) {
+			stage("clarify", "end", false, "skipped: ToT runs to completion before the session");
+		} else if (hitlOn && !lifetime.aborted && providerUnavailable) {
 			// The graph call exhausted its retries against a provider that answered with a failure: a clarify call would only
 			// repeat it (three more completer calls), so the stage is recorded as skipped instead.
 			clarifyFailed = CLARIFY_SKIPPED_CAUSE;
