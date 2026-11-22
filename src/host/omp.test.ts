@@ -451,7 +451,7 @@ describe("omp extension", () => {
 		expect(sent[0]!.options).toEqual({ deliverAs: "aside" });
 		expect(t.line()).not.toContain("arrives as aside");
 	});
-	test("a partial late plan stays silent: no aside and no prompt-turn text", async () => {
+	test("a partial late plan renders one advisory aside: no prompt-turn text, no banned strings (AC-79, W3)", async () => {
 		const t = tuiCtx();
 		const gate = Promise.withResolvers<OmpPlan>();
 		const manual = manualTimers();
@@ -467,12 +467,29 @@ describe("omp extension", () => {
 		emit("session_start");
 		const running = run();
 		await manual.fire(1);
-		// No prompt-turn text: the turn starts at once.
+		// No prompt-turn text: the turn starts at once and the request continues (AC-72).
 		expect(await running).toBeUndefined();
-		// "PLAN" carries no graph node, so the gate verdict is partial_failure: silent.
+		// "PLAN" carries no graph node, so the gate verdict is partial_failure: one advisory aside.
 		gate.resolve({ context: "PLAN", view: VIEW });
 		await flush();
-		expect(sent).toEqual([]);
+		// Modeled on omp-flight.test.ts: exactly one advisory aside naming the short count, 0 banned strings.
+		const advisory =
+			"Plan note: 0 of 1 nodes. Warning: incomplete-verdict refresh pending. Planning continues automatically under autonomous mode.";
+		expect(sent).toEqual([
+			{
+				message: {
+					customType: "ultrathink-plan",
+					content: advisory,
+					display: true,
+					details: VIEW,
+					attribution: "agent",
+				},
+				options: { deliverAs: "aside" },
+			},
+		]);
+		expect(advisory.match(/Warning:/g)).toHaveLength(1);
+		expect(advisory).not.toMatch(/\b(STOP|proceed|confirm)\b/i);
+		// Fatal-path silence is unchanged: fatal verdicts never inject the plan inline (omp-flight.test.ts covers the gateStalled aside).
 	});
 
 	test("a throwing setWidget does not break planning", async () => {

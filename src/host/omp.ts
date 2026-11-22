@@ -15,6 +15,7 @@
  * toggle control state or send one unplanned message.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,7 +42,7 @@ import {
 	OMP_LOCK,
 	updateSession,
 } from "../claude/state.ts";
-import type { LockOptions } from "../claude/atomic.ts";
+import { writeFileAtomic, type LockOptions } from "../claude/atomic.ts";
 import { claudeConfigPaths, loadConfig } from "../config.ts";
 import type { LegacyModelProvenance, UltrathinkConfig } from "../config.ts";
 import { attachReport, type CompletionReport, readReport } from "../completion-report.ts";
@@ -1134,6 +1135,164 @@ function toOmpPlan(response: PlanResponse): OmpPlan {
 	};
 }
 
+/**
+ * One settled clarification (contract API-UltrathinkCompletionGate `SettledAnswer`): the question id and the settled
+ * answer text. Answer text is PII-indirect (user-supplied choice text): it lives only in the session store (0600),
+ * never in audit, log or release bundles, and error messages never carry it.
+ */
+export interface SettledAnswer {
+	questionId: string;
+	answer: string;
+}
+
+/**
+ * The persisted proceed answer (data contract SC-UltrathinkSessionAnswer 1.0.0, migration M-2026-007): 1 per session,
+ * joined to the `SessionRecord` by `sessionId`. `persistedAt` is the ordering record for AC-69 and
+ * `stepBeforeKickoff` names the kickoff step the write precedes (1).
+ */
+export interface SessionAnswerRecord {
+	sessionId: string;
+	correlationId: string;
+	answers: SettledAnswer[];
+	kickedOff: boolean;
+	persistedAt: string;
+	stepBeforeKickoff: number;
+}
+
+const SESSION_ANSWER_KEYS = [
+	"sessionId",
+	"correlationId",
+	"answers",
+	"kickedOff",
+	"persistedAt",
+	"stepBeforeKickoff",
+] as const;
+const SETTLED_ANSWER_KEYS = ["questionId", "answer"] as const;
+
+function closedKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+	return Object.keys(value).every((key) => keys.includes(key));
+}
+
+/**
+ * The file stem of a session id: the same contract as the session record name (plain lowercase ids keep their name,
+ * host ids with other characters get a readable lowercase slug plus a hash of the exact id). Distinct ids get
+ * distinct stems, so one session's answer never overwrites another's.
+ */
+function sessionAnswerStem(id: string): string {
+	if (/^[a-z0-9_.-]{1,120}$/.test(id)) return id;
+	const slug = Array.from(id, (char) => (/[A-Za-z0-9_.-]/.test(char) ? char.toLowerCase() : "_"))
+		.join("")
+		.slice(0, 80);
+	return `${slug}~${createHash("sha256").update(id).digest("hex").slice(0, 16)}`;
+}
+
+/** The session-answer file for a session id: `<dir>/session-answers/<stem>.json`. */
+export function sessionAnswerPath(dir: string, sessionId: string): string {
+	return join(dir, "session-answers", `${sessionAnswerStem(sessionId)}.json`);
+}
+
+function isSettledAnswer(value: unknown): value is SettledAnswer {
+	if (typeof value !== "object" || value === null) return false;
+	const record = value as Record<string, unknown>;
+	if (!closedKeys(record, SETTLED_ANSWER_KEYS)) return false;
+	return (
+		typeof record.questionId === "string" &&
+		record.questionId !== "" &&
+		typeof record.answer === "string" &&
+		record.answer !== ""
+	);
+}
+
+/** Fail-closed validation of a persisted record: unknown keys are rejected, never coerced. */
+function parseSessionAnswerRecord(value: unknown): SessionAnswerRecord | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const record = value as Record<string, unknown>;
+	if (!closedKeys(record, SESSION_ANSWER_KEYS)) return undefined;
+	if (
+		typeof record.sessionId !== "string" ||
+		record.sessionId === "" ||
+		typeof record.correlationId !== "string" ||
+		record.correlationId === "" ||
+		!Array.isArray(record.answers) ||
+		record.answers.length === 0 ||
+		!record.answers.every(isSettledAnswer) ||
+		typeof record.kickedOff !== "boolean" ||
+		typeof record.persistedAt !== "string" ||
+		Number.isNaN(Date.parse(record.persistedAt)) ||
+		record.stepBeforeKickoff !== 1
+	)
+		return undefined;
+	return {
+		sessionId: record.sessionId,
+		correlationId: record.correlationId,
+		answers: record.answers as SettledAnswer[],
+		kickedOff: record.kickedOff,
+		persistedAt: record.persistedAt,
+		stepBeforeKickoff: 1,
+	};
+}
+
+/**
+ * Persist a proceed answer before kickoff (contract op `persistSessionAnswer`): an atomic write (temp file, fsync,
+ * rename; mode 0600) of the ANSWER envelope keyed by `sessionId`. Throws on invalid input; the message names the
+ * field, never the answer text.
+ */
+export function persistSessionAnswer(
+	dir: string,
+	record: {
+		sessionId: string;
+		correlationId: string;
+		answers: SettledAnswer[];
+		kickedOff: boolean;
+	},
+): SessionAnswerRecord {
+	if (typeof record.sessionId !== "string" || record.sessionId === "")
+		throw new Error("sessionId must be a non-empty string");
+	if (typeof record.correlationId !== "string" || record.correlationId === "")
+		throw new Error("correlationId must be a non-empty string");
+	if (!Array.isArray(record.answers) || record.answers.length === 0)
+		throw new Error("answers must hold at least one settled answer");
+	if (!record.answers.every(isSettledAnswer))
+		throw new Error("every answer must carry a non-empty questionId and answer");
+	if (typeof record.kickedOff !== "boolean") throw new Error("kickedOff must be a boolean");
+	const stored: SessionAnswerRecord = {
+		sessionId: record.sessionId,
+		correlationId: record.correlationId,
+		answers: record.answers.map((item) => ({ questionId: item.questionId, answer: item.answer })),
+		kickedOff: record.kickedOff,
+		persistedAt: new Date().toISOString(),
+		stepBeforeKickoff: 1,
+	};
+	writeFileAtomic(
+		sessionAnswerPath(dir, record.sessionId),
+		`${JSON.stringify(stored, null, "\t")}\n`,
+	);
+	return stored;
+}
+
+/**
+ * Restore a persisted proceed answer by `sessionId` (contract op `getSessionAnswer`): the reload source. A missing,
+ * unreadable or schema-failing record restores as undefined: never a guess, never a re-ask.
+ */
+export function restoreSessionAnswer(
+	dir: string,
+	sessionId: string,
+): SessionAnswerRecord | undefined {
+	if (typeof sessionId !== "string" || sessionId === "") return undefined;
+	let raw: string;
+	try {
+		raw = readFileSync(sessionAnswerPath(dir, sessionId), "utf8");
+	} catch {
+		return undefined;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return undefined;
+	}
+	return parseSessionAnswerRecord(parsed);
+}
 /**
  * The in-process Omp planner: `planPrompt` for host `omp` with the flight's native selector, signal, progress sink and
  * captured config, control and state directory. Without a native runtime the shared selection reports
@@ -3203,15 +3362,39 @@ export function createOmpExtension(
 			return note === undefined ? undefined : { message: planMessage(note) };
 		};
 		/**
+		 * A persisted proceed answer (W2, UTR-04): when this session's record survived a reload, its answers fill the
+		 * view's still-open clarifications, so a settled question is never re-asked and never re-triggers recall.
+		 */
+		const restoredView = (flight: Flight, view: PlanView): PlanView => {
+			const settled = restoreSessionAnswer(stateDir(flight.cwd), flight.sessionId);
+			if (!settled?.kickedOff) return view;
+			const byQuestion = new Map(settled.answers.map((item) => [item.questionId, item.answer]));
+			if (
+				!view.clarifications.some(
+					(item) => (item.answer ?? "").trim() === "" && byQuestion.has(item.id),
+				)
+			)
+				return view;
+			return {
+				...view,
+				clarifications: view.clarifications.map((item) =>
+					(item.answer ?? "").trim() === "" && byQuestion.has(item.id)
+						? { ...item, answer: byQuestion.get(item.id) }
+						: item,
+				),
+			};
+		};
+		/**
 		 * Uncertainty (SPE-34394): a settled plan with open clarifications recalls the knowledge base for them, bounded by
 		 * recall.timeoutMs, and the knowledge panel joins the plan view. It returns the view as is, synchronously, unless the
 		 * gates are open and the view has open clarifications and no knowledge panel yet.
 		 */
 		const withUncertaintyPanel = (flight: Flight, view: PlanView): PlanView | Promise<PlanView> => {
-			const open = view.clarifications.filter((item) => (item.answer ?? "").trim() === "");
-			if (open.length === 0 || view.panels?.knowledge !== undefined) return view;
+			const current = restoredView(flight, view);
+			const open = current.clarifications.filter((item) => (item.answer ?? "").trim() === "");
+			if (open.length === 0 || current.panels?.knowledge !== undefined) return current;
 			const config = flightConfig(flight.cwd);
-			if (!recallInjects(config.recallSettings, "uncertainty")) return view;
+			if (!recallInjects(config.recallSettings, "uncertainty")) return current;
 			const topic = open.map((item) => item.question).join("\n");
 			return planAutoRecall(
 				flight.sessionId,
@@ -3226,9 +3409,9 @@ export function createOmpExtension(
 			).then(
 				(plan) =>
 					plan.ok && plan.panels.knowledge !== undefined
-						? { ...view, panels: { ...view.panels, knowledge: plan.panels.knowledge } }
-						: view,
-				() => view,
+						? { ...current, panels: { ...current.panels, knowledge: plan.panels.knowledge } }
+						: current,
+				() => current,
 			);
 		};
 		/** Delivery once the plan settles: only a still-current flight on an unchanged live model shows or sends anything. */
@@ -3695,7 +3878,47 @@ export function createOmpExtension(
 						prompt: flight.prompt,
 						cwd: flight.cwd,
 					});
-		/** Durable copy of a released plan. A store failure never blocks the turn; it is reported as a warning. */
+		/**
+		 * The settled proceed answer, persisted before kickoff (W2, UTR-03): the ANSWER envelope with `kickedOff=true`
+		 * is written under this session's identity before the delivery completes, so a reload restores it with 0
+		 * re-asks. A flight with no settled answer persists nothing. A store failure never blocks the turn; it is
+		 * reported as a warning, exactly like the plan store below.
+		 */
+		const persistProceedForFlight = (flight: Flight): void => {
+			if (!flight.sessionId) return;
+			const settled = (flight.view?.clarifications ?? []).filter(
+				(item) => (item.answer ?? "").trim() !== "",
+			);
+			if (settled.length === 0) return;
+			const dir = stateDir(flight.cwd);
+			try {
+				persistSessionAnswer(dir, {
+					sessionId: flight.sessionId,
+					correlationId: planRecordKey(flight) ?? flight.sessionId,
+					answers: settled.map((item) => ({ questionId: item.id, answer: item.answer ?? "" })),
+					kickedOff: true,
+				});
+			} catch (error) {
+				guard(() =>
+					flight.ctx?.ui?.notify?.(
+						`Ultrathink could not persist the proceed answer: ${errorText(error)}`,
+						"warning",
+					),
+				);
+				return;
+			}
+			// Mirror the kickoff mark (kickoff step 5.5) into the session record when one exists: the session record
+			// and the ANSWER envelope join on sessionId, so both agree after a reload.
+			guard(() =>
+				updateSession(
+					dir,
+					flight.sessionId,
+					(record) => ({ ...record, kickedOff: true }),
+					OMP_LOCK,
+				),
+			);
+		};
+		/** Durable copies of a released plan and its settled proceed answer. A store failure never blocks the turn; it is reported as a warning. */
 		const saveReleased = (
 			flight: Flight,
 			text: string,
@@ -3703,6 +3926,8 @@ export function createOmpExtension(
 		): void => {
 			const key = planRecordKey(flight);
 			if (key === undefined) return;
+			// Write-before-kickoff (W2): the proceed answer lands durably before this delivery completes.
+			persistProceedForFlight(flight);
 			try {
 				savePlan(stateDir(flight.cwd), {
 					key,
@@ -3965,7 +4190,12 @@ export function createOmpExtension(
 					saveReleased(flight, result.context);
 					markPlanDelivered(flight);
 					barWrite(flight.generation, () => store.delivered("inline", result.view, now()));
-					return { message: planMessage(result.context, result.view) };
+					return {
+						message: planMessage(
+							result.context,
+							result.view ? restoredView(flight, result.view) : undefined,
+						),
+					};
 				}
 			} catch (error) {
 				// The handler failed outside its flight's own handling: a flight it registered is cancelled, and the prompt

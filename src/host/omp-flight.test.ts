@@ -1,13 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Effort } from "@oh-my-pi/pi-ai";
 import { readSession } from "../claude/state.ts";
 import type { GroundOutcome } from "../ragflow/types.ts";
-import { createNativeEngineSelector, gateStalled } from "./omp.ts";
+import {
+	createNativeEngineSelector,
+	gateStalled,
+	persistSessionAnswer,
+	restoreSessionAnswer,
+	sessionAnswerPath,
+} from "./omp.ts";
 import type { OmpPlan, OmpPlanRequest } from "./omp.ts";
 import type { PlanView } from "./view.ts";
 import type { ModelResolution } from "./engine.ts";
@@ -2078,5 +2092,245 @@ describe("completion gate (Omp before_agent_start)", () => {
 		const { run } = setup(planner.plan, 1, { gate: { timers: dog.timers, inactivityMs: 0 } });
 		await run();
 		expect(dog.pending()).toBe(0);
+	});
+
+	/** The 3 settled clarifications (Q1 both transcripts, Q2 shared-state equivalence, Q3 pause-until-completed). */
+	const settledClarifications = () => [
+		{
+			id: "q1",
+			question: "Include both transcripts?",
+			blocking: true,
+			answer: "yes: both transcripts",
+		},
+		{
+			id: "q2",
+			question: "Compare over shared state?",
+			blocking: true,
+			answer: "shared-state equivalence",
+		},
+		{
+			id: "q3",
+			question: "Pause until completed?",
+			blocking: true,
+			answer: "pause until completed",
+		},
+	];
+
+	test("AC-68: a settled proceed answer persists as ANSWER + kickedOff before delivery", async () => {
+		const root = mkdtempSync(join(tmpdir(), "ut-ac68-"));
+		try {
+			const stateDir = join(root, "state");
+			const settled: PlanView = { ...viewOf(2), clarifications: settledClarifications() };
+			const { run } = setup(async () => ({ context: planXml(2), view: settled }), 1_000, {
+				stateDir,
+			});
+			expect(await run()).toEqual(planMsg(planXml(2), settled));
+			const file = join(stateDir, "session-answers", "s1.json");
+			expect(existsSync(file)).toBe(true);
+			const record = JSON.parse(readFileSync(file, "utf8"));
+			expect(record.sessionId).toBe("s1");
+			expect(record.kickedOff).toBe(true);
+			expect(record.answers).toEqual([
+				{ questionId: "q1", answer: "yes: both transcripts" },
+				{ questionId: "q2", answer: "shared-state equivalence" },
+				{ questionId: "q3", answer: "pause until completed" },
+			]);
+			expect(record.stepBeforeKickoff).toBe(1);
+			expect(typeof record.correlationId).toBe("string");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("AC-69: the ordering record is written before the delivery completes", async () => {
+		const root = mkdtempSync(join(tmpdir(), "ut-ac69-"));
+		try {
+			const stateDir = join(root, "state");
+			const settled: PlanView = { ...viewOf(2), clarifications: settledClarifications() };
+			const { run } = setup(async () => ({ context: planXml(2), view: settled }), 1_000, {
+				stateDir,
+			});
+			const before = Date.now();
+			expect(await run()).toEqual(planMsg(planXml(2), settled));
+			const after = Date.now();
+			// No flush needed: the write happened synchronously inside delivery, before run() returned.
+			const file = join(stateDir, "session-answers", "s1.json");
+			expect(existsSync(file)).toBe(true);
+			const record = JSON.parse(readFileSync(file, "utf8"));
+			const persistedAt = Date.parse(record.persistedAt);
+			expect(persistedAt).toBeGreaterThanOrEqual(before - 1_000);
+			expect(persistedAt).toBeLessThanOrEqual(after + 1_000);
+			expect(record.stepBeforeKickoff).toBe(1);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("AC-70: reload restores kickedOff + the 3 ANSWER with 0 re-ask", async () => {
+		const root = mkdtempSync(join(tmpdir(), "ut-ac70-"));
+		try {
+			const stateDir = join(root, "state");
+			const settled: PlanView = { ...viewOf(2), clarifications: settledClarifications() };
+			const first = setup(async () => ({ context: planXml(2), view: settled }), 1_000, {
+				stateDir,
+			});
+			expect(await first.run()).toEqual(planMsg(planXml(2), settled));
+			// Reload: a fresh extension instance over the same state dir, planning a view with
+			// the same 3 clarifications still open. Nothing is re-asked: no dialog opens and the
+			// delivered view carries the restored answers.
+			const host = dialogCtx();
+			const openView: PlanView = {
+				...viewOf(2),
+				clarifications: settledClarifications().map((item) => ({ ...item, answer: undefined })),
+			};
+			const reloaded = setup(
+				async () => ({ context: planXml(2), view: openView }),
+				1_000,
+				{ stateDir },
+				host.ctx,
+			);
+			const result = (await reloaded.run()) as { message: { details: PlanView } };
+			expect(result.message.details.clarifications).toEqual(settledClarifications());
+			expect(host.dialogs).toEqual([]);
+			const file = join(stateDir, "session-answers", "s1.json");
+			const record = JSON.parse(readFileSync(file, "utf8"));
+			expect(record.kickedOff).toBe(true);
+			expect(record.answers).toHaveLength(3);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+/** SessionAnswer persistence (W2, M-2026-007): the write/read path of SC-UltrathinkSessionAnswer 1.0.0. */
+describe("session answer persistence (W2)", () => {
+	const answers = [
+		{ questionId: "q1", answer: "yes: both transcripts" },
+		{ questionId: "q2", answer: "shared-state equivalence" },
+		{ questionId: "q3", answer: "pause until completed" },
+	];
+
+	test("persist then restore round-trips kickedOff with all 3 answers", async () => {
+		const root = mkdtempSync(join(tmpdir(), "ut-ans-rt-"));
+		try {
+			const stored = persistSessionAnswer(root, {
+				sessionId: "s1",
+				correlationId: "corr-1",
+				answers,
+				kickedOff: true,
+			});
+			expect(stored.answers).toEqual(answers);
+			expect(stored.kickedOff).toBe(true);
+			expect(stored.stepBeforeKickoff).toBe(1);
+			expect(stored.persistedAt).toBeTruthy();
+			expect(sessionAnswerPath(root, "s1")).toBe(join(root, "session-answers", "s1.json"));
+			expect(restoreSessionAnswer(root, "s1")).toEqual(stored);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("a missing session restores as undefined: never a guess", async () => {
+		const root = mkdtempSync(join(tmpdir(), "ut-ans-missing-"));
+		try {
+			expect(restoreSessionAnswer(root, "never-written")).toBeUndefined();
+			expect(restoreSessionAnswer(root, "")).toBeUndefined();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("a torn or schema-failing record restores as undefined, never coerced", async () => {
+		const root = mkdtempSync(join(tmpdir(), "ut-ans-torn-"));
+		try {
+			const path = sessionAnswerPath(root, "s1");
+			// Torn file: not JSON.
+			mkdirSync(join(root, "session-answers"), { recursive: true });
+			writeFileSync(path, "{torn", "utf8");
+			expect(restoreSessionAnswer(root, "s1")).toBeUndefined();
+			// Unknown key: rejected by the closed schema.
+			writeFileSync(
+				path,
+				JSON.stringify({
+					sessionId: "s1",
+					correlationId: "corr",
+					answers,
+					kickedOff: true,
+					persistedAt: new Date().toISOString(),
+					stepBeforeKickoff: 1,
+					extra: "nope",
+				}),
+				"utf8",
+			);
+			expect(restoreSessionAnswer(root, "s1")).toBeUndefined();
+			// Wrong kickoff step: rejected, never coerced.
+			writeFileSync(
+				path,
+				JSON.stringify({
+					sessionId: "s1",
+					correlationId: "corr",
+					answers,
+					kickedOff: true,
+					persistedAt: new Date().toISOString(),
+					stepBeforeKickoff: 2,
+				}),
+				"utf8",
+			);
+			expect(restoreSessionAnswer(root, "s1")).toBeUndefined();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("invalid input throws without carrying answer text", async () => {
+		const root = mkdtempSync(join(tmpdir(), "ut-ans-invalid-"));
+		try {
+			expect(() =>
+				persistSessionAnswer(root, { sessionId: "", correlationId: "c", answers, kickedOff: true }),
+			).toThrow("sessionId must be a non-empty string");
+			expect(() =>
+				persistSessionAnswer(root, {
+					sessionId: "s1",
+					correlationId: "",
+					answers,
+					kickedOff: true,
+				}),
+			).toThrow("correlationId must be a non-empty string");
+			expect(() =>
+				persistSessionAnswer(root, {
+					sessionId: "s1",
+					correlationId: "c",
+					answers: [],
+					kickedOff: true,
+				}),
+			).toThrow("answers must hold at least one settled answer");
+			expect(() =>
+				persistSessionAnswer(root, {
+					sessionId: "s1",
+					correlationId: "c",
+					answers: [{ questionId: "q9", answer: "" }],
+					kickedOff: true,
+				}),
+			).toThrow("every answer must carry a non-empty questionId and answer");
+			expect(existsSync(sessionAnswerPath(root, "s1"))).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("a host session id round-trips through its stem", async () => {
+		const root = mkdtempSync(join(tmpdir(), "ut-ans-stem-"));
+		try {
+			persistSessionAnswer(root, {
+				sessionId: "Claude-A/sub x",
+				correlationId: "c",
+				answers,
+				kickedOff: true,
+			});
+			expect(restoreSessionAnswer(root, "Claude-A/sub x")?.answers).toEqual(answers);
+			expect(restoreSessionAnswer(root, "claude-a-sub x")).toBeUndefined();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
