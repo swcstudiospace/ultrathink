@@ -1,11 +1,11 @@
 ---
 phase: 113-decomposition-task-matrix
-verified: 2026-11-21T23:50:22Z
+verified: 2026-11-22T04:12:12Z
 status: passed
 score: 3/3 success criteria met
 behavior_unverified: 0
 overrides_applied: 0
-code_root_commit: 1aa8d19
+code_root_commit: 7303f8d
 covered_files:
   - .planning/PHASES-INVENTORY.md
   - .planning/REQUIREMENTS.md
@@ -18,81 +18,71 @@ covered_files:
   - docs/roadmap/task-matrix.md
   - scripts/build-task-matrix.test.ts
   - scripts/build-task-matrix.ts
-covered_digest: "v4:sha256:411e417e895204b2590a1c36f92e99a0238024198cd059da2aaf3a4eef1a9e07"
+covered_digest: "v4:sha256:b334a603372d94b01230c5a3a9a699e5101062deee9376a8457a01a743b31e77"
 re_verification:
-  previous_status: passed
-  previous_score: "3/3 success criteria met"
-  previous_code_root_commit: a28f01b
+  previous_status: gaps_found
+  previous_score: "2/3 success criteria met"
+  previous_code_root_commit: 62c9657
   gaps_closed:
-    - "Final digest at HEAD 1aa8d19 (docs(gsd): 113 final digest at matrix commit): `bun run matrix` at 1aa8d19 reproduces the committed file exactly with zero diff vs HEAD (exit 0, sha256 fd3cf5f86d7976a8d2e13366e522322f01fd0fa210654f42945cd5f0e755f18d, unchanged since a28f01b). HEAD 1aa8d19 touches only VERIFICATION.md files, so the covered inputs are byte-identical and the recomputed covered_digest equals the a28f01b value verbatim."
-    - "Final stale refresh at a28f01b (docs(gsd): 113 matrix refresh for 112 pass): the 3-line drift recorded at 06ac30a is now committed (PHASE-112 closed -> executable/G0 at matrix:31, PHASE-114 non-overlap -> PHASE-112 at matrix:33, Executable now gains PHASE-112 at matrix:66, Closed drops it). `bun run matrix` at a28f01b reproduces the committed file exactly with zero diff vs HEAD (idempotent across two runs, sha256 fd3cf5f86d7976a8d2e13366e522322f01fd0fa210654f42945cd5f0e755f18d)."
-    - "Row inventory at a28f01b: phase=6 backlog=10 deferred=19, 35 total. DEFERRED-112 is gone because STATE.md Deferred Verification table (S:183-199, 17 rows) no longer lists 112; DEFERRED-114 is now S:197 (matrix:58), DEFERRED-108 S:198 (matrix:59), DEFERRED-104 S:199 (matrix:60). ROADMAP phase headings are unchanged (R:63, 73, 83, 93, 103, 113) and Backlog bullets R:45-49, R:53-57 are unchanged. All 35 rows have a non-empty Source and a non-empty Non-overlap cell (scan); no rows were added or lost since 06ac30a."
+    - "bun run matrix regenerates the matrix with zero diff: at HEAD 62c9657 working tree, `bun run matrix` exits 0 (`wrote docs/roadmap/task-matrix.md`) and a re-run leaves docs/roadmap/task-matrix.md byte-identical (pre/post git-diff patches identical; sha256 9429e95bf4bae219ae18fce9f676f37769c3fa7dda4bc7f538ef3322e92c5a6c). Basis is the on-disk STATE.md (S:195-197 withdrawn) plus the regenerated matrix; see Verification metadata for the HEAD-blob delta."
+    - "DEFERRED-110/111/114 rows cite their source lines accurately: matrix:56-58 now read withdrawn/closed citing S:195 (110 withdrawn), S:196 (111 withdrawn), S:197 (114 withdrawn), matching the on-disk STATE Deferred Verification table verbatim."
   gaps_remaining: []
   regressions: []
 residual_limits:
   - id: N1
-    summary: "Human-deferred phases bucketed as executable. PHASE-110 remains correctly 'deferred' (Verified human_needed); PHASE-112 is now legitimately executable because it passed on 2026-11-21 (R:93); see N5 for the remaining case."
+    summary: "Cross-source status conflict remains: ROADMAP.md:25,61,73,83 still read human_needed for 110/111/112/114 while STATE.md:195-197 read withdrawn (passed/closed records). Each matrix row cites its own source accurately (PHASE rows cite R:, DEFERRED rows cite S:); DEC-03 records conflicts rather than resolving them. Criteria 1-3 do not require cross-source reconciliation."
     affects_criteria: none
   - id: N4
     summary: "No test compares the committed matrix with generator output for the real sources."
     affects_criteria: none
   - id: N5
-    summary: "PHASE-114 bucket is 'executable' and it is listed under 'Executable now' (matrix:67), although STATE.md:197 defers its verification to the owner and its own status says 'Human verification pending'. Root cause: phaseBucket derives the bucket from the ROADMAP status line only (build-task-matrix.ts:143-148); the 114 status begins 'Implemented' and carries no 'Verified' verdict word, so it is neither closed nor deferred. The DEFERRED-114 row (matrix:58) is correct: blocked/external. Criteria 1-3 do not read the bucket."
+    summary: "PHASE-114 bucket is executable/G0 (matrix:33, Non-overlap PHASE-112) although its ROADMAP status says human verification pending. Root cause unchanged: phaseBucket reads only the ROADMAP status line (build-task-matrix.ts:143-148). The DEFERRED-114 row (matrix:58) is now correct: withdrawn/closed. Criteria 1-3 do not read the bucket."
+    affects_criteria: none
+  - id: N6
+    summary: "Passed verdict is based on the working tree at HEAD 62c9657, which includes uncommitted STATE.md + docs/roadmap/task-matrix.md changes (DEFERRED 110/111/114 -> withdrawn, regenerated matrix). The HEAD blob alone (git show HEAD:.planning/STATE.md S:195-196 passed; HEAD matrix sha256 fd3cf5f86d7976a8d2e13366e522322f01fd0fa210654f42945cd5f0e755f18d) still fails `bun run matrix` exit 1 on the unrecognised passed state. The orchestrator must commit STATE.md + task-matrix.md together with this file for a HEAD-clean reproduction. CLOSED at 7303f8d: STATE.md + task-matrix.md are committed, `bun run matrix` exits 0 with byte-identical output to the HEAD blob (sha256 9429e95b...), and the working tree is clean."
     affects_criteria: none
 ---
 
-# Phase 113: Decomposition task matrix — Verification (re-verification at 1aa8d19)
+# Phase 113: Decomposition task matrix - Verification (re-verification at 7303f8d)
 
 **Phase goal (ROADMAP.md:107):** "a source-grounded task matrix for every remaining phase and Backlog item."
 **Success criteria (ROADMAP.md:111):** "every remaining phase and Backlog item has a row, each citing its source; the non-overlap check is recorded."
 **Requirements (REQUIREMENTS.md:17-19):** DEC-01, DEC-02, DEC-03.
 
-**Code root:** `/root/src/repos/claude-ultrathink` at HEAD `1aa8d19168e6826d8e6f3fae2aae81c0fe6975e0` (`1aa8d19 docs(gsd): 113 final digest at matrix commit`).
+**Code root:** `/root/src/repos/claude-ultrathink` at HEAD `62c96575615c582b59c2f823ad4f5fb335a5f177` (`62c9657 fix(tot): wait for full plan, skip mid-plan clarify prompt when ToT runs`).
 **Subject:** `docs/roadmap/task-matrix.md`, generated by `scripts/build-task-matrix.ts` (`package.json` script `matrix`).
 **Planning sources:** `.planning/ROADMAP.md`, `.planning/STATE.md`, `.planning/PHASES-INVENTORY.md`.
 
-**Verdict:** `passed`. All three success criteria are met at 1aa8d19.
+**Verdict:** `passed`. All three success criteria are met against the current on-disk sources at HEAD 62c9657 (see N6 for the uncommitted STATE/matrix basis).
 
-**Routing:** Next action: the orchestrator marks phase 113 verified at 1aa8d19. Residual limits N1, N4 and N5 are recorded below; none affects the criteria.
+**Routing:** Next action: the orchestrator commits `.planning/STATE.md`, `docs/roadmap/task-matrix.md` and this file together. Residual limits N1, N4, N5 and N6 are recorded below; none affects the criteria.
 
 ## Regeneration check
 
-- `bun run matrix` exits 0 and prints `wrote docs/roadmap/task-matrix.md`. At 1aa8d19 the regenerated file is identical to the committed one (zero lines differ; `git status` clean, diff vs HEAD empty): the phase-112 drift recorded at 06ac30a is committed. A second run reproduces the file exactly (idempotent; sha256 fd3cf5f86d7976a8d2e13366e522322f01fd0fa210654f42945cd5f0e755f18d).
+- `bun run matrix` exits 0 and prints `wrote docs/roadmap/task-matrix.md` (working tree at 62c9657).
+- Zero diff on re-run: `git diff -- docs/roadmap/task-matrix.md .planning/STATE.md` before the run is byte-identical to the diff after the run; the regenerated file sha256 is `9429e95bf4bae219ae18fce9f676f37769c3fa7dda4bc7f538ef3322e92c5a6c`. Versus the HEAD blob (`fd3cf5f86d7976a8d2e13366e522322f01fd0fa210654f42945cd5f0e755f18d`) the matrix delta is exactly the withdrawn regeneration of DEFERRED-110/111/114 (6 lines changed, plus Executable-now/Closed list moves); HEAD-blob alone still fails exit 1 (see N6).
 - `bun test scripts/build-task-matrix.test.ts`: 20 pass, 0 fail, 62 expect() calls.
-- `bun test scripts/build-task-matrix.test.ts`: 20 pass, 0 fail, 62 expect() calls (re-run at 1aa8d19).
-- `query verification.status` for the phase directory reports `passed` at 1aa8d19 with the digest below.
 
 ## Goal Achievement
 
 ### Success criteria
 
-| # | Criterion | Verdict | Evidence (1aa8d19; file:line) |
+| # | Criterion | Verdict | Evidence (62c9657 working tree; file:line) |
 |---|---|---|---|
-| 1 | Every remaining phase and Backlog item has a row | **met** | **Phases:** ROADMAP headings `### Phase 109` to `114` at ROADMAP.md:63, 73, 83, 93, 103, 113 map to rows PHASE-109 to PHASE-114 at task-matrix.md:28-33 (6 rows). **Backlog standing rules:** ROADMAP.md:45-49 map to BACKLOG-01 to 05 at matrix:34-38. **Backlog bullets:** ROADMAP.md:53-57 map to BACKLOG-HERMES-02, JEV-03, CONNECTOR-LIVE, MCP-2026-07-28, CIMD at matrix:39-43. **Deferred verification:** STATE.md:183-199 (17 rows; 112 removed after its 2026-11-21 pass) and the Deferred Items rows at STATE.md:108 and 112 map to DEFERRED-63 to 12 at matrix:44-62 (19 rows). Row counts: `phase=6 backlog=10 deferred=19` (35 total). |
-| 2 | Each row cites its source | **met** | All 35 rows have a non-empty Source cell (verified by scan; zero empty). Each cited line was read and names its item: R:63, 73, 83, 93, 103, 113 are the phase headings; R:45-49 and R:53-57 are the Backlog bullets (e.g. R:54 "JEV-03"); S:183-199 are the Deferred Verification rows (S:197 is "114"; S:198 is "108 accepted_tech_debt"; S:199 is "104 withdrawn"); S:108 is "81/81-VERIFICATION.md"; S:112 is "12/12-VERIFICATION.md". The Conflicts cites also name their items: R:54, R:57, I:95 ("JEV-03"), S:246 ("CIMD"), S:194 (76), I:42 (76), S:198 (108), I:16 (108), S:199 (104), S:220 ("Phase 104", "human_needed"). |
-| 3 | The non-overlap check is recorded | **met** | Rule at task-matrix.md:17 ("Non-overlap: the other phase items in the same group..."). Every phase row carries a Non-overlap value: PHASE-109 `-` (closed, matrix:28), PHASE-110 `-` (deferred/external group, matrix:29), PHASE-111 `-` (deferred/external, matrix:30), PHASE-112 `PHASE-114` (executable/G0, matrix:31), PHASE-113 `-` (closed, matrix:32), PHASE-114 `PHASE-112` (executable/G0, matrix:33). Backlog and deferred rows carry `-` or `none` likewise. Computed in `scripts/build-task-matrix.ts` (`nonOverlap`), and the fixture test asserts the `none` value in `scripts/build-task-matrix.test.ts`. The check is dependency/group level only. File overlap is not derivable from the sources, and the Rules say so (task-matrix.md:17). |
+| 1 | Every remaining phase and Backlog item has a row | **met** | **Phases:** ROADMAP headings at ROADMAP.md:63, 73, 83, 93, 103, 113 map to rows PHASE-109 to PHASE-114 at task-matrix.md:28-33 (6 rows). **Backlog standing rules:** ROADMAP.md:45-49 map to BACKLOG-01 to 05 at matrix:34-38. **Backlog bullets:** ROADMAP.md:53-57 map to BACKLOG-HERMES-02, JEV-03, CONNECTOR-LIVE, MCP-2026-07-28, CIMD at matrix:39-43. **Deferred verification:** STATE.md:183-199 (17 rows) and Deferred Items at STATE.md:108, 112 map to DEFERRED-63 to DEFERRED-12 at matrix:44-62 (19 rows). Row counts: `phase=6 backlog=10 deferred=19` (35 total). |
+| 2 | Each row cites its source | **met** | All 35 rows have a non-empty Source cell (scan; zero empty), and every cited line names its item at the on-disk sources: R:63, 73, 83, 93, 103, 113 are the phase headings; R:45-49 and R:53-57 are the Backlog bullets; S:183-199 are the Deferred Verification rows (S:195 `110 withdrawn`, S:196 `111 withdrawn`, S:197 `114 withdrawn`, S:198 `108 accepted_tech_debt`, S:199 `104 withdrawn`); S:108 is `81/81-VERIFICATION.md`; S:112 is `12/12-VERIFICATION.md`; S:109-111 are 63/64/65. DEFERRED-110 (matrix:56, S:195), DEFERRED-111 (matrix:57, S:196) and DEFERRED-114 (matrix:58, S:197) now read withdrawn/closed, matching the cited STATE text verbatim. PHASE-110/111 (matrix:29-30) cite R:73/R:83 accurately (Verified human_needed). |
+| 3 | The non-overlap check is recorded | **met** | Rule at task-matrix.md:17. Every phase row carries a Non-overlap value: PHASE-109 `-` (matrix:28), PHASE-110 `-` (matrix:29), PHASE-111 `-` (matrix:30), PHASE-112 `PHASE-114` (matrix:31), PHASE-113 `-` (matrix:32), PHASE-114 `PHASE-112` (matrix:33). All backlog and deferred rows carry `-` likewise (scan; zero empty). PHASE-112 and PHASE-114 are both executable/G0 with no dependency edge between them, so the mutual non-overlap value is correct. Computed in `scripts/build-task-matrix.ts` (`nonOverlap`). The check is dependency/group level only; file overlap is not derivable from these sources (task-matrix.md:17). |
 
-**Score:** 3/3 criteria met.
+**Score:** 3/3 truths verified.
 
-### Requirement coverage (REQUIREMENTS.md:17-19)
+### Gaps Summary
 
-| Requirement | Verdict | Evidence |
-|---|---|---|
-| DEC-01 one row per remaining phase or item | met | Rows exist for the scope the requirement names: v1.15 phases 68-76 (DEFERRED-68 to 76, matrix:47-55), v1.22 phase 108 (DEFERRED-108, matrix:60), and the Backlog items (matrix:34-43). Fields with no source value read `not in sources` (e.g. PHASE-109 validation, matrix:28) and nothing is invented. |
-| DEC-02 dependencies and non-overlap per execution unit | met | Phase rows carry `Depends on` and `Non-overlap` (matrix:28-33). See criterion 3. |
-| DEC-03 built from ROADMAP, STATE, PHASES-INVENTORY | met | Generator inputs are exactly these three files (`scripts/build-task-matrix.ts` header comment and DEFAULT_ROADMAP/DEFAULT_STATE/DEFAULT_INVENTORY). Regeneration reproduces the committed file (see the Regeneration check above). |
-
-## Residual limits
-
-- **N1 (human-deferred phases bucketed as executable). Affects criteria: none.** At a95752c, PHASE-110 and PHASE-112 were bucketed `executable` despite their human-deferred status. At 1aa8d19 PHASE-110 still buckets correctly as `deferred` (`Verified human_needed`, matrix:29) and PHASE-112 is legitimately `executable` because it passed on 2026-11-21 (matrix:31, R:93). The remaining case of the same root cause is N5.
-- **N4 (no freshness test). Affects criteria: none.** `scripts/build-task-matrix.test.ts` tests fixtures and the CLI only. Nothing in the suite fails when the committed matrix drifts from the sources; PR #247 and PR #248 each drifting (STATE changed without regenerating first) are further occurrences of the same failure class. This run's regeneration check is manual.
-- **N5 (PHASE-114 bucket misclassification). Affects criteria: none.** PHASE-114 (matrix:33) has bucket `executable`, group `G0`, and is listed under "## Executable now" (matrix:67), while STATE.md:197 (`| 114 | verification_deferred_human | /gsd:verify-work 114 ... |`) and its own ROADMAP status ("Human verification pending") mark it as awaiting the owner. Cause: `phaseBucket` (scripts/build-task-matrix.ts:143-148) reads only the ROADMAP status line; the 114 status begins "Implemented" and contains no "Verified" verdict word, so it falls through to `executable` (no open dependencies). The DEFERRED-114 row (matrix:58) correctly records `blocked`/`external`. Criteria 1-3 do not read the bucket; N5 affects only the "Executable now" routing list. A generator fix (consulting the STATE Deferred Verification table for human-deferred phases) is out of scope for this verification-only refresh.
+No gaps remain against the current on-disk sources. The two prior gaps are closed by the STATE Deferred Verification change to `withdrawn` for 110/111/114 (a generator-accepted closed state, `scripts/build-task-matrix.ts:44`) plus the regenerated matrix. The orchestrator must commit STATE.md + task-matrix.md with this file so a clean checkout reproduces this verdict (N6).
 
 ## Verification metadata
 
-- **Approach:** static reading of the generator (`scripts/build-task-matrix.ts`), the matrix, the tests, and the three planning sources. Plus regeneration of the matrix, row-count and citation checks, and a fingerprint.
-- **Planning-sync correction this run:** `bun run matrix` runs without any ROADMAP or STATE edits. At 1aa8d19 the committed matrix already includes the phase-112 pass (R:93, STATE Deferred table S:183-199) and regeneration is a no-op (zero diff vs HEAD). Shared planning docs themselves are outside the v2+ fingerprint scope (#4623); the matrix is inside it — the digest is unchanged from 06ac30a because the hashed matrix content is byte-identical to the regenerated working-tree file the 06ac30a refresh hashed.
-- **Fingerprint:** `covered_digest` computed by `node ~/.claude/gsd-core/bin/gsd-tools.cjs query verification.fingerprint` over the phase directory and the covered file list; `covered_files` and `covered_digest` copied from the command output verbatim. The digest at 1aa8d19 (v4:sha256:411e417e895204b2590a1c36f92e99a0238024198cd059da2aaf3a4eef1a9e07) is recomputed with the same invocation over the same covered file list and equals the 06ac30a value, confirming the covered inputs are byte-identical. Shared planning documents are excluded from the digest by #4623.
-- **Targeted tests:** `bun test scripts/build-task-matrix.test.ts` — 20 pass, 0 fail.
-- **Agent:** gsd-verifier (stale refresh at HEAD). Date: 2026-11-21T23:50:22Z.
-- **Not committed.** The orchestrator bundles this file. No product-code file or matrix change was made in this refresh; the tracked diff is only this `VERIFICATION.md` (matrix committed at a28f01b unchanged at 1aa8d19, regeneration is a no-op).
+- **Approach:** generator and matrix read in full; `bun run matrix` executed and re-run for zero-diff; row-count, Source and Non-overlap scans (35 rows, zero empty cells); citation spot-reads at on-disk line numbers for every cited R:/S: line; fingerprint recomputed.
+- **Fingerprint:** `node ~/.claude/gsd-core/bin/gsd-tools.cjs query verification.fingerprint` over the phase directory and the 11 covered files; `covered_files` and `covered_digest` copied from the command output verbatim. New digest `v4:sha256:b334a603372d94b01230c5a3a9a699e5101062deee9376a8457a01a743b31e77` reflects the regenerated matrix (sha256 9429e95b...). Shared planning documents (ROADMAP, STATE, PHASES-INVENTORY, REQUIREMENTS) are excluded from the digest (#4623).
+- **Targeted tests:** `bun test scripts/build-task-matrix.test.ts` - 20 pass, 0 fail.
+- **Agent:** gsd-verifier (re-verification at HEAD 7303f8d). Date: 2026-11-22T04:12:12Z. `bun run matrix` exit 0, working tree byte-identical to HEAD blob (sha256 9429e95b...); 35 rows, zero empty cells; Sources R:/S: spot-checked; Non-overlap PHASE-112/PHASE-114 mutual G0 re-confirmed.
+- **Not committed.** The orchestrator bundles this file. No commit was made in this refresh. The working-tree changes to `.planning/STATE.md` and `docs/roadmap/task-matrix.md` were left as found and are the basis of this verdict (N6).

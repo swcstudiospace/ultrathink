@@ -2,23 +2,23 @@
 gsd_state_version: "1.0"
 milestone: v1.24
 milestone_name: Phase lifecycle design and remaining-work decomposition
-status: in_progress
-stopped_at: Completed 113-decomposition-task-matrix verification refresh at c216dc3
-last_updated: "2026-11-20T01:37:07.303Z"
+status: archived
+stopped_at: v1.24 archived 2026-11-22 (audit tech_debt at 7303f8d; phases 109-113 passed, 114 withdrawn)
+last_updated: "2026-11-22T08:00:00Z"
 state_head: c216dc3e7a9703cdd2dd45d817ebc63807e4ae77
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 0
   completed_plans: 5
-  percent: 67
-last_activity: 2026-11-18
+  percent: 83
+last_activity: 2026-11-22
 implementation_head: bab5a83 (local and pushed candidate; not integrated or deployed)
 implementation_branch: gsd/remove-cimd-phases
 implementation_root: /root/src/worktrees/ultrathink-remove-cimd
 current_phase: 110
 current_phase_name: Persist and checkpoint the phase loop
-last_activity_desc: "v1.24: phases 109-112 passed (110/111/112 UAT owner-attested 2026-11-19, promoted 2026-11-22); 113 stale (digest refresh pending); Phase 114 WITHDRAWN 2026-11-21 by owner - ToT/Codeblocked PRDs removed, main rolled back to 8752f18; milestone close-out in progress"
+last_activity_desc: "v1.24 archived 2026-11-22 (audit tech_debt, 7303f8d): phases 109-113 passed, 114 withdrawn 2026-11-21 excluded; LIFE-01..LIFE-05, DEC-01..DEC-03 complete (3/8 partial owner-accepted tech debt TD-1..TD-7)"
 ---
 
 # Project State
@@ -28,7 +28,7 @@ last_activity_desc: "v1.24: phases 109-112 passed (110/111/112 UAT owner-atteste
 See: .planning/PROJECT.md (updated 2026-10-31)
 
 **Core value:** Every non-trivial prompt is planned by the TypeScript ultrathink engine — on the model the session actually uses — then tracked in Notion and Linear before the agent does the work.
-**Current focus:** v1.24 phase lifecycle and remaining-work decomposition. Forty-eight Codeblocked PRDs are published on Linear SPE-35034–SPE-35081 and linked to the tracked Notion Uplifted Prompts (see docs/ultrathink-prd-density.md). Phases 110, 111, 112 and 114 remain human_needed pending owner verification; phase 113 has passed. Phase 114 criterion 7 (close Linear issue and Notion step row end to end) is not verified — Notion returned 403 and no end-to-end run has passed.
+**Current focus:** v1.24 archived 2026-11-22 (see PROJECT.md). No active milestone; awaiting next milestone selection.
 
 ## Current Position
 
