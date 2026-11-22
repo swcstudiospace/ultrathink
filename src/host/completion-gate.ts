@@ -6,7 +6,7 @@
  *
  * The gate never starts or stops anything itself. A host stages artifacts into it while a planner runs, the gate validates
  * them, and the host asks `release()` for the content to inject. `release()` hands the staged content over exactly
- * once, and only from `ready`. Validation failure yields an advisory note and the session proceeds with 0 blocked
+ * once, and only from `ready`. Validation failure stays silent at prompt time and the session continues with 0 blocked
  * turns; the host delivers the released plan inline-if-ready else as an aside. A partial plan is reported with
  * the problems that keep it from being whole, and it is never released. Nothing staged is readable any other way,
  * so no half-built plan can reach a prompt.

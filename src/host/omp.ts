@@ -4,11 +4,11 @@
  * Omp extension. Planning runs in-process on the session's own live model: each flight snapshots the whole live Model
  * once, and every stage completes through the host's `completeSimple` with the host registry's auth resolver
  * (UT-Planning-ModelSelection 1.0.0 §7-§8). omp caps every handler at 30s and drops late results, but the planner takes
- * minutes. A returned `{message}` only adds to a turn that then starts. Prompts proceed immediately with 0 STOP
- * texts: with the CompletionGate on (default; `ULTRATHINK_GATE=off` opts out) validation is advisory-only and the
+ * minutes. A returned `{message}` only adds to a turn that then starts. Prompts start immediately:
+ * with the CompletionGate on (default; `ULTRATHINK_GATE=off` opts out) validation is advisory-only and the
  * session is never blocked. A plan ready at prompt time is delivered inline; a plan that finishes after the turn
- * starts arrives as exactly one `aside` with the turn count unchanged. A partial plan is never released: its flight
- * ends with an advisory note that names what is missing, and the session proceeds with 0 blocked turns.
+ * starts arrives as exactly one `aside` with the turn count unchanged. A partial plan is never released and
+ * stays silent: its flight ends with no prompt-turn message and no aside.
  * With the gate off the old race applies: a fast plan
  * inline, otherwise the turn starts at once and the plan follows as one `aside`. Each flight owns its own cancellation and outer time limit. A
  * tool result that opens a PR for a planned session gets an ultrathink-sync aside. `/ultrathink-<verb>` commands
@@ -152,7 +152,6 @@ import {
 	SYNC_TYPE,
 } from "./omp-render.ts";
 import {
-	advisoryNoteForVerdict,
 	CompletionGate,
 	DEFAULT_GATE_INACTIVITY_MS,
 	type GateExpected,
@@ -1691,12 +1690,8 @@ export function createOmpExtension(
 			earlyDelivered?: boolean;
 			/** The completion gate guarding this flight; absent when the gate is off, which keeps the old race. */
 			gate?: CompletionGate;
-			/** This flight's gate was seen in `waiting_for_plan`: a later `ready` auto-resumes and delivers the Plan. */
-			gateWaiting?: boolean;
 			/** The gate-released Plan already went (or is going) out as the flight's one aside: the duplicate guard. */
 			gateAsideDelivered?: boolean;
-			/** A late-plan failure notice for this gate cycle was already surfaced. */
-			gateNoticeDelivered?: boolean;
 			/** Tracker rows are expected in the plan (tracking on and a tracker configured when the flight launched). */
 			tracked?: boolean;
 			/** The no-plan or stalled note, or a recovered stored plan, was already delivered for this flight. */
@@ -3093,13 +3088,12 @@ export function createOmpExtension(
 		/**
 		 * What a gated flight may put in front of the model right now. `plan`: the gate released the whole plan (once;
 		 * the text is kept so a host re-run of the submission gets the same one). `notice`: validation failed or
-		 * planning did not complete, and the request continues as written with 1 advisory note and 0 blocked turns.
-		 * `none`: nothing to say now; the turn starts at once and a late ready plan follows as the one aside.
+		 * planning did not complete, with 1 advisory note and 0 blocked turns. `none`: nothing to say now; an
+		 * incomplete plan stays silent, and a settled ready plan follows as the one aside.
 		 */
 		type GateDelivery =
 			| { kind: "plan"; text: string; planId?: string; planHash?: string }
 			| { kind: "notice"; text: string }
-			| { kind: "advisory"; text: string }
 			| { kind: "none" };
 		const gateDelivery = (flight: Flight, gate: CompletionGate): GateDelivery => {
 			if (flight.releasedText !== undefined) {
@@ -3121,32 +3115,11 @@ export function createOmpExtension(
 				if (gate.stalled) return { kind: "notice", text: gateStalled(gate.reason) };
 				return { kind: "notice", text: failureNotice(flight) };
 			}
-			// An incomplete plan is never released: the session continues with 1 advisory note, delivered
-			// as an aside only (never in the prompt-turn message). Not routed through gateStalled: that
-			// helper's wording is an instruction, not information, on this path.
-			if (gate.state === "partial_failure") {
-				return {
-					kind: "advisory",
-					text: gate.verdict
-						? advisoryNoteForVerdict(gate.verdict)
-						: "Plan note: the plan is incomplete. The request continues as written.",
-				};
-			}
-			if (gate.state === "waiting_for_plan") {
-				// Advisory pass-through: arm the late delivery, so a later `ready` follows as the one aside.
-				// The turn starts at once with 0 STOP texts; nothing is shown now.
-				flight.gateWaiting = true;
-				// A quarantine revoked the prior release: a revised Plan may be delivered again.
-				flight.gateAsideDelivered = false;
-				flight.gateNoticeDelivered = false;
-				if (flight.releasedText !== undefined) flight.lastDeliveredPlanText = flight.releasedText;
-				if (flight.releasedPlan) flight.lastDeliveredPlanHash = flight.releasedPlan.planHash;
-				flight.releasedText = undefined;
-				flight.releasedPlan = undefined;
-				flight.deliveredInline = false;
-				markPlanDelivered(flight);
-				return { kind: "none" };
-			}
+			// An incomplete plan is never released and stays silent: no prompt-turn message and no aside.
+			if (gate.state === "partial_failure") return { kind: "none" };
+			// `waiting_for_plan` is an advisory pass-through value (transition compatibility): it never
+			// affects the turn, which starts at once. Nothing is armed, delivered or shown now.
+			if (gate.state === "waiting_for_plan") return { kind: "none" };
 			if (gate.state === "plan_validated") {
 				const transitioned = gate.tryTransition("ready", "omp", "auto-use validated plan");
 				if (!transitioned) {
@@ -3157,8 +3130,8 @@ export function createOmpExtension(
 					return { kind: "notice", text: gateStalled(detail) };
 				}
 			}
-			if (gate.state !== "ready")
-				return { kind: "notice", text: gateStalled(`the plan is still ${gate.state}`) };
+			// Any other non-`ready` state is still being built: the turn starts at once, nothing is shown.
+			if (gate.state !== "ready") return { kind: "none" };
 			const released = gate.release();
 			if (!released.ok) return { kind: "notice", text: gateStalled(released.detail) };
 			// Delivered/saved text is exactly `released.text`: workers re-hash it and
@@ -3250,36 +3223,6 @@ export function createOmpExtension(
 				() => view,
 			);
 		};
-		/**
-		 * Late valid Plan delivery: the gate was in `waiting_for_plan` and has since reached `ready`.
-		 * Runs the same `gateDelivery` release as `settle` and sends the released text as the one aside.
-		 * `gateAsideDelivered` is set synchronously before the first await, so a repeated `ready` (or a
-		 * `settle`/`gatedMessage` delivery racing this one) cannot send a second aside; `deliveredInline`
-		 * covers a plan that already reached the model inline.
-		 */
-		const deliverLateGatePlan = async (flight: Flight): Promise<void> => {
-			const gate = flight.gate;
-			if (!gate || gate.state !== "ready" || !flight.gateWaiting) return;
-			if (!flight.settled || flight.cancelled || deliberateSkip(flight.skipped)) return;
-			if (flight.deliveredInline || flight.gateAsideDelivered) return;
-			if (!current(flight)) return;
-			const delivery = gateDelivery(flight, gate);
-			if (delivery.kind === "notice" || delivery.kind === "advisory") {
-				if (flight.gateNoticeDelivered) return;
-				flight.gateNoticeDelivered = true;
-				await sendAside(flight, planMessage(delivery.text, flight.view));
-				return;
-			}
-			if (delivery.kind !== "plan") return;
-			if (flight.deliveredInline || flight.gateAsideDelivered) return;
-			flight.gateAsideDelivered = true;
-			if (!(await sendAside(flight, planMessage(delivery.text, flight.view)))) {
-				flight.gateAsideDelivered = false;
-				return;
-			}
-			barWrite(flight.generation, () => store.delivered("aside", flight.view, now()));
-			markPlanDelivered(flight);
-		};
 		/** Delivery once the plan settles: only a still-current flight on an unchanged live model shows or sends anything. */
 		const settle = async (flight: Flight, result: OmpPlan): Promise<void> => {
 			flight.settled = true;
@@ -3329,10 +3272,16 @@ export function createOmpExtension(
 					store.skipped(flight.timedOut ? "timed out" : (flight.endDetail ?? "no plan"), now());
 			});
 			barWrite(flight.generation, refreshMcp);
+			// Silent states: an incomplete plan or a pass-through state has nothing to show, deferred or inline.
+			// A silent settle ends planning: the spinner must stop even though nothing was delivered.
+			if (gate && (gate.state === "partial_failure" || gate.state === "waiting_for_plan")) {
+				barWrite(flight.generation, () => store.skipped("plan not ready", now()));
+				return;
+			}
 			if (!flight.deferred) return;
 			// A deliberate skip is intentional silence, deferred or not; an inline delivery already reached the model.
 			if (deliberateSkip(flight.skipped) || flight.deliveredInline) return;
-			// With the gate on, the aside carries only what the gate releases: the advisory note, never the partial plan itself.
+			// With the gate on, the aside carries only what the gate releases (ready or a fatal notice), never an incomplete plan.
 			let body =
 				flight.content ||
 				(flight.earlyDelivered
@@ -3340,13 +3289,11 @@ export function createOmpExtension(
 					: failureNotice(flight));
 			if (gate) {
 				const delivery = gateDelivery(flight, gate);
-				// Still waiting for a valid Plan: the turn already started, and the late delivery sends the one aside when ready.
-				if (delivery.kind === "none" && gate.state === "waiting_for_plan") return;
 				body = delivery.kind === "none" ? failureNotice(flight) : delivery.text;
 			}
 			// A non-gated plan released to the model is kept durably; the gate saved its own release.
 			if (!gate && flight.content) saveReleased(flight, flight.content);
-			// A late auto-resume already sent this plan as the aside: one aside per flight, never two.
+			// The aside already sent this plan for this flight: one aside per flight, never two.
 			if (flight.gateAsideDelivered) return;
 			if (gate && flight.releasedText !== undefined) flight.gateAsideDelivered = true;
 			// The aside is the only delivery of a deferred plan: it reads delivered only once the host took it. A refused
@@ -3422,31 +3369,6 @@ export function createOmpExtension(
 							),
 						);
 					},
-				});
-				// Late Plan auto-resume: `onProgress` is the gate's only later effect. A `waiting_for_plan`
-				// arms the flight; a later `ready` delivers the released Plan as the one aside. Deferred to
-				// a microtask so the `ready` emit inside `gateDelivery`'s own transition cannot reenter it.
-				flight.gate.onProgress((progress) => {
-					if (progress.state === "waiting_for_plan") {
-						flight.gateWaiting = true;
-						// A quarantine revoked the prior release: a revised Plan may be delivered again.
-						markPlanDelivered(flight);
-						flight.gateAsideDelivered = false;
-						flight.gateNoticeDelivered = false;
-						if (flight.releasedText !== undefined)
-							flight.lastDeliveredPlanText = flight.releasedText;
-						if (flight.releasedPlan) flight.lastDeliveredPlanHash = flight.releasedPlan.planHash;
-						flight.releasedText = undefined;
-						flight.releasedPlan = undefined;
-						flight.deliveredInline = false;
-						return;
-					}
-					if (progress.state !== "ready" || !flight.gateWaiting) return;
-					void Promise.resolve()
-						.then(() => deliverLateGatePlan(flight))
-						.catch(() => {
-							// reason: a failing late delivery must never break the host; the gate itself already reported the transition
-						});
 				});
 			}
 			// Subscribed before the callback boundary below: cancelling the previous flight runs its abort
@@ -3858,21 +3780,11 @@ export function createOmpExtension(
 			switch (delivery.kind) {
 				case "plan":
 					flight.deliveredInline = true;
-					// The late auto-resume already sent this plan as the one aside: never repeat it inline.
+					// The aside already sent this plan as the one aside: never repeat it inline.
 					if (flight.gateAsideDelivered) return undefined;
 					barWrite(flight.generation, () => store.delivered("inline", flight.view, now()));
 					markPlanDelivered(flight);
 					return { message: planMessage(delivery.text, flight.view) };
-				case "advisory": {
-					// Advisory-only: the note goes out as the one aside, never in the prompt-turn message.
-					// Exactly once per gate cycle: the flag is set before the send is handed off.
-					if (flight.gateNoticeDelivered) return undefined;
-					flight.gateNoticeDelivered = true;
-					if (!flight.deliveredInline)
-						barWrite(flight.generation, () => store.skipped("plan not ready", now()));
-					void sendAside(flight, planMessage(delivery.text, flight.view));
-					return undefined;
-				}
 				case "notice": {
 					const result = noticeOnce(flight, delivery.text);
 					// A gated notice ends planning: the spinner must stop even though nothing was delivered.

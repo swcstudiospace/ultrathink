@@ -1977,25 +1977,19 @@ describe("completion gate (Omp before_agent_start)", () => {
 		expect(sent).toEqual([]);
 	});
 
-	test("a partial plan (fewer nodes than planned) yields 1 advisory aside with nothing applied, and a later prompt never releases it", async () => {
+	test("a partial plan (fewer nodes than planned) stays silent: no prompt-turn message, no aside, and a later prompt never releases it", async () => {
 		const view = viewOf(2);
 		const { run, sent, emit } = setup(async () => ({ context: planXml(1), view }), 1_000);
-		const ADVISORY = "Plan note: 1 of 2 nodes. The request continues as written.";
-		// Advisory-only: no tracker-pending or incomplete-plan notice in the prompt-turn message.
+		// Silent: no tracker-pending or incomplete-plan notice anywhere.
 		expect(await run()).toBeUndefined();
 		await flush();
-		expect(sent).toEqual([
-			{
-				message: expect.objectContaining({ customType: "ultrathink-plan", content: ADVISORY }),
-				options: { deliverAs: "aside" },
-			},
-		]);
+		expect(sent).toEqual([]);
 		expect(JSON.stringify(sent)).not.toContain("SYSTEM_ROLE");
 		// A later prompt is a new submission: it never releases the partial plan.
 		emit("turn_start");
-		expect(await run("proceed")).toBeUndefined();
+		expect(await run("next")).toBeUndefined();
 		await flush();
-		expect(sent.every((entry) => JSON.stringify(entry).includes(ADVISORY))).toBe(true);
+		expect(sent).toEqual([]);
 	});
 
 	test("a cut-off plan is unusable: it yields 1 advisory note and is never injected, and a later prompt does not start with it", async () => {
@@ -2014,39 +2008,24 @@ describe("completion gate (Omp before_agent_start)", () => {
 		expect(sent).toEqual([]);
 	});
 
-	test("a partial plan never opens a confirmation: it yields 1 advisory aside with 0 blocked turns and no dialog", async () => {
+	test("a partial plan never opens a confirmation: it stays silent with 0 blocked turns and no dialog", async () => {
 		const view = viewOf(2);
 		const host = dialogCtx();
 		const { run, sent } = setup(async () => ({ context: planXml(1), view }), 1_000, {}, host.ctx);
-		const ADVISORY = "Plan note: 1 of 2 nodes. The request continues as written.";
 		expect(await run()).toBeUndefined();
 		await flush();
-		expect(sent).toEqual([
-			{
-				message: expect.objectContaining({ customType: "ultrathink-plan", content: ADVISORY }),
-				options: { deliverAs: "aside" },
-			},
-		]);
+		expect(sent).toEqual([]);
 		expect(host.dialogs).toEqual([]);
 		expect(host.notices).toEqual([]);
 	});
 
-	test("a partial plan that finishes after the turn started arrives as one advisory aside", async () => {
+	test("a partial plan that finishes after the turn started stays silent (no aside)", async () => {
 		const planner = slow();
 		const { run, sent } = setup(planner.plan, 1);
 		expect(await run()).toBeUndefined();
 		planner.runs[0]?.gate.resolve({ context: planXml(1), view: viewOf(2) });
 		await flush();
-		// The advisory aside carries the partial view as details alongside the note; match content, not exact shape.
-		expect(sent).toEqual([
-			{
-				message: expect.objectContaining({
-					customType: "ultrathink-plan",
-					content: "Plan note: 1 of 2 nodes. The request continues as written.",
-				}),
-				options: { deliverAs: "aside" },
-			},
-		]);
+		expect(sent).toEqual([]);
 	});
 
 	test("the inactivity watchdog fails loudly: the planner is stopped, the user is told, and the turn already started", async () => {

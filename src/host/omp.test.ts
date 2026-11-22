@@ -439,11 +439,40 @@ describe("omp extension", () => {
 		// The race limit is 1 ms: its timer fires by hand while the final plan is still held; the turn starts at once.
 		await manual.fire(1);
 		expect(await running).toBeUndefined();
-		expect(t.line()).toContain("arrives as aside");
-		gate.resolve({ context: "PLAN", view: VIEW });
+		// A ready late plan (planXml(1) from omp-flight.test.ts: a closed BUILD_PROMPT spec
+		// with one graph node, matching VIEW's one node) delivers as exactly one aside.
+		gate.resolve({
+			context:
+				"Ultrathink plan\n<BUILD_PROMPT><SYSTEM_ROLE>r</SYSTEM_ROLE><CONTEXT>c</CONTEXT><SCOPE>s</SCOPE><CONSTRAINTS>k</CONSTRAINTS><ACCEPTANCE_CRITERIA>a</ACCEPTANCE_CRITERIA><GRAPH_OF_THOUGHT><NODE id=\"n1\" kind=\"task\" title=\"t\"></NODE></GRAPH_OF_THOUGHT></BUILD_PROMPT>",
+			view: VIEW,
+		});
 		await flush();
 		expect(sent).toHaveLength(1);
+		expect(sent[0]!.options).toEqual({ deliverAs: "aside" });
 		expect(t.line()).not.toContain("arrives as aside");
+	});
+	test("a partial late plan stays silent: no aside and no prompt-turn text", async () => {
+		const t = tuiCtx();
+		const gate = Promise.withResolvers<OmpPlan>();
+		const manual = manualTimers();
+		const { run, sent, emit } = setup(
+			(request) => {
+				request.onUplift?.({ context: "<UPLIFT>u</UPLIFT>" });
+				return gate.promise;
+			},
+			1,
+			{ timers: manual.timers },
+			t.ctx,
+		);
+		emit("session_start");
+		const running = run();
+		await manual.fire(1);
+		// No prompt-turn text: the turn starts at once.
+		expect(await running).toBeUndefined();
+		// "PLAN" carries no graph node, so the gate verdict is partial_failure: silent.
+		gate.resolve({ context: "PLAN", view: VIEW });
+		await flush();
+		expect(sent).toEqual([]);
 	});
 
 	test("a throwing setWidget does not break planning", async () => {

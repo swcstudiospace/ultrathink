@@ -882,7 +882,7 @@ describe("Plan gate review fixes (round 6)", () => {
 	});
 });
 describe("Plan gate review fixes (round 7)", () => {
-	test("(1) tryTransition waiting_for_plan from ready quarantines the stale plan without polling", () => {
+	test("(1) tryTransition waiting_for_plan from ready quarantines the stale plan, advisory pass-through only", () => {
 		const clock = fakeClock();
 		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers });
 		const accepted = gate.submitPlan(CHECKLIST_PLAN);
