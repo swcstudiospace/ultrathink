@@ -192,8 +192,8 @@ Resume file: None
 | 74 | verification_deferred_human | /gsd:verify-work 74 |
 | 75 | verification_deferred_human | /gsd:verify-work 75 |
 | 76 | verification_deferred_human | /gsd:verify-work 76 |
-| 110 | verification_deferred_human | /gsd:verify-work 110 |
-| 111 | verification_deferred_human | /gsd:verify-work 111 |
+| 110 | passed | UAT 4/4 owner-attested 2026-11-19; promoted 2026-11-22 |
+| 111 | passed | UAT 4/4 owner-attested 2026-11-19; promoted 2026-11-22 |
 | 114 | verification_deferred_human | /gsd:verify-work 114 (UAT 1-6 pass owner-confirmed 2026-11-21; criterion 7 live run pending) |
 | 108 | accepted_tech_debt | Owner closed v1.22 on 2026-11-12 without supplying live evidence (MCP-12/MCP-13 unverified against hosted; phase 107 not deployed). Not a verification pass. |
 | 104 | withdrawn | Owner withdrew phase 104 and its former verification gate; historical records are preserved in the withdrawal archive. |
