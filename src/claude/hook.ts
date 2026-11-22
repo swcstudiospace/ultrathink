@@ -2177,9 +2177,12 @@ export async function runPromptSubmit(
 			output.systemMessage = briefNotice ? `${summary} · ${briefNotice}` : summary;
 		}
 		outcome = "planned";
+		const panelsWithDigest = knowledge
+			? { ...knowledge, digest: knowledgeInput?.digest }
+			: knowledge;
 		const panels = buildTurnPanels(
 			{
-				knowledge,
+				knowledge: panelsWithDigest,
 				lessons,
 				skills,
 				moments: momentsRecalled,
