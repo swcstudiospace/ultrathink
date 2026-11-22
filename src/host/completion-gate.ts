@@ -19,6 +19,7 @@
  * of the prompt.
  */
 import { createHash } from "node:crypto";
+import { redactSecrets } from "../redact.ts";
 import { checkUpliftXml } from "../uplift/xml.ts";
 
 export type GateState =
@@ -638,7 +639,7 @@ export class CompletionGate {
 			verdict = this.#validate(target);
 		} catch (error) {
 			return this.fail(
-				`validation threw: ${error instanceof Error ? error.message : String(error)}`,
+				`validation threw: ${redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 300)}`,
 			);
 		}
 		this.#verdict = verdict;
