@@ -133,14 +133,14 @@ describe("validateArtifacts", () => {
 		expect(verdict.state).toBe("partial_failure");
 		const note = advisoryNoteForVerdict(verdict);
 		expect(note).toBe(
-			"Plan note: 2 tracker rows were never confirmed. The request continues as written.",
+			"Plan note: 2 tracker rows were never confirmed. Warning: incomplete-verdict refresh pending. Planning continues automatically under autonomous mode.",
 		);
 		expect(note).not.toMatch(/\b(STOP|hold|confirm|proceed)\b/i);
 		expect(planAdvisoryNote("1 of 2 nodes")).toBe(
-			"Plan note: 1 of 2 nodes. The request continues as written.",
+			"Plan note: 1 of 2 nodes. Warning: incomplete-verdict refresh pending. Planning continues automatically under autonomous mode.",
 		);
 		expect(planAdvisoryNote("")).toBe(
-			"Plan note: the plan is incomplete. The request continues as written.",
+			"Plan note: the plan is incomplete. Warning: incomplete-verdict refresh pending. Planning continues automatically under autonomous mode.",
 		);
 	});
 
@@ -206,6 +206,45 @@ describe("CompletionGate", () => {
 		expect(first).toMatchObject({ ok: true, state: "ready", text: plan() });
 		expect(gate.released).toBe(true);
 		expect(gate.release()).toMatchObject({ ok: false, reason: "already_released" });
+	});
+	test("AC-65/AC-66: tracker completion retires a stale partial_failure to ready with 0 pending", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		gate.stage({ text: plan({ pending: true }), expected: FULL }, "graph");
+		expect(gate.complete().state).toBe("partial_failure");
+		expect(gate.release()).toMatchObject({ ok: false, reason: "not_ready" });
+		expect(gate.verdict?.observed.pendingRows).toBe(2);
+		// Tracker completion rewrites the spec with 0 pending rows; the refresh is re-staged.
+		gate.stage({ text: plan(), expected: FULL }, "tracker complete");
+		const released = gate.release();
+		expect(released).toMatchObject({ ok: true, state: "ready", text: plan() });
+		expect(gate.state).toBe("ready");
+		expect(gate.verdict?.state).toBe("ready");
+		expect(gate.verdict?.observed.pendingRows).toBe(0);
+		expect(gate.verdict?.problems).toEqual([]);
+	});
+
+	test("AC-67: 1 pending row keeps not_ready naming the pending count", () => {
+		const gate = new CompletionGate({ inactivityMs: 0 });
+		const onePending = plan().replace('<ISSUE node="n1"', '<ISSUE node="n1" status="pending"');
+		gate.stage({ text: plan({ pending: true }), expected: FULL });
+		expect(gate.complete().state).toBe("partial_failure");
+		gate.stage({ text: onePending, expected: FULL }, "1 pending row");
+		const released = gate.release();
+		expect(released).toMatchObject({ ok: false, reason: "not_ready" });
+		expect(gate.state).toBe("partial_failure");
+		expect(gate.verdict?.observed.pendingRows).toBe(1);
+		expect(gate.verdict?.problems.map((problem) => problem.code)).toContain("rows_pending");
+		expect(gate.released).toBe(false);
+	});
+
+	test("AC-71..AC-73: advisory names the pending count with 0 banned strings and 1 warning line", () => {
+		const verdict = validateArtifacts({ text: plan({ pending: true }), expected: FULL });
+		const note = advisoryNoteForVerdict(verdict);
+		expect(note).toContain("2 tracker rows");
+		expect(note).toContain("Warning:");
+		expect(note.match(/Warning:/g)).toHaveLength(1);
+		expect(note).toContain("Planning continues automatically under autonomous mode.");
+		expect(note).not.toMatch(/\b(STOP|proceed|confirm)\b/i);
 	});
 
 	test("legacy staged-only ready cannot beginExecution without a validated Plan", () => {

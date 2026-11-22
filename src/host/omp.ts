@@ -152,6 +152,7 @@ import {
 	SYNC_TYPE,
 } from "./omp-render.ts";
 import {
+	advisoryNoteForVerdict,
 	CompletionGate,
 	DEFAULT_GATE_INACTIVITY_MS,
 	type GateExpected,
@@ -3088,8 +3089,9 @@ export function createOmpExtension(
 		/**
 		 * What a gated flight may put in front of the model right now. `plan`: the gate released the whole plan (once;
 		 * the text is kept so a host re-run of the submission gets the same one). `notice`: validation failed or
-		 * planning did not complete, with 1 advisory note and 0 blocked turns. `none`: nothing to say now; an
-		 * incomplete plan stays silent, and a settled ready plan follows as the one aside.
+		 * planning did not complete, with 1 advisory note and 0 blocked turns; an incomplete plan advises
+		 * (neverSilent, ux.spec SCR-UltrathinkPlanAdvisory) and the request continues. `none`: nothing to say now;
+		 * a settled ready plan follows as the one aside.
 		 */
 		type GateDelivery =
 			| { kind: "plan"; text: string; planId?: string; planHash?: string }
@@ -3115,8 +3117,14 @@ export function createOmpExtension(
 				if (gate.stalled) return { kind: "notice", text: gateStalled(gate.reason) };
 				return { kind: "notice", text: failureNotice(flight) };
 			}
-			// An incomplete plan is never released and stays silent: no prompt-turn message and no aside.
-			if (gate.state === "partial_failure") return { kind: "none" };
+			// An incomplete plan advises and continues (W3, neverSilent): the advisory note names the
+			// pending count with 0 banned strings; the turn starts at once with 0 manual steps.
+			if (gate.state === "partial_failure") {
+				const verdict = gate.verdict;
+				return verdict
+					? { kind: "notice", text: advisoryNoteForVerdict(verdict) }
+					: { kind: "none" };
+			}
 			// `waiting_for_plan` is an advisory pass-through value (transition compatibility): it never
 			// affects the turn, which starts at once. Nothing is armed, delivered or shown now.
 			if (gate.state === "waiting_for_plan") return { kind: "none" };
@@ -3272,16 +3280,18 @@ export function createOmpExtension(
 					store.skipped(flight.timedOut ? "timed out" : (flight.endDetail ?? "no plan"), now());
 			});
 			barWrite(flight.generation, refreshMcp);
-			// Silent states: an incomplete plan or a pass-through state has nothing to show, deferred or inline.
+			// Pass-through state: a waiting_for_plan has nothing to show, deferred or inline.
 			// A silent settle ends planning: the spinner must stop even though nothing was delivered.
-			if (gate && (gate.state === "partial_failure" || gate.state === "waiting_for_plan")) {
+			if (gate && gate.state === "waiting_for_plan") {
 				barWrite(flight.generation, () => store.skipped("plan not ready", now()));
 				return;
 			}
 			if (!flight.deferred) return;
 			// A deliberate skip is intentional silence, deferred or not; an inline delivery already reached the model.
 			if (deliberateSkip(flight.skipped) || flight.deliveredInline) return;
-			// With the gate on, the aside carries only what the gate releases (ready or a fatal notice), never an incomplete plan.
+			// With the gate on, the aside carries what the gate releases or advises: a ready plan,
+			// a fatal notice, or (W3, neverSilent) the incomplete-plan advisory note. The incomplete
+			// plan itself is never injected.
 			let body =
 				flight.content ||
 				(flight.earlyDelivered

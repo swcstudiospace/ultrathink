@@ -1977,17 +1977,19 @@ describe("completion gate (Omp before_agent_start)", () => {
 		expect(sent).toEqual([]);
 	});
 
-	test("a partial plan (fewer nodes than planned) stays silent: no prompt-turn message, no aside, and a later prompt never releases it", async () => {
+	test("a partial plan (fewer nodes than planned) advises and continues: 1 advisory note, no release, and a later prompt never releases it", async () => {
 		const view = viewOf(2);
 		const { run, sent, emit } = setup(async () => ({ context: planXml(1), view }), 1_000);
-		// Silent: no tracker-pending or incomplete-plan notice anywhere.
-		expect(await run()).toBeUndefined();
+		const advisory =
+			"Plan note: 1 of 2 nodes. Warning: incomplete-verdict refresh pending. Planning continues automatically under autonomous mode.";
+		// Advisory: the prompt-turn message names the shortfall, never the plan text.
+		expect(await run()).toEqual(planMsg(advisory));
 		await flush();
 		expect(sent).toEqual([]);
 		expect(JSON.stringify(sent)).not.toContain("SYSTEM_ROLE");
-		// A later prompt is a new submission: it never releases the partial plan.
+		// A later prompt is a new submission: it advises again, it never releases the partial plan.
 		emit("turn_start");
-		expect(await run("next")).toBeUndefined();
+		expect(await run("next")).toEqual(planMsg(advisory));
 		await flush();
 		expect(sent).toEqual([]);
 	});
@@ -2008,24 +2010,34 @@ describe("completion gate (Omp before_agent_start)", () => {
 		expect(sent).toEqual([]);
 	});
 
-	test("a partial plan never opens a confirmation: it stays silent with 0 blocked turns and no dialog", async () => {
+	test("a partial plan never opens a confirmation: it advises and continues with 0 blocked turns and no dialog", async () => {
 		const view = viewOf(2);
 		const host = dialogCtx();
 		const { run, sent } = setup(async () => ({ context: planXml(1), view }), 1_000, {}, host.ctx);
-		expect(await run()).toBeUndefined();
+		const advisory =
+			"Plan note: 1 of 2 nodes. Warning: incomplete-verdict refresh pending. Planning continues automatically under autonomous mode.";
+		const result = await run();
+		expect(result).toEqual(planMsg(advisory));
+		expect(advisory).not.toMatch(/\b(STOP|confirm|proceed)\b/i);
 		await flush();
 		expect(sent).toEqual([]);
 		expect(host.dialogs).toEqual([]);
 		expect(host.notices).toEqual([]);
 	});
 
-	test("a partial plan that finishes after the turn started stays silent (no aside)", async () => {
+	test("AC-71..AC-73: a partial plan that finishes after the turn started advices as the one aside", async () => {
 		const planner = slow();
-		const { run, sent } = setup(planner.plan, 1);
+		const host = dialogCtx();
+		const view = viewOf(2);
+		const { run, sent } = setup(planner.plan, 1, {}, host.ctx);
 		expect(await run()).toBeUndefined();
-		planner.runs[0]?.gate.resolve({ context: planXml(1), view: viewOf(2) });
+		const advisory =
+			"Plan note: 1 of 2 nodes. Warning: incomplete-verdict refresh pending. Planning continues automatically under autonomous mode.";
+		planner.runs[0]?.gate.resolve({ context: planXml(1), view });
 		await flush();
-		expect(sent).toEqual([]);
+		expect(sent).toEqual([{ ...planMsg(advisory, view), options: { deliverAs: "aside" } }]);
+		expect(JSON.stringify(sent)).not.toMatch(/STOP|confirm|proceed/i);
+		expect(host.dialogs).toEqual([]);
 	});
 
 	test("the inactivity watchdog fails loudly: the planner is stopped, the user is told, and the turn already started", async () => {
