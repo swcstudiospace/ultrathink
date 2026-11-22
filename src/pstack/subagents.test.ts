@@ -33,6 +33,12 @@ function mkFleetHome(names: readonly string[]): string {
 		mkdirSync(join(pluginDir, "skills", name), { recursive: true });
 		writeFileSync(join(pluginDir, "skills", name, "SKILL.md"), `# ${name}\n`);
 	}
+	const potetoDir = join(pluginDir, "skills", "poteto-mode");
+	mkdirSync(join(potetoDir, "playbooks"), { recursive: true });
+	writeFileSync(join(potetoDir, "SKILL.md"), "# poteto-mode\n");
+	for (const title of ["investigation", "multi-phase-plan", "feature", "shipping"]) {
+		writeFileSync(join(potetoDir, "playbooks", `${title}.md`), `# ${title}\n`);
+	}
 	return home;
 }
 
@@ -79,6 +85,13 @@ describe("resolveSubagentFleet", () => {
 		const fleet = fleetOrThrow(resolveSubagentFleet({ enabled: true, homeDir: fullHomeDir }));
 		expect(fleet.version).toBe("1.2.0");
 		expect(fleet.skills).toHaveLength(6);
+		expect(fleet.playbooks).toHaveLength(4);
+		expect(fleet.playbooks.map((p) => p.title)).toEqual([
+			"investigation",
+			"multi-phase-plan",
+			"feature",
+			"shipping",
+		]);
 		const roster = renderSubagentRoster(fleet);
 		if (roster === null) throw new Error("roster null");
 		expect(roster).toContain("## PSTACK subagent fleet");
@@ -89,6 +102,8 @@ describe("resolveSubagentFleet", () => {
 		}
 		expect(roster).toContain("- [execute] tdd");
 		expect(roster).toContain("- [discuss] how");
+		expect(roster).toContain("- poteto-mode");
+		expect(roster).toContain("[playbook:execute] playbooks/feature.md");
 		expect(roster).toContain(
 			"The GSD phase loop still sequences the waves (TodoWrite, .planning artifacts, verify gate); the fleet only changes how each unit runs. Absent this section, spawn generic Task subagents.",
 		);

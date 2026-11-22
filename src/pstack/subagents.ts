@@ -6,7 +6,7 @@
  * for the GSD phase loop; the fleet changes how each unit runs, never sequencing.
  * Never throws: every failure is a `reason` or `null`.
  */
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 import {
 	DEFAULT_MAPPING,
 	resolvePstack,
@@ -24,11 +24,35 @@ export interface FleetSkill {
 	purpose: string;
 }
 
+export interface PlaybookRoute {
+	/** The GSD stage this playbook plays. */
+	stage: FleetStage;
+	/** Playbook filename under poteto-mode/playbooks (without .md). */
+	title: string;
+	/** Absolute path to playbooks/<title>.md. */
+	path: string;
+}
+
 export type SubagentFleet =
-	| { ok: true; root: string; version: string; skills: FleetSkill[] }
+	| {
+			ok: true;
+			root: string;
+			version: string;
+			skills: FleetSkill[];
+			playbooks: PlaybookRoute[];
+			potetoModePath: string | null;
+	  }
 	| { ok: false; reason: string };
 
 const STAGE_ORDER: readonly FleetStage[] = ["discuss", "plan", "execute", "review"];
+
+/** Poteto playbook per GSD stage: the poteto command auto-selects this playbook for phase units of that stage. */
+const PLAYBOOK_ROUTES: ReadonlyArray<readonly [FleetStage, string]> = [
+	["discuss", "investigation"],
+	["plan", "multi-phase-plan"],
+	["execute", "feature"],
+	["review", "shipping"],
+];
 
 /** Purpose wording matches pstack.ts PURPOSES. */
 const PURPOSES: Record<string, string> = {
@@ -69,7 +93,25 @@ export function resolveSubagentFleet(input: {
 			}
 		}
 		if (skills.length === 0) return { ok: false, reason: "no pstack skills resolved" };
-		return { ok: true, root: resolved.root, version: resolved.version, skills };
+		const potetoDir = join(resolved.skillsDir, "poteto-mode");
+		const playbooksDir = join(potetoDir, "playbooks");
+		const playbooks: PlaybookRoute[] = [];
+		if (existsSync(potetoDir)) {
+			for (const [stage, title] of PLAYBOOK_ROUTES) {
+				const path = join(playbooksDir, `${title}.md`);
+				if (existsSync(path)) playbooks.push({ stage, title, path });
+			}
+		}
+		return {
+			ok: true,
+			root: resolved.root,
+			version: resolved.version,
+			skills,
+			playbooks,
+			potetoModePath: existsSync(join(potetoDir, "SKILL.md"))
+				? join(potetoDir, "SKILL.md")
+				: null,
+		};
 	} catch (error) {
 		return { ok: false, reason: String(error) };
 	}
@@ -83,6 +125,16 @@ export function renderSubagentRoster(fleet: SubagentFleet, cap = 2000): string |
 			lines.push(
 				`- [${skill.stage}] ${skill.name} — read ${skill.path} — ${skill.purpose} — one subagent per unit`,
 			);
+		}
+		if (fleet.potetoModePath) {
+			lines.push(
+				`- poteto-mode — read ${fleet.potetoModePath} first — the poteto command auto-selects the playbook for each phase`,
+			);
+			for (const route of fleet.playbooks) {
+				lines.push(
+					`- [playbook:${route.stage}] playbooks/${route.title}.md — read ${route.path} — the unit's subagent follows this playbook`,
+				);
+			}
 		}
 		lines.push(
 			"The GSD phase loop still sequences the waves (TodoWrite, .planning artifacts, verify gate); the fleet only changes how each unit runs. Absent this section, spawn generic Task subagents.",
