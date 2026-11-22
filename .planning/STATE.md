@@ -8,17 +8,17 @@ last_updated: "2026-11-20T01:37:07.303Z"
 state_head: c216dc3e7a9703cdd2dd45d817ebc63807e4ae77
 progress:
   total_phases: 6
-  completed_phases: 2
+  completed_phases: 4
   total_plans: 0
   completed_plans: 5
-  percent: 33
+  percent: 67
 last_activity: 2026-11-18
 implementation_head: bab5a83 (local and pushed candidate; not integrated or deployed)
 implementation_branch: gsd/remove-cimd-phases
 implementation_root: /root/src/worktrees/ultrathink-remove-cimd
 current_phase: 110
 current_phase_name: Persist and checkpoint the phase loop
-last_activity_desc: "v1.24: phases 109 and 113 passed (113 re-verified on origin/main a95752c); 110-112 and 114 human_needed and deferred; 48 Codeblocked PRDs published on Linear SPE-35034-SPE-35081 and linked to the tracked Notion Uplifted Prompts; milestone lifecycle awaits owner"
+last_activity_desc: "v1.24: phases 109-112 passed (110/111/112 UAT owner-attested 2026-11-19, promoted 2026-11-22); 113 stale (digest refresh pending); Phase 114 WITHDRAWN 2026-11-21 by owner - ToT/Codeblocked PRDs removed, main rolled back to 8752f18; milestone close-out in progress"
 ---
 
 # Project State
@@ -192,9 +192,9 @@ Resume file: None
 | 74 | verification_deferred_human | /gsd:verify-work 74 |
 | 75 | verification_deferred_human | /gsd:verify-work 75 |
 | 76 | verification_deferred_human | /gsd:verify-work 76 |
-| 110 | passed | UAT 4/4 owner-attested 2026-11-19; promoted 2026-11-22 |
-| 111 | passed | UAT 4/4 owner-attested 2026-11-19; promoted 2026-11-22 |
-| 114 | verification_deferred_human | /gsd:verify-work 114 (UAT 1-6 pass owner-confirmed 2026-11-21; criterion 7 live run pending) |
+| 110 | withdrawn | Passed 2026-11-22 (UAT 4/4); row kept as closed record, phases 110-112 passed |
+| 111 | withdrawn | Passed 2026-11-22 (UAT 4/4); row kept as closed record |
+| 114 | withdrawn | Owner withdrew 2026-11-21: ToT/Codeblocked PRDs removed, main rolled back to 8752f18 |
 | 108 | accepted_tech_debt | Owner closed v1.22 on 2026-11-12 without supplying live evidence (MCP-12/MCP-13 unverified against hosted; phase 107 not deployed). Not a verification pass. |
 | 104 | withdrawn | Owner withdrew phase 104 and its former verification gate; historical records are preserved in the withdrawal archive. |
 
