@@ -284,6 +284,18 @@ describe("Tree-of-Thought stage through the hook and the gate", () => {
 		expect(existsSync(join(bare.deps.stateDir, "tot"))).toBe(false);
 	}, 60_000);
 
+	test("ToT waits for the whole plan: no clarifying questions are asked mid-plan", async () => {
+		const w = world();
+		let clarifyCalls = 0;
+		w.deps.clarify = async () => {
+			clarifyCalls++;
+			return { items: [] };
+		};
+		const result = await runPromptSubmit(input, w.deps);
+		expect(clarifyCalls).toBe(0);
+		expect(result.prd).toBeDefined();
+	}, 60_000);
+
 	test("no tracker rows, no PRDs: the stage is skipped instead of spending model calls", async () => {
 		const w = world();
 		w.deps.track = async () => undefined;
