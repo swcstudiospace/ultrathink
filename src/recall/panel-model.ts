@@ -273,11 +273,11 @@ function emptyReasonForNone(reasonCode: KnowledgeReason | undefined): PanelEmpty
 
 const DOC_MATCH_REASON = "Routed from the Greptile knowledge base index";
 
-function docItem(path: string): PanelItem {
+function docItem(path: string, preview = ""): PanelItem {
 	return {
 		id: `doc:${path}`,
 		title: sanitizePanelText(path, TITLE_MAX_CHARS),
-		preview: "",
+		preview: sanitizePanelText(preview, PREVIEW_MAX_CHARS),
 		source: { kind: "greptile_doc", ref: sanitizePanelText(path, REF_MAX_CHARS) },
 		timestamp: null,
 		matchReason: DOC_MATCH_REASON,
@@ -293,13 +293,15 @@ function docItem(path: string): PanelItem {
  * - `error` is error, classed by the reason code, with no retry scheduled.
  * Every envelope except loading carries the probe's stages.
  */
-function knowledgeState(lookup: KnowledgeLookup): PanelEnvelope {
+function knowledgeState(
+	lookup: KnowledgeLookup & { digest?: string },
+): PanelEnvelope {
 	const stages = lookup.stages ?? [];
 	switch (lookup.outcome) {
 		case "used":
 			return {
 				status: "success",
-				items: lookup.docs.map(docItem),
+				items: lookup.docs.map((doc, i) => docItem(doc, i === 0 ? (lookup.digest ?? "") : "")),
 				excluded: [],
 				missing: [],
 				stages,
@@ -421,7 +423,7 @@ export function withPanelMeta(panel: PanelEnvelope, invocation: PanelInvocation)
  * metadata: the query preview is the record's routing query, and the filters are its scope.
  */
 export function knowledgeLookupToPanel(
-	lookup: KnowledgeLookup,
+	lookup: KnowledgeLookup & { digest?: string },
 	invocation?: KnowledgeInvocation,
 ): PanelEnvelope {
 	const panel = knowledgeState(lookup);

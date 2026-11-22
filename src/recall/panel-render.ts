@@ -97,9 +97,27 @@ function stageRows(stages: KnowledgeStage[]): string[] {
 	});
 }
 
-function bodyRows(body: PanelBody): string[] {
+/** Wrap one item preview into display lines: header, then paragraph lines (width-aware). */
+function itemRows(item: PanelItem, width: number): string[] {
+	const head = row("item", itemText(item));
+	const preview = collapseWhitespace(item.preview.replace(CONTROL_RUN, " ")).trim();
+	if (preview === "") return [head];
+	const budget = Math.max(20, width - 14);
+	const words = preview.split(/\s+/).filter(Boolean);
+	const lines: string[] = [head];
+	let cur = "";
+	for (const word of words) {
+		if (cur === "") cur = word;
+		else if (cur.length + 1 + word.length <= budget) cur += ` ${word}`;
+		else { lines.push(`  ${"".padEnd(9)}${cur}`); cur = word; }
+	}
+	if (cur !== "") lines.push(`  ${"".padEnd(9)}${cur}`);
+	return lines;
+}
+
+function bodyRows(body: PanelBody, width: number): string[] {
 	return [
-		...body.items.map((item) => row("item", itemText(item))),
+		...body.items.flatMap((item) => itemRows(item, width)),
 		...body.excluded.map((entry) =>
 			row(
 				"excluded",
@@ -127,7 +145,7 @@ function retryText(retry: ErrorEnvelope["retry"]): string {
 	return `scheduled, attempt ${retry.attempt}${when}`;
 }
 
-function panelLines(panel: PanelEnvelope, context: PanelRenderContext): string[] {
+function panelLines(panel: PanelEnvelope, context: PanelRenderContext, width: number): string[] {
 	const head = `${STATUS_ICON[panel.status]} [${STATUS_TAG[panel.status]}] ${collapseWhitespace(context.label.replace(CONTROL_RUN, " "))}`;
 	switch (panel.status) {
 		case "loading": {
@@ -138,7 +156,7 @@ function panelLines(panel: PanelEnvelope, context: PanelRenderContext): string[]
 			return [`${head} ${SKELETON} ${elapsed}`];
 		}
 		case "success":
-			return [head, countsLine(panel), ...bodyRows(panel)];
+			return [head, countsLine(panel), ...bodyRows(panel, width)];
 		case "empty": {
 			const removed = [...new Set(panel.excluded.map((entry) => entry.reason))];
 			return [
@@ -151,7 +169,7 @@ function panelLines(panel: PanelEnvelope, context: PanelRenderContext): string[]
 						]),
 				...(removed.length > 0 ? [`  removed by: ${removed.join(", ")}`] : []),
 				countsLine(panel),
-				...bodyRows(panel),
+				...bodyRows(panel, width),
 			];
 		}
 		case "partial":
@@ -159,7 +177,7 @@ function panelLines(panel: PanelEnvelope, context: PanelRenderContext): string[]
 				head,
 				`  remainder: ${panel.remainder} — ${PARTIAL_LABEL[panel.remainder]}`,
 				countsLine(panel),
-				...bodyRows(panel),
+				...bodyRows(panel, width),
 			];
 		case "error":
 			return [
@@ -184,5 +202,5 @@ export function renderPanel(
 ): string[] {
 	const columns = Math.floor(width);
 	if (!(columns >= 1)) return [];
-	return panelLines(panel, context).map((line) => truncateToWidth(line, columns));
+	return panelLines(panel, context, columns).map((line) => truncateToWidth(line, columns));
 }

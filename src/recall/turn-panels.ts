@@ -27,7 +27,7 @@ export interface TurnPanels {
 
 /** The lookups the planner made for one prompt; each is absent when that source did not run. */
 interface TurnLookups {
-	knowledge?: KnowledgeLookup;
+	knowledge?: KnowledgeLookup & { digest?: string };
 	lessons?: LessonsLookup;
 	skills?: SkillsLookup;
 	moments?: LessonsLookup;
