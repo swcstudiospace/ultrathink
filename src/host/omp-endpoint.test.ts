@@ -25,7 +25,7 @@ import type { LegacyRoute } from "../route-defaults.ts";
 import type { TrackPlan } from "../track/types.ts";
 import { selectEngine } from "./engine.ts";
 import type { ModelResolution } from "./engine.ts";
-import { planFailedNotice } from "./omp.ts";
+import { gateStalled } from "./omp.ts";
 import type { OmpPlanner, OmpPlanRequest } from "./omp.ts";
 import {
 	fakeModel,
@@ -85,7 +85,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 	const noPlanNotice = {
 		message: {
 			customType: "ultrathink-plan",
-			content: planFailedNotice("the planner produced no plan"),
+			content: gateStalled("the planner produced no plan"),
 			display: true,
 			attribution: "agent",
 		},
@@ -190,7 +190,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 			1,
 			{ config: () => config, stateDir: root },
 		);
-		expect(await run()).toMatchObject({ message: { customType: "ultrathink-pending" } });
+	expect(await run()).toBeUndefined();
 		config.claude.model = "PIN_B";
 		expect(await run()).toMatchObject({ message: { content: "PIN_B" } });
 		expect(planner.resolutions.map((resolution) => resolution.modelId)).toEqual(["PIN_A", "PIN_B"]);
@@ -323,13 +323,13 @@ describe("named legacy flight identity (REV15-005)", () => {
 				{ stateDir, config: () => config, now: () => 5_000 },
 				{ cwd: root, model: fakeModel("acme", "unchanged-session-model"), ...t.ctx },
 			);
-			const pending = { message: expect.objectContaining({ customType: "ultrathink-pending" }) };
+		const pending = undefined;
 			const paths = ["sessions/s1.json", "sessions/s1.xml", "last.json"].map((path) =>
 				join(stateDir, path),
 			);
 			emit("session_start");
 			try {
-				expect(await run(prompt)).toEqual(pending);
+			expect(await run(prompt)).toBe(pending);
 				const old = runs[0]!;
 				await old.uplifted.promise;
 				expect(calls.map((call) => [call.path, call.model])).toEqual([[oldPath, "ENDPOINT_MODEL"]]);
@@ -343,7 +343,7 @@ describe("named legacy flight identity (REV15-005)", () => {
 
 				// Same prompt/session/submission and model: no turn_start or other target/provenance mutation.
 				config.grok[endpoint] = `http://127.0.0.1:${server.port}/current`;
-				expect(await run(prompt)).toEqual(pending);
+			expect(await run(prompt)).toBe(pending);
 				expect(runs).toHaveLength(2);
 				const current = runs[1]!;
 				expect(current.request).toMatchObject({
@@ -506,15 +506,15 @@ describe("named legacy flight identity (REV15-005)", () => {
 				1,
 				{ config: () => config, stateDir: root },
 			);
-			const pending = { message: expect.objectContaining({ customType: "ultrathink-pending" }) };
-			expect(await run()).toEqual(pending);
+		const pending = undefined;
+		expect(await run()).toBe(pending);
 			config.grok[endpoint] = " https://SECRET-GATEWAY-A.invalid/// ";
 			config.grok[unused] = "https://SECRET-UNUSED.invalid";
-			expect(await run()).toEqual(pending);
+		expect(await run()).toBe(pending);
 			expect(runs).toHaveLength(1);
 			expect(runs[0]?.signal.aborted).toBe(false);
 			config.grok[endpoint] = "https://SECRET-GATEWAY-B.invalid";
-			expect(await run()).toEqual(pending);
+		expect(await run()).toBe(pending);
 			expect(runs).toHaveLength(2);
 			expect(runs.map((entry) => entry.signal.aborted)).toEqual([true, false]);
 			runs[0]!.gate.resolve("OLD PLAN");

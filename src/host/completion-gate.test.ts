@@ -3,10 +3,12 @@
 import { describe, expect, test } from "bun:test";
 import {
 	CompletionGate,
+	advisoryNoteForVerdict,
 	DEFAULT_GATE_INACTIVITY_MS,
 	type GateProgress,
 	type GateState,
 	type GateTimers,
+	planAdvisoryNote,
 	planGateAllowed,
 	planGateHash,
 	validateArtifacts,
@@ -124,6 +126,22 @@ describe("validateArtifacts", () => {
 		expect(
 			validateArtifacts({ text: status, expected: FULL }).problems.map((problem) => problem.code),
 		).toEqual(["tracking_incomplete"]);
+	});
+
+	test("an incomplete plan renders as one advisory note naming every partial problem, with no stop instruction", () => {
+		const verdict = validateArtifacts({ text: plan({ pending: true }), expected: FULL });
+		expect(verdict.state).toBe("partial_failure");
+		const note = advisoryNoteForVerdict(verdict);
+		expect(note).toBe(
+			"Plan note: 2 tracker rows were never confirmed. The request continues as written.",
+		);
+		expect(note).not.toMatch(/\b(STOP|hold|confirm|proceed)\b/i);
+		expect(planAdvisoryNote("1 of 2 nodes")).toBe(
+			"Plan note: 1 of 2 nodes. The request continues as written.",
+		);
+		expect(planAdvisoryNote("")).toBe(
+			"Plan note: the plan is incomplete. The request continues as written.",
+		);
 	});
 
 	test("a degraded node and a flagged degradation are partial failures", () => {
@@ -464,16 +482,13 @@ describe("Plan gate (SPE-35029 design B)", () => {
 	});
 
 	test("(3) late valid Plan auto-resumes to ready; done requires validation", () => {
-		let calls = 0;
-		const gate = new CompletionGate({
-			inactivityMs: 0,
-			maxPollAttempts: 5,
-			planProvider: () => (calls++ < 1 ? undefined : CHECKLIST_PLAN),
-		});
+		const gate = new CompletionGate({ inactivityMs: 0 });
 		gate.enterWaitingForPlan();
-		expect(gate.pollOnce()).toBeUndefined();
 		expect(gate.state).toBe("waiting_for_plan");
-		const accepted = gate.pollOnce();
+		// Waiting is an advisory pass-through: an invalid candidate stays waiting, a valid one auto-advances.
+		expect(gate.submitPlan("plain text, no checklist")).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
 		expect(accepted).toBeDefined();
 		expect(gate.state).toBe("ready");
 		expect(gate.planHash).toBe(accepted!.planHash);
@@ -488,15 +503,6 @@ describe("Plan gate (SPE-35029 design B)", () => {
 		expect(gate.hasValidationEvidence).toBe(true);
 		expect(gate.completeExecution()).toBe(true);
 		expect(gate.state).toBe("complete");
-
-		// Bounded polling blocks loudly after max attempts, never silent.
-		const blocked = new CompletionGate({ inactivityMs: 0, maxPollAttempts: 2 });
-		blocked.enterWaitingForPlan();
-		blocked.pollOnce();
-		blocked.pollOnce();
-		expect(blocked.blocked).toBe(true);
-		expect(blocked.blockReason).toContain("blocked");
-		expect(blocked.state).toBe("waiting_for_plan");
 	});
 
 	test("(4) every worker receives the identical plan hash", () => {
@@ -577,25 +583,20 @@ describe("Plan gate review fixes (round 1)", () => {
 		expect(validated.plan).toBeUndefined();
 	});
 
-	test("(3) manual pollOnce and re-arming leave at most one poll timer", () => {
+	test("(3) entering waiting arms no timer and never blocks", () => {
 		const clock = fakeClock();
-		const gate = new CompletionGate({
-			inactivityMs: 0,
-			timers: clock.timers,
-			pollIntervalMs: 1_000,
-		});
+		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers });
 		expect(gate.enterWaitingForPlan()).toBe(true);
-		expect(clock.armed()).toBe(1);
-		gate.pollOnce();
-		expect(clock.armed()).toBe(1);
-		gate.pollOnce();
-		expect(clock.armed()).toBe(1);
+		expect(clock.armed()).toBe(0);
 		clock.advance(1_000);
 		expect(gate.state).toBe("waiting_for_plan");
-		expect(clock.armed()).toBe(1);
-		// Re-entering waiting restarts polling without stacking a second handle.
+		expect(clock.armed()).toBe(0);
 		expect(gate.enterWaitingForPlan()).toBe(true);
-		expect(clock.armed()).toBe(1);
+		expect(clock.armed()).toBe(0);
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		expect(gate.state).toBe("ready");
+		expect(clock.armed()).toBe(0);
 	});
 
 	test("(4) the checklist requires labeled non-empty values, SPE-<n> and ROADMAP wave/ordering", () => {
@@ -792,24 +793,19 @@ describe("Plan gate review fixes (round 4)", () => {
 		]);
 	});
 
-	test("(2) a throwing planProvider blocks loudly and stays waiting, never silent", () => {
+	test("(2) waiting emits progress and an invalid candidate stays waiting without blocking", () => {
 		const progress: GateProgress[] = [];
-		const gate = new CompletionGate({
-			inactivityMs: 0,
-			maxPollAttempts: 5,
-			planProvider: () => {
-				throw new Error("boom-provider");
-			},
-		});
+		const gate = new CompletionGate({ inactivityMs: 0 });
 		gate.onProgress((p) => progress.push(p));
 		expect(gate.enterWaitingForPlan()).toBe(true);
-		expect(gate.pollOnce()).toBeUndefined();
 		expect(gate.state).toBe("waiting_for_plan");
-		expect(gate.blocked).toBe(true);
-		expect(gate.blockReason).toContain("boom-provider");
+		expect(gate.submitPlan("plain text, no checklist")).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
 		expect(progress.some((p) => p.label)).toBe(true);
 		expect(progress.at(-1)).toMatchObject({ state: "waiting_for_plan" });
-		expect(progress.at(-1)!.label).toContain("boom-provider");
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		expect(gate.state).toBe("ready");
 	});
 
 	test("(3) ROADMAP scan requires every ROADMAP line to carry the token", () => {
@@ -886,16 +882,9 @@ describe("Plan gate review fixes (round 6)", () => {
 	});
 });
 describe("Plan gate review fixes (round 7)", () => {
-	test("(1) tryTransition waiting_for_plan from ready quarantines the stale plan and starts polling", () => {
+	test("(1) tryTransition waiting_for_plan from ready quarantines the stale plan without polling", () => {
 		const clock = fakeClock();
-		let calls = 0;
-		const gate = new CompletionGate({
-			inactivityMs: 0,
-			timers: clock.timers,
-			pollIntervalMs: 1_000,
-			maxPollAttempts: 3,
-			planProvider: () => (calls++ < 1 ? undefined : CHECKLIST_PLAN),
-		});
+		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers });
 		const accepted = gate.submitPlan(CHECKLIST_PLAN);
 		expect(accepted).toBeDefined();
 		expect(gate.state).toBe("ready");
@@ -915,68 +904,53 @@ describe("Plan gate review fixes (round 7)", () => {
 		expect(gate.buildWorkerContexts(["w1"])).toBeUndefined();
 		expect(gate.getExecutionContext()).toBeUndefined();
 		expect(gate.release()).toMatchObject({ ok: false });
-		// Polling started with a fresh budget: exactly one timer, no attempts consumed yet.
-		expect(clock.armed()).toBe(1);
-		expect(gate.pollAttempts).toBe(0);
-		expect(gate.blocked).toBe(false);
+		// Waiting arms no timer and has no blocked flag: it is an advisory pass-through.
+		expect(clock.armed()).toBe(0);
 		// The stale plan cannot re-enter: neither guard may accept it.
 		expect(gate.tryTransition("plan_validated", "tester", "stale bypass")).toBe(false);
 		expect(gate.tryTransition("ready", "tester", "stale bypass")).toBe(false);
 		expect(gate.beginExecution()).toBe(false);
 		expect(gate.state).toBe("waiting_for_plan");
 		expect(gate.plan).toBeUndefined();
-		// A late valid Plan still auto-resumes through polling (fresh budget of 3).
-		expect(gate.pollOnce()).toBeUndefined();
+		// A late valid Plan still auto-resumes through submitPlan with no polling.
+		expect(gate.submitPlan("plain text, no checklist")).toBeUndefined();
 		expect(gate.state).toBe("waiting_for_plan");
-		const revived = gate.pollOnce();
+		const revived = gate.submitPlan(CHECKLIST_PLAN);
 		expect(revived).toBeDefined();
 		expect(gate.state).toBe("ready");
 		expect(gate.planHash).toBe(revived!.planHash);
 		expect(clock.armed()).toBe(0);
 	});
 
-	test("(2) waiting self-transition preserves the in-flight poll budget", () => {
+	test("(2) waiting self-transition stays waiting and never blocks", () => {
 		const clock = fakeClock();
-		const gate = new CompletionGate({
-			inactivityMs: 0,
-			timers: clock.timers,
-			pollIntervalMs: 1_000,
-			maxPollAttempts: 2,
-		});
+		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers });
 		expect(gate.enterWaitingForPlan()).toBe(true);
-		expect(gate.pollOnce()).toBeUndefined();
-		expect(gate.pollAttempts).toBe(1);
-		// Re-quarantining while already waiting (the invalid-candidate self path)
-		// must not reset the budget, or bounded polling could never block.
+		expect(clock.armed()).toBe(0);
+		// Re-quarantining while already waiting keeps the advisory pass-through; no timer or flag ever appears.
 		expect(gate.submitPlan("plain text, no checklist")).toBeUndefined();
 		expect(gate.state).toBe("waiting_for_plan");
-		expect(gate.pollAttempts).toBe(1);
-		expect(gate.pollOnce()).toBeUndefined();
-		expect(gate.pollAttempts).toBe(2);
-		expect(gate.blocked).toBe(true);
-		expect(gate.blockReason).toContain("blocked");
-	});
-});
-describe("Plan gate review fixes (round 9)", () => {
-	test("(1) blocked gate clears blocked/blockReason when a valid plan leaves waiting_for_plan", () => {
-		const clock = fakeClock();
-		const gate = new CompletionGate({
-			inactivityMs: 0,
-			timers: clock.timers,
-			pollIntervalMs: 1_000,
-			maxPollAttempts: 2,
-		});
-		expect(gate.enterWaitingForPlan()).toBe(true);
-		expect(gate.pollOnce()).toBeUndefined();
-		expect(gate.pollOnce()).toBeUndefined();
-		expect(gate.blocked).toBe(true);
-		expect(gate.blockReason).toContain("blocked");
+		expect(clock.armed()).toBe(0);
+		expect(gate.submitPlan("plain text, no checklist")).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
 		expect(clock.armed()).toBe(0);
 		const accepted = gate.submitPlan(CHECKLIST_PLAN);
 		expect(accepted).toBeDefined();
 		expect(gate.state).toBe("ready");
-		expect(gate.blocked).toBe(false);
-		expect(gate.blockReason).toBe("");
+		expect(clock.armed()).toBe(0);
+	});
+});
+describe("Plan gate review fixes (round 9)", () => {
+	test("(1) a valid plan leaves waiting_for_plan to ready with no timer or flag", () => {
+		const clock = fakeClock();
+		const gate = new CompletionGate({ inactivityMs: 0, timers: clock.timers });
+		expect(gate.enterWaitingForPlan()).toBe(true);
+		expect(gate.submitPlan("plain text, no checklist")).toBeUndefined();
+		expect(gate.state).toBe("waiting_for_plan");
+		expect(clock.armed()).toBe(0);
+		const accepted = gate.submitPlan(CHECKLIST_PLAN);
+		expect(accepted).toBeDefined();
+		expect(gate.state).toBe("ready");
 		expect(clock.armed()).toBe(0);
 	});
 

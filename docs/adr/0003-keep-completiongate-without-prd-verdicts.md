@@ -1,6 +1,6 @@
 # ADR-0003. Keep CompletionGate without PRD verdicts
 
-- **Status:** accepted
+- **Status:** superseded
 - **Date:** 2026-11-22
 - **Deciders:** A03
 - **Task:** T1750-arch
