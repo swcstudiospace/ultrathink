@@ -247,7 +247,18 @@ describe("graphToXml", () => {
 
 const FIVE_STEPS = "1. read\n2. plan\n3. build\n4. test\n5. ship";
 const FIVE_STEP_LIST = ["read", "plan", "build", "test", "ship"];
-const REJECTED = { ok: false, thinking: "", conclusion: "", steps: [] };
+const REJECTED = {
+	ok: false,
+	thinking: "",
+	conclusion: "",
+	steps: [],
+	outcome: "",
+	evidence: [],
+	files: [],
+	acceptance: [],
+	risks: [],
+	alternatives: [],
+};
 
 describe("parseNodeFill", () => {
 	test("accepts a closed rationale of 5 steps plus a closed conclusion", () => {
@@ -255,13 +266,35 @@ describe("parseNodeFill", () => {
 			parseNodeFill(
 				`<node><rationale>${FIVE_STEPS}</rationale><conclusion>do x</conclusion></node>`,
 			),
-		).toEqual({ ok: true, thinking: FIVE_STEPS, conclusion: "do x", steps: FIVE_STEP_LIST });
+		).toEqual({
+			ok: true,
+			thinking: FIVE_STEPS,
+			conclusion: "do x",
+			steps: FIVE_STEP_LIST,
+			outcome: "",
+			evidence: [],
+			files: [],
+			acceptance: [],
+			risks: [],
+			alternatives: [],
+		});
 	});
 
 	test("still reads the older <thinking> tag and the <answer> tag", () => {
 		expect(
 			parseNodeFill(`<node><thinking>${FIVE_STEPS}</thinking><answer>do x</answer></node>`),
-		).toEqual({ ok: true, thinking: FIVE_STEPS, conclusion: "do x", steps: FIVE_STEP_LIST });
+		).toEqual({
+			ok: true,
+			thinking: FIVE_STEPS,
+			conclusion: "do x",
+			steps: FIVE_STEP_LIST,
+			outcome: "",
+			evidence: [],
+			files: [],
+			acceptance: [],
+			risks: [],
+			alternatives: [],
+		});
 	});
 
 	test("accepts 8 steps and rejects 4 and 9", () => {
@@ -554,7 +587,7 @@ describe("injectGraphXml dollar sequences", () => {
 
 	test("a replaced GRAPH_OF_THOUGHT block keeps every $ sequence byte-identical (GOT-02)", () => {
 		const xml =
-			"<BUILD_PROMPT><ORIGINAL>x</ORIGINAL><GRAPH_OF_THOUGHT><GOAL>old</GOAL></GRAPH_OF_THOUGHT></BUILD_PROMPT>";
+			'<BUILD_PROMPT><ORIGINAL>x</ORIGINAL><GRAPH_OF_THOUGHT version="2"><GOAL>old</GOAL></GRAPH_OF_THOUGHT></BUILD_PROMPT>';
 		const out = injectGraphXml(xml, graph);
 		expect(out).toBe(`<BUILD_PROMPT><ORIGINAL>x</ORIGINAL>${graphToXml(graph)}</BUILD_PROMPT>`);
 	});
@@ -572,15 +605,15 @@ describe("injectGraphXml", () => {
 		expect(out.startsWith("<BUILD_PROMPT>")).toBe(true);
 		expect(out).toContain("<ORIGINAL>add list</ORIGINAL>");
 		expect(out).toContain("<SCOPE>ui</SCOPE>");
-		expect(out).toContain("<GRAPH_OF_THOUGHT>");
+		expect(out).toContain('<GRAPH_OF_THOUGHT version="2">');
 		expect(out).toContain("</GRAPH_OF_THOUGHT>");
 		expect(out.endsWith("</BUILD_PROMPT>")).toBe(true);
-		expect(out.indexOf("<GRAPH_OF_THOUGHT>")).toBeGreaterThan(out.indexOf("<SCOPE>"));
+		expect(out.indexOf('<GRAPH_OF_THOUGHT version="2">')).toBeGreaterThan(out.indexOf("<SCOPE>"));
 	});
 
 	test("replaces existing GRAPH_OF_THOUGHT including its WORKFLOW", () => {
 		const xml =
-			"<BUILD_PROMPT><ORIGINAL>x</ORIGINAL><GRAPH_OF_THOUGHT><GOAL>old</GOAL>" +
+			'<BUILD_PROMPT><ORIGINAL>x</ORIGINAL><GRAPH_OF_THOUGHT version="2"><GOAL>old</GOAL>' +
 			'<WORKFLOW><WAVE n="1" parallel="false">stale</WAVE></WORKFLOW></GRAPH_OF_THOUGHT></BUILD_PROMPT>';
 		const out = injectGraphXml(xml, { goal: "new goal", nodes: DIAMOND });
 		expect(out).toContain("<GOAL>new goal</GOAL>");
@@ -598,5 +631,177 @@ describe("graphSketch", () => {
 		const sketch = graphSketch(FALLBACK_GRAPH);
 		expect(sketch).toContain("n1  Understand  understand");
 		expect(sketch).toContain("n2  Decompose  decompose  deps=n1");
+	});
+});
+
+describe("enriched node fields", () => {
+	test("normalizeGraph trims, drops empties and caps arrays at 8, rejects invalid enums", () => {
+		const many = Array.from({ length: 10 }, (_, i) => ` item${i + 1} `);
+		const out = normalizeGraph(
+			{
+				goal: "g",
+				risks: [" r1 ", "", "r2"],
+				assumptions: ["a1"],
+				nodes: [
+					{
+						id: "n1",
+						title: "A",
+						kind: "understand",
+						question: "q1",
+						depends_on: [],
+						summary: "  sum  ",
+						evidence: many,
+						files: [" src/a.ts ", ""],
+						acceptance: ["done"],
+						risks: ["risky"],
+						alternatives: ["alt"],
+						priority: "bogus",
+						confidence: "high",
+						effort: "x",
+					},
+					{ id: "n2", title: "B", kind: "generate", question: "q2", depends_on: ["n1"] },
+					{ id: "n3", title: "C", kind: "generate", question: "q3", depends_on: ["n2"] },
+				],
+			},
+			"fb",
+			3,
+			8,
+		);
+		const first = out.nodes[0]!;
+		expect(first.summary).toBe("sum");
+		expect(first.evidence).toEqual(Array.from({ length: 8 }, (_, i) => `item${i + 1}`));
+		expect(first.files).toEqual(["src/a.ts"]);
+		expect(first.acceptance).toEqual(["done"]);
+		expect(first.priority).toBeUndefined();
+		expect(first.confidence).toBe("high");
+		expect(first.effort).toBeUndefined();
+		// Graph-level lists ride on the normalized graph beyond ThoughtGraph's core fields.
+		const enriched = out as typeof out & { risks?: string[]; assumptions?: string[] };
+		expect(enriched.risks).toEqual(["r1", "r2"]);
+		expect(enriched.assumptions).toEqual(["a1"]);
+		// Back-compat: a node without enriched fields parses with empty arrays.
+		expect(out.nodes[1]?.evidence).toEqual([]);
+		expect(out.nodes[1]?.summary).toBeUndefined();
+	});
+
+	test("graph risks/assumptions default to empty arrays when absent", () => {
+		const out = normalizeGraph(
+			{
+				goal: "g",
+				nodes: ["n1", "n2", "n3"].map((id) => ({
+					id,
+					title: id,
+					kind: "generate",
+					question: `q ${id}`,
+					depends_on: [],
+				})),
+			},
+			"fb",
+			3,
+			8,
+		);
+		// Graph-level lists ride on the normalized graph beyond ThoughtGraph's core fields.
+		const enriched = out as typeof out & { risks?: string[]; assumptions?: string[] };
+		expect(enriched.risks).toEqual([]);
+		expect(enriched.assumptions).toEqual([]);
+	});
+
+	test("parseNodeFill reads outcome and list tags, stripping bullets", () => {
+		const fill = parseNodeFill(
+			`<node><rationale>${FIVE_STEPS}</rationale><conclusion>c</conclusion><outcome>shipped</outcome>` +
+				`<evidence>- first\n• second\n* third</evidence><files>src/a.ts\nsrc/b.ts</files>` +
+				`<acceptance>- passes</acceptance><risks>risk one</risks>` +
+				`<alternatives>* alt one</alternatives></node>`,
+		);
+		expect(fill.ok).toBe(true);
+		expect(fill.outcome).toBe("shipped");
+		expect(fill.evidence).toEqual(["first", "second", "third"]);
+		expect(fill.files).toEqual(["src/a.ts", "src/b.ts"]);
+		expect(fill.acceptance).toEqual(["passes"]);
+		expect(fill.risks).toEqual(["risk one"]);
+		expect(fill.alternatives).toEqual(["alt one"]);
+	});
+
+	test("old fills with only rationale and conclusion still parse with empty arrays", () => {
+		const fill = parseNodeFill(
+			`<node><rationale>${FIVE_STEPS}</rationale><conclusion>c</conclusion></node>`,
+		);
+		expect(fill.ok).toBe(true);
+		expect(fill.outcome).toBe("");
+		expect(fill.evidence).toEqual([]);
+		expect(fill.files).toEqual([]);
+		expect(fill.acceptance).toEqual([]);
+		expect(fill.risks).toEqual([]);
+		expect(fill.alternatives).toEqual([]);
+	});
+
+	test("normalize -> graphToXml round-trips enriched fields and escapes XML", () => {
+		const graph = normalizeGraph(
+			{
+				goal: 'g <goal> & "q"',
+				risks: ["r <1> & 2"],
+				assumptions: ["a1"],
+				nodes: [
+					{
+						id: "n1",
+						title: 'A & "B"',
+						kind: "understand",
+						question: "q <1>",
+						depends_on: [],
+						summary: "sum > here",
+						evidence: ["e & 1"],
+						files: ["src/a.ts"],
+						acceptance: ["acc"],
+						risks: ["nr"],
+						alternatives: ["alt"],
+						priority: "P1",
+						confidence: "low",
+						effort: "M",
+					},
+					{ id: "n2", title: "B", kind: "generate", question: "q2", depends_on: ["n1"] },
+					{ id: "n3", title: "C", kind: "generate", question: "q3", depends_on: ["n2"] },
+				],
+			},
+			"fb",
+			3,
+			8,
+		);
+		const xml = graphToXml(graph);
+		expect(xml.startsWith('<GRAPH_OF_THOUGHT version="2">')).toBe(true);
+		expect(xml).toContain("<GOAL>g &lt;goal&gt; &amp; &quot;q&quot;</GOAL>");
+		expect(xml).toContain("<RISKS>");
+		expect(xml).toContain("<RISK>r &lt;1&gt; &amp; 2</RISK>");
+		expect(xml).toContain("<ASSUMPTIONS>");
+		expect(xml).toContain("<ASSUMPTION>a1</ASSUMPTION>");
+		expect(xml).toMatch(
+			/<NODE id="n1" kind="understand" title="A &amp; &quot;B&quot;" priority="P1" confidence="low" effort="M">/,
+		);
+		expect(xml).toContain("<SUMMARY>sum &gt; here</SUMMARY>");
+		expect(xml).toContain("<EVIDENCE>");
+		expect(xml).toContain("<ITEM>e &amp; 1</ITEM>");
+		expect(xml).toContain("<FILES>");
+		expect(xml).toContain("<FILE>src/a.ts</FILE>");
+		expect(xml).toContain("<ACCEPTANCE>");
+		expect(xml).toContain("<CRITERION>acc</CRITERION>");
+		expect(xml).toContain("<ALTERNATIVES>");
+		expect(xml).toContain("<ALTERNATIVE>alt</ALTERNATIVE>");
+		expect(xml).toContain("<QUESTION>q &lt;1&gt;</QUESTION>");
+	});
+
+	test("empty enriched fields are omitted from the XML", () => {
+		const xml = graphToXml({ goal: "g", nodes: DIAMOND });
+		expect(xml.startsWith('<GRAPH_OF_THOUGHT version="2">')).toBe(true);
+		expect(xml).not.toContain("<SUMMARY>");
+		expect(xml).not.toContain("<EVIDENCE>");
+		expect(xml).not.toContain("<FILES>");
+		expect(xml).not.toContain("<ACCEPTANCE>");
+		expect(xml).not.toContain("<ALTERNATIVES>");
+		expect(xml).not.toContain("priority=");
+		expect(xml).not.toContain("confidence=");
+		expect(xml).not.toContain("effort=");
+		// Graph-level RISKS/ASSUMPTIONS also stay out when empty.
+		expect(xml).not.toContain("<RISKS>");
+		expect(xml).not.toContain("<ASSUMPTIONS>");
+		expect(xml).not.toContain("<RISK>");
 	});
 });

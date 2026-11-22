@@ -28,13 +28,18 @@ Required children on every root (all SCREAMING_SNAKE):
 - ACCEPTANCE_CRITERIA — observable, testable outcomes
 - OUT_OF_SCOPE — adjacent work a junior might start by accident
 
-Add when relevant (do not force empty stubs):
+Add when relevant (do not force empty stubs; production-grade work should rarely omit CODE_QUALITY, PROGRAMMING_PATTERNS, and TESTING_STRATEGY):
 - PLATFORM_CONSTRAINTS
 - DESIGN_SYSTEM_CONTINUITY
 - SECURITY_AND_VALIDATION
 - GRACEFUL_DEGRADATION
 - STATES
 - WORKFLOW
+- CODE_QUALITY — code-quality bar: SOLID/DRY/KISS/YAGNI, separation of concerns, type safety, file/function size and cohesion, and what must not be copied or over-abstracted
+- PROGRAMMING_PATTERNS — program-structure patterns: error handling, idempotency, retries/backoff, timeouts, concurrency, and state management where the work has them
+- TESTING_STRATEGY — verification plan: unit vs integration coverage, edge/error cases, and concrete verification commands for this codebase
+- OBSERVABILITY — logging, metrics, alerts, and operational signals for the new behavior
+- RELEASE_AND_ROLLBACK — migration, feature flags, rollout, and rollback for the change
 - ASSUMPTIONS
 - AMBIGUITIES
 - Nested feature sections matching named surfaces in the request (tabs, pages, modals, APIs, jobs)
@@ -51,12 +56,17 @@ Shape hint — adaptive, not the only schema. Replace NAMED_SURFACE with real do
     <SUBSECTION>...</SUBSECTION>
     <STATES>...</STATES>
   </NAMED_SURFACE>
+  <CODE_QUALITY>...</CODE_QUALITY>
+  <PROGRAMMING_PATTERNS>...</PROGRAMMING_PATTERNS>
+  <TESTING_STRATEGY>...</TESTING_STRATEGY>
   <SECURITY_AND_VALIDATION>...</SECURITY_AND_VALIDATION>
   <GRACEFUL_DEGRADATION>...</GRACEFUL_DEGRADATION>
+  <OBSERVABILITY>...</OBSERVABILITY>
+  <RELEASE_AND_ROLLBACK>...</RELEASE_AND_ROLLBACK>
   <ACCEPTANCE_CRITERIA>...</ACCEPTANCE_CRITERIA>
   <OUT_OF_SCOPE>...</OUT_OF_SCOPE>
   <ASSUMPTIONS>...</ASSUMPTIONS>
   <AMBIGUITIES>...</AMBIGUITIES>
 </BUILD_PROMPT>
 
-Density bar: operational nested spec a senior would hand a teammate. Not a 10-field template. Not motivational filler.`;
+Density bar: operational nested spec a senior would hand a teammate — named surface sections plus the quality, pattern, and verification sections above, not a 10-field template, not motivational filler`;

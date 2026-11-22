@@ -7,7 +7,10 @@ import {
 	MAX_STEPS,
 	MIN_STEPS,
 	NODE_KINDS,
+	type NodeConfidence,
+	type NodeEffort,
 	type NodeKind,
+	type NodePriority,
 	type ThoughtGraph,
 	type ThoughtNode,
 } from "./types.ts";
@@ -56,6 +59,23 @@ function parseDependsOn(value: unknown): string[] {
 	return [];
 }
 
+const PRIORITIES: readonly NodePriority[] = ["P0", "P1", "P2", "P3"];
+const CONFIDENCES: readonly NodeConfidence[] = ["low", "medium", "high"];
+const EFFORTS: readonly NodeEffort[] = ["S", "M", "L"];
+
+function parseStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.map((item) => asString(item))
+		.filter(Boolean)
+		.slice(0, 8);
+}
+
+function parseEnum<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+	const raw = asString(value);
+	return (allowed as readonly string[]).includes(raw) ? (raw as T) : undefined;
+}
+
 /** Node ids key plain-object maps downstream (tracking refs, XML attributes): short word characters only, never a prototype key. */
 const NODE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -102,6 +122,19 @@ export function normalizeGraph(
 			kind,
 			question: asString(rec.question) || asString(rec.prompt) || `Reason about ${id}`,
 			dependsOn: parseDependsOn(rec.depends_on ?? rec.dependsOn),
+			...(asString(rec.summary) ? { summary: asString(rec.summary) } : {}),
+			evidence: parseStringArray(rec.evidence),
+			files: parseStringArray(rec.files),
+			acceptance: parseStringArray(rec.acceptance),
+			risks: parseStringArray(rec.risks),
+			alternatives: parseStringArray(rec.alternatives),
+			...(parseEnum(rec.priority, PRIORITIES)
+				? { priority: parseEnum(rec.priority, PRIORITIES) }
+				: {}),
+			...(parseEnum(rec.confidence, CONFIDENCES)
+				? { confidence: parseEnum(rec.confidence, CONFIDENCES) }
+				: {}),
+			...(parseEnum(rec.effort, EFFORTS) ? { effort: parseEnum(rec.effort, EFFORTS) } : {}),
 		});
 		if (nodes.length >= maxNodes) break;
 	}
@@ -109,7 +142,15 @@ export function normalizeGraph(
 	if (nodes.length < minNodes) {
 		return {
 			goal: FALLBACK_GRAPH.goal,
-			nodes: FALLBACK_GRAPH.nodes.map((node) => ({ ...node, dependsOn: [...node.dependsOn] })),
+			nodes: FALLBACK_GRAPH.nodes.map((node) => ({
+				...node,
+				dependsOn: [...node.dependsOn],
+				...(node.evidence ? { evidence: [...node.evidence] } : {}),
+				...(node.files ? { files: [...node.files] } : {}),
+				...(node.acceptance ? { acceptance: [...node.acceptance] } : {}),
+				...(node.risks ? { risks: [...node.risks] } : {}),
+				...(node.alternatives ? { alternatives: [...node.alternatives] } : {}),
+			})),
 		};
 	}
 
@@ -137,10 +178,15 @@ export function normalizeGraph(
 		last.dependsOn = [...fanIn];
 	}
 
-	return {
+	const graph: ThoughtGraph = {
 		goal: asString(obj.goal) || fallbackGoal || FALLBACK_GRAPH.goal,
 		nodes,
 	};
+	// Graph-level lists ride on the normalized graph beyond ThoughtGraph's core fields.
+	const enriched = graph as ThoughtGraph & { risks?: string[]; assumptions?: string[] };
+	enriched.risks = parseStringArray(obj.risks);
+	enriched.assumptions = parseStringArray(obj.assumptions);
+	return graph;
 }
 
 /** The fields isFallbackGraph reads; a partially validated graph object satisfies it without a cast. */
@@ -255,12 +301,53 @@ export interface NodeFill {
 	thinking: string;
 	conclusion: string;
 	steps: string[];
+	outcome: string;
+	evidence: string[];
+	files: string[];
+	acceptance: string[];
+	risks: string[];
+	alternatives: string[];
 }
 
-const REJECTED_FILL: NodeFill = { ok: false, thinking: "", conclusion: "", steps: [] };
+const REJECTED_FILL: NodeFill = {
+	ok: false,
+	thinking: "",
+	conclusion: "",
+	steps: [],
+	outcome: "",
+	evidence: [],
+	files: [],
+	acceptance: [],
+	risks: [],
+	alternatives: [],
+};
+
+function parseListTag(body: string, tag: string): string[] {
+	const raw = extractTag(body, tag);
+	if (!raw) return [];
+	return raw
+		.split("\n")
+		.map((line) =>
+			line
+				.trim()
+				.replace(/^[-•*]\s+/, "")
+				.trim(),
+		)
+		.filter(Boolean)
+		.slice(0, 8);
+}
 
 /** The rationale and conclusion text of one CoT completion exactly as written: unvalidated and unclipped. */
-export function readNodeText(xml: string): { thinking: string; conclusion: string } {
+export function readNodeText(xml: string): {
+	thinking: string;
+	conclusion: string;
+	outcome: string;
+	evidence: string[];
+	files: string[];
+	acceptance: string[];
+	risks: string[];
+	alternatives: string[];
+} {
 	const body = extractTag(xml, "node") || xml;
 	// "rationale" is current; "thinking"/"chain_of_thought" accepted for back-compat with older completions.
 	const thinking =
@@ -268,7 +355,16 @@ export function readNodeText(xml: string): { thinking: string; conclusion: strin
 		extractTag(body, "thinking") ||
 		extractTag(body, "chain_of_thought");
 	const conclusion = extractTag(body, "conclusion") || extractTag(body, "answer");
-	return { thinking, conclusion };
+	return {
+		thinking,
+		conclusion,
+		outcome: extractTag(body, "outcome"),
+		evidence: parseListTag(body, "evidence"),
+		files: parseListTag(body, "files"),
+		acceptance: parseListTag(body, "acceptance"),
+		risks: parseListTag(body, "risks"),
+		alternatives: parseListTag(body, "alternatives"),
+	};
 }
 
 /**
@@ -276,7 +372,8 @@ export function readNodeText(xml: string): { thinking: string; conclusion: strin
  * `ok: false` with every field empty, so a failed attempt can never flow on as a conclusion.
  */
 export function parseNodeFill(xml: string): NodeFill {
-	const { thinking, conclusion } = readNodeText(xml);
+	const { thinking, conclusion, outcome, evidence, files, acceptance, risks, alternatives } =
+		readNodeText(xml);
 	if (!thinking || !conclusion) return REJECTED_FILL;
 	const steps = splitRationaleSteps(thinking);
 	if (steps.length < MIN_STEPS || steps.length > MAX_STEPS) return REJECTED_FILL;
@@ -285,7 +382,21 @@ export function parseNodeFill(xml: string): NodeFill {
 		thinking,
 		conclusion,
 		steps,
+		outcome,
+		evidence,
+		files,
+		acceptance,
+		risks,
+		alternatives,
 	};
+}
+function listXml(wrapper: string, item: string, values: string[], indent: string): string[] {
+	if (values.length === 0) return [];
+	return [
+		`${indent}<${wrapper}>`,
+		...values.map((value) => `${indent}\t<${item}>${escapeXml(value)}</${item}>`),
+		`${indent}</${wrapper}>`,
+	];
 }
 
 function nodeXml(node: ThoughtNode): string {
@@ -293,14 +404,28 @@ function nodeXml(node: ThoughtNode): string {
 		node.dependsOn.length > 0
 			? `		<DEPENDS_ON>${escapeXml(node.dependsOn.join(","))}</DEPENDS_ON>`
 			: "		<DEPENDS_ON></DEPENDS_ON>";
-	return [
-		`	<NODE id="${escapeXml(node.id)}" kind="${escapeXml(node.kind)}" title="${escapeXml(node.title)}"${node.degraded ? ' degraded="true"' : ""}>`,
-		`		<QUESTION>${escapeXml(node.question)}</QUESTION>`,
-		deps,
-		`		<RATIONALE>${escapeXml(node.thinking ?? "")}</RATIONALE>`,
-		`		<CONCLUSION>${escapeXml(node.conclusion ?? "")}</CONCLUSION>`,
-		"	</NODE>",
-	].join("\n");
+	const attrs = [
+		`id="${escapeXml(node.id)}"`,
+		`kind="${escapeXml(node.kind)}"`,
+		`title="${escapeXml(node.title)}"`,
+		node.degraded ? 'degraded="true"' : "",
+		node.priority ? `priority="${escapeXml(node.priority)}"` : "",
+		node.confidence ? `confidence="${escapeXml(node.confidence)}"` : "",
+		node.effort ? `effort="${escapeXml(node.effort)}"` : "",
+	]
+		.filter(Boolean)
+		.join(" ");
+	const lines = [`	<NODE ${attrs}>`, `		<QUESTION>${escapeXml(node.question)}</QUESTION>`, deps];
+	if (node.summary) lines.push(`		<SUMMARY>${escapeXml(node.summary)}</SUMMARY>`);
+	lines.push(...listXml("EVIDENCE", "ITEM", node.evidence ?? [], "		"));
+	lines.push(...listXml("FILES", "FILE", node.files ?? [], "		"));
+	lines.push(...listXml("ACCEPTANCE", "CRITERION", node.acceptance ?? [], "		"));
+	lines.push(...listXml("RISKS", "RISK", node.risks ?? [], "		"));
+	lines.push(...listXml("ALTERNATIVES", "ALTERNATIVE", node.alternatives ?? [], "		"));
+	lines.push(`		<RATIONALE>${escapeXml(node.thinking ?? "")}</RATIONALE>`);
+	lines.push(`		<CONCLUSION>${escapeXml(node.conclusion ?? "")}</CONCLUSION>`);
+	lines.push("	</NODE>");
+	return lines.join("\n");
 }
 
 function workflowXml(graph: ThoughtGraph): string[] {
@@ -315,9 +440,13 @@ function workflowXml(graph: ThoughtGraph): string[] {
 }
 
 export function graphToXml(graph: ThoughtGraph): string {
+	// Graph-level lists ride on the normalized graph beyond ThoughtGraph's core fields.
+	const enriched = graph as ThoughtGraph & { risks?: string[]; assumptions?: string[] };
 	return [
-		"<GRAPH_OF_THOUGHT>",
+		'<GRAPH_OF_THOUGHT version="2">',
 		`	<GOAL>${escapeXml(graph.goal)}</GOAL>`,
+		...listXml("RISKS", "RISK", enriched.risks ?? [], "	"),
+		...listXml("ASSUMPTIONS", "ASSUMPTION", enriched.assumptions ?? [], "	"),
 		...graph.nodes.map((node) => nodeXml(node)),
 		...workflowXml(graph),
 		"</GRAPH_OF_THOUGHT>",

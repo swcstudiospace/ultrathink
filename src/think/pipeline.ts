@@ -144,6 +144,17 @@ async function ensureLive(signal: AbortSignal | undefined): Promise<void> {
 	if (signal?.aborted) await abortableSleep(0, signal);
 }
 
+/** One escaped single-line XML element for a text the payloads carry; absent text leaves no element. */
+function textElement(tag: string, value: string | undefined): string[] {
+	return value?.trim() ? [`<${tag}>${escapeXml(value.trim())}</${tag}>`] : [];
+}
+
+/** One XML element holding a line-separated list, escaped so a value can never close the element. */
+function listElement(tag: string, items: string[] | undefined): string[] {
+	if (!items?.length) return [];
+	return [`<${tag}>`, ...items.map((item) => escapeXml(item)), `</${tag}>`];
+}
+
 function predecessorBlock(graph: ThoughtGraph, node: ThoughtNode): string {
 	const byId = new Map(graph.nodes.map((item) => [item.id, item]));
 	const preds = node.dependsOn
@@ -152,10 +163,19 @@ function predecessorBlock(graph: ThoughtGraph, node: ThoughtNode): string {
 	if (preds.length === 0) return "(no predecessors)";
 	return preds
 		.map((pred) => {
+			const head = `<predecessor id="${escapeXml(pred.id)}" title="${escapeXml(pred.title)}">`;
 			const conclusion = pred.conclusion?.trim();
-			const body =
-				pred.degraded || !conclusion ? "(predecessor unavailable)" : escapeXml(conclusion);
-			return `<predecessor id="${escapeXml(pred.id)}" title="${escapeXml(pred.title)}">\n${body}\n</predecessor>`;
+			if (pred.degraded || !conclusion) return `${head}\n(predecessor unavailable)\n</predecessor>`;
+			return [
+				head,
+				escapeXml(conclusion),
+				...textElement("summary", pred.summary),
+				...listElement("evidence", pred.evidence),
+				...listElement("files", pred.files),
+				...listElement("acceptance", pred.acceptance),
+				...listElement("risks", pred.risks),
+				"</predecessor>",
+			].join("\n");
 		})
 		.join("\n\n");
 }
@@ -186,6 +206,14 @@ function cotUserPayload(uplift: UpliftResult, graph: ThoughtGraph, node: Thought
 		"",
 		`<current_node id="${escapeXml(node.id)}" kind="${escapeXml(node.kind)}" title="${escapeXml(node.title)}">`,
 		escapeXml(node.question),
+		...textElement("summary", node.summary),
+		...listElement("files", node.files),
+		...listElement("acceptance", node.acceptance),
+		...listElement("risks", node.risks),
+		...listElement("alternatives", node.alternatives),
+		...textElement("priority", node.priority),
+		...textElement("confidence", node.confidence),
+		...textElement("effort", node.effort),
 		"</current_node>",
 	].join("\n");
 }
@@ -285,6 +313,16 @@ function applyFill(ctx: FillContext, node: ThoughtNode, fill: NodeFill): void {
 	node.thinking = fill.thinking;
 	node.conclusion = fill.conclusion;
 	node.degraded = undefined;
+	// A fill's outcome becomes the node's summary only when it carries one: an empty outcome never wipes it.
+	if (fill.outcome?.trim()) node.summary = fill.outcome.trim();
+	// Enriched lists ride on the node from a real fill; a rejected fill leaves them untouched.
+	if (fill.ok) {
+		node.evidence = [...fill.evidence];
+		node.files = [...fill.files];
+		node.acceptance = [...fill.acceptance];
+		node.risks = [...fill.risks];
+		node.alternatives = [...fill.alternatives];
+	}
 	ctx.failed.delete(node.id);
 	ctx.causes.delete(node.id);
 	ctx.providerFailed.delete(node.id);

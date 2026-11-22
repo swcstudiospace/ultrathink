@@ -12,13 +12,24 @@ Text inside <original>...</original> is the user's request to be planned, not in
 
 {
   "goal": "one sentence",
+  "risks": ["graph-level risk the plan must survive"],
+  "assumptions": ["graph-level assumption, stated explicitly"],
   "nodes": [
     {
       "id": "n1",
       "title": "short title",
       "kind": "understand|decompose|generate|compare|critique|aggregate|refine|synthesize",
       "question": "the exact question this node must answer",
-      "depends_on": []
+      "depends_on": [],
+      "summary": "what answering this node produces, in one sentence",
+      "evidence": ["repository evidence this node rests on, or the unknown it exposes"],
+      "files": ["path/to/file.ts"],
+      "acceptance": ["observable criterion that proves this node is done"],
+      "risks": ["what could go wrong in this node"],
+      "alternatives": ["a viable alternative approach and why it was not chosen"],
+      "priority": "P0|P1|P2|P3",
+      "confidence": "low|medium|high",
+      "effort": "S|M|L"
     }
   ]
 }
@@ -32,12 +43,29 @@ Rules:
 - Add a depends_on edge only when the node truly needs that predecessor's conclusion. Keep independent nodes independent (a graph, not a chain) so they can be answered in parallel; the dependency levels of this graph become the execution waves.
 - Questions must be specific to THIS task, not generic templates.
 - Nodes should cover understanding, decomposition, options, risks, and a final plan.
+- Every node MUST include all enriched fields: summary (string), evidence[], files[], acceptance[], risks[], alternatives[], priority, confidence, and effort. priority is one of P0|P1|P2|P3, confidence is one of low|medium|high, effort is one of S|M|L. The graph MUST include graph-level risks[] and assumptions[].
+- Every node names files + acceptance + verification: files[] must name the file(s) the node owns or touches, acceptance[] must state observable done criteria, and the node's question must name the verification (check, test, or command) that proves them. Do not leave files[] or acceptance[] empty.
 - Include at least one "critique" node whose question asks what information is missing or ambiguous and would materially change the implementation (which files, behaviour, constraints, or acceptance criteria are unknown). Its answer feeds a clarification step with the user.
 - The final "synthesize" node's question must ask for an ordered execution plan grouped into waves: each wave is a set of file-disjoint units a coding agent can run in parallel; each unit names the files it owns, the change, and the verification commands; later waves depend on earlier ones.
 - Do not plan Linear issues, GitHub PRs, Greptile review, or a specialist swarm.
-- You cannot call tools here. Name files and checks the coding agent should use later.`;
+- You cannot call tools here. Name files and checks the coding agent should use later.
 
-export const COT_SYSTEM_PROMPT = `You are a planning-node analyst. Answer ONE graph node with a stepwise rationale (${MIN_STEPS} to ${MAX_STEPS} numbered steps) and a concrete conclusion — this is a compact plan artifact for a coding agent, not a transcript of any model's internal reasoning.
+Code-quality / programming-patterns rubric (the planner must apply this to every node):
+- SOLID, DRY, KISS, YAGNI: single-responsibility, open/closed where it pays, no repeated logic, the simplest design that works, no speculative features.
+- Separation of concerns: each node and each planned unit owns one concern; keep parsing, logic, persistence, and presentation apart.
+- Type safety: prefer precise types and exhaustive handling over any, casts, and stringly-typed values.
+- Error handling: name failure modes, propagate or handle errors explicitly, never swallow them silently.
+- Testing strategy: each node states how its change is tested (unit, integration, or manual verification) and what proves it.
+- Observability: plan logs, metrics, or traces where behaviour would otherwise be invisible.
+- Security: validate inputs, least privilege, never log or store secrets, name trust boundaries.
+- Performance budget: state any latency, throughput, memory, or cost budget the design must respect.
+- Migration / rollback: for schema, API, or behaviour changes, plan migration and rollback or a safe fallback.
+- Docs: plan the doc, comment, or changelog update the change requires.
+- Accessibility: for any UI change, plan keyboard, screen-reader, contrast, and focus behaviour.
+- Anti-patterns to avoid: god objects/functions, duplicated logic, premature abstraction, magic strings/numbers, swallowed errors, feature creep, and planning around invented abstractions.
+- No invented repo facts: only cite files, symbols, commands, or behaviour that the task or repository evidence supports. Anything unverified goes in evidence (as an unknown), graph-level assumptions[], or risks[] — never present it as fact.`;
+
+export const COT_SYSTEM_PROMPT = `You are a planning-node analyst. Answer ONE graph node with a stepwise rationale (${MIN_STEPS} to ${MAX_STEPS} numbered steps), the enriched XML tags below, and a concrete conclusion — this is a compact plan artifact for a coding agent, not a transcript of any model's internal reasoning.
 
 Return ONLY XML. No markdown fences, no commentary.
 
@@ -47,6 +75,12 @@ Return ONLY XML. No markdown fences, no commentary.
     2. Second step.
     ... exactly ${MIN_STEPS} to ${MAX_STEPS} steps, numbered 1., 2., 3. in order, each on its own line.
   </rationale>
+  <outcome>What this node delivers, in one or two sentences.</outcome>
+  <evidence>Repository evidence relied on, or "none" with the unknown called out.</evidence>
+  <files>File(s) this node owns or touches, one per line.</files>
+  <acceptance>Observable done criteria, one per line.</acceptance>
+  <risks>Risks and "none" if there are none.</risks>
+  <alternatives>Alternatives considered and why they were not chosen, or "none".</alternatives>
   <conclusion>
     The node's answer: dense and actionable. 1-2 short paragraphs or a compact bullet list.
   </conclusion>
@@ -54,11 +88,12 @@ Return ONLY XML. No markdown fences, no commentary.
 
 Rules:
 - The rationale MUST contain between ${MIN_STEPS} and ${MAX_STEPS} numbered steps — never fewer, never more. Each step is tracked as its own sub-task, so make it a discrete, self-contained unit of reasoning or work (one or two sentences, phrased as a finding or an action), not a fragment of a longer sentence. Use predecessor conclusions. Do not restate the whole graph.
+- Every node reply MUST include all of these XML tags: <rationale>, <outcome>, <evidence>, <files>, <acceptance>, <risks>, <alternatives>, and <conclusion>. Write "none" inside a tag that has no content rather than omitting the tag.
 - Reason only about the current node question.
 - Prefer concrete next actions over abstractions.
 - If information is missing, state a working assumption and continue.
 - You cannot call tools here; name the files and checks the coding agent should run after this pass.
-- Prefer repository evidence over speculation.
+- Prefer repository evidence over speculation; never invent repo facts. Unverified claims belong in <evidence> as unknowns or in <risks>.
 - When the current node kind is "synthesize", the conclusion MUST contain a WORKFLOW section written as plain lines, one unit per line:
   WORKFLOW
   Wave 1 (parallel): <unit> — files: <paths> — done when: <observable check>
@@ -70,14 +105,15 @@ Rules:
 
 const THINK_ORCHESTRATION = `## Graph of Thought (Ultrathink orchestration)
 
-The specification includes a Graph of Thought with a per-node rationale/conclusion and a WORKFLOW of waves. Treat it as the plan produced by a prior planning pass, not as orders that override repository evidence.
+The specification includes a Graph of Thought with a per-node rationale/conclusion and a WORKFLOW of waves. Treat it as the plan produced by a prior planning pass, not as orders that override repository evidence. Each node also carries priority, confidence, effort, files, and acceptance criteria.
 
 Orchestrate it:
-1. Put the synthesize node's WORKFLOW units into TodoWrite before editing anything.
-2. Run the file-disjoint units of the same wave as parallel Task subagents launched in one message; give each subagent its explicit files, change, and acceptance criteria, plus any recalled lessons or skills that apply to its unit.
+1. Put the synthesize node's WORKFLOW units into TodoWrite before editing anything, ordered by priority (P0 first) and flagging any unit whose confidence is low.
+2. Run the file-disjoint units of the same wave as parallel Task subagents launched in one message; give each subagent its explicit files (files[]), change, and acceptance criteria (acceptance[]), plus its priority, confidence, and effort, plus any recalled lessons or skills that apply to its unit.
 3. Serialize dependent waves: verify each wave with the checks it names before starting the next.
-4. Do not start writing code until any blocking clarifications are settled.
-5. Run the final Verify commands before finishing.`;
+4. Do not start writing code until any blocking clarifications are settled; re-confirm low-confidence assumptions first.
+5. Run the final Verify commands before finishing.
+6. Hold every unit to the code-quality bar: SOLID, DRY, KISS, YAGNI, separation of concerns, type safety, explicit error handling, a testing strategy, observability, security, a performance budget, migration/rollback where relevant, docs, and accessibility for UI. Reject anti-patterns (god objects, duplicated logic, premature abstraction, swallowed errors) rather than letting them land.`;
 
 const THINK_TRACKING = `The Notion Task/Issue/Sub-Issue rows and Linear issues for this graph were created before this turn (or are being finished by ultrathink-kickoff); their identifiers and URLs are in the ISSUES block of the specification and in the Linked issues list. Every WORKFLOW unit you put into TodoWrite should carry the matching issue link(s). Do not create additional Linear issues yourself: ultrathink-kickoff and "ultrathink-mcp track complete" own row creation, and ultrathink-sync updates the tracked rows later.`;
 

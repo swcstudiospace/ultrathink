@@ -38,12 +38,38 @@ function nodeConclusion(node: ThoughtNode): string {
 	return (node.conclusion ?? "").trim();
 }
 
+type EnrichedSection = readonly [label: string, values: readonly string[] | undefined];
+
+/**
+ * Appends a node's files/acceptance/risks/evidence as labeled bullet sections to `base`.
+ * Absent, empty or blank-only arrays add nothing, so legacy nodes produce byte-identical rows.
+ * Enriched rows are capped at MAX_UPLIFTED_PROMPT_CHARS with the truncation marker (the Notion
+ * rich-text limit the uplifted prompt already respects); unenriched rows stay untouched.
+ */
+function enrichDescription(base: string, node: ThoughtNode): string {
+	const sections: EnrichedSection[] = [
+		["Files", node.files],
+		["Acceptance", node.acceptance],
+		["Risks", node.risks],
+		["Evidence", node.evidence],
+	];
+	const rendered = sections
+		.map(([label, values]) => {
+			const items = (values ?? []).map((value) => value.trim()).filter(Boolean);
+			return items.length > 0 ? `${label}:\n${items.map((item) => `- ${item}`).join("\n")}` : "";
+		})
+		.filter(Boolean);
+	if (rendered.length === 0) return base;
+	return clip(`${base}\n\n${rendered.join("\n\n")}`, MAX_UPLIFTED_PROMPT_CHARS, TRUNCATION_MARKER)
+		.text;
+}
+
 function issueRow(graphId: string, node: ThoughtNode): IssueRow {
 	return {
 		graphId,
 		nodeId: node.id,
 		item: `[${node.id}] ${node.title}`,
-		thought: nodeConclusion(node) || node.question,
+		thought: enrichDescription(nodeConclusion(node) || node.question, node),
 	};
 }
 
@@ -132,12 +158,16 @@ function subIssueRows(graphId: string, node: ThoughtNode): SubIssueRow[] {
 		nodeId: node.id,
 		item: `[${node.id}] ${stepTitle(index + 1, thought)}`,
 		step: index + 1,
-		thought,
+		thought: enrichDescription(thought, node),
 	}));
 }
 
 function linearIssue(node: ThoughtNode): LinearIssuePlan {
-	return { nodeId: node.id, title: node.title, description: nodeConclusion(node) || node.question };
+	return {
+		nodeId: node.id,
+		title: node.title,
+		description: enrichDescription(nodeConclusion(node) || node.question, node),
+	};
 }
 
 function linearSubIssues(node: ThoughtNode): LinearSubIssuePlan[] {
@@ -145,7 +175,7 @@ function linearSubIssues(node: ThoughtNode): LinearSubIssuePlan[] {
 		nodeId: node.id,
 		step: index + 1,
 		title: `${node.title} — ${stepTitle(index + 1, description)}`,
-		description,
+		description: enrichDescription(description, node),
 	}));
 }
 

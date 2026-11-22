@@ -1098,7 +1098,7 @@ describe("handoff", () => {
 		expect(out).not.toContain("<BUILD_PROMPT");
 	});
 
-	test("an 8-node graph with 4 blocking clarifications stays under 6,000 characters", () => {
+	test("an 8-node graph with 4 blocking clarifications stays under 6,500 characters", () => {
 		const graph = {
 			goal: "g",
 			nodes: Array.from({ length: 8 }, (_, i) => ({
@@ -1134,7 +1134,10 @@ describe("handoff", () => {
 			ship: true,
 		});
 		expect(out).toContain("## Clarifications (HITL)");
-		expect(out.length).toBeLessThan(6_000);
+		// Budget raised from 6,000 to 6,500 after THINK_ADDENDUM gained its
+		// code-quality bullet during the graph-enrichment upgrade; the addendum
+		// is included in prompt context, legitimately lengthening every output.
+		expect(out.length).toBeLessThan(6_500);
 	});
 
 	test("Hermes contexts ask through clarify and name todo/delegate_task; other hosts keep AskUserQuestion and Claude tool names", () => {

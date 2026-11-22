@@ -34,9 +34,9 @@ function graphJson(count = 3): string {
 	});
 }
 
-/** A well-formed fill: a closed rationale of five numbered steps and a closed conclusion. */
+/** A well-formed fill: a closed rationale of five numbered steps with every enriched tag and a closed conclusion. */
 function fillXml(conclusion: string): string {
-	return `<node><rationale>1. read ${conclusion}\n2. plan\n3. build\n4. test\n5. ship</rationale><conclusion>${conclusion}</conclusion></node>`;
+	return `<node><rationale>1. read ${conclusion}\n2. plan\n3. build\n4. test\n5. ship</rationale><outcome>Outcome for ${conclusion}</outcome><evidence>Evidence for ${conclusion}</evidence><files>src/fill-${conclusion}.ts</files><acceptance>Acceptance for ${conclusion}</acceptance><risks>Risk for ${conclusion}</risks><alternatives>Alternative for ${conclusion}</alternatives><conclusion>${conclusion}</conclusion></node>`;
 }
 
 function nodeId(user: string): string {
@@ -91,7 +91,7 @@ describe("runThink", () => {
 		expect(result.partial).toBe(false);
 		expect(result.xml).toContain("<BUILD_PROMPT>");
 		expect(result.xml).toContain("<ORIGINAL>add list</ORIGINAL>");
-		expect(result.xml).toContain("<GRAPH_OF_THOUGHT>");
+		expect(result.xml).toContain('<GRAPH_OF_THOUGHT version="2">');
 		expect(result.xml).toContain("done n1");
 		expect(result.xml).toContain("<WORKFLOW>");
 		expect(result.xml).toContain('<WAVE n="1" parallel="false">n1</WAVE>');
@@ -804,9 +804,72 @@ describe("runThink resilience", () => {
 		expect(result.graph.nodes[3]?.conclusion).toBe(conclusion);
 		const last = users[4] ?? "";
 		const block = last.match(/<predecessor [^>]*>\n([\s\S]*?)\n<\/predecessor>/)?.[1] ?? "";
-		expect(block).toBe(conclusion);
-		expect(block.endsWith("Verify: bun test")).toBe(true);
+		expect(block).toContain(conclusion);
 		expect(block.startsWith("Plan for the exporter.")).toBe(true);
+	});
+
+	test("fills populate the enriched node fields and dependent fills see predecessor evidence and acceptance", async () => {
+		const users: string[] = [];
+		const result = await runThink({
+			uplift,
+			...seams,
+			complete: async (_system, user) => {
+				if (!user.includes("current_node")) return graphJson(5);
+				users.push(user);
+				return fillXml(`done ${nodeId(user)}`);
+			},
+		});
+		const first = result.graph.nodes[0];
+		expect(first?.summary).toBe("Outcome for done n1");
+		expect(first?.evidence).toEqual(["Evidence for done n1"]);
+		expect(first?.files).toEqual(["src/fill-done n1.ts"]);
+		expect(first?.acceptance).toEqual(["Acceptance for done n1"]);
+		expect(first?.risks).toEqual(["Risk for done n1"]);
+		expect(first?.alternatives).toEqual(["Alternative for done n1"]);
+		// The dependent fill reads its predecessor's enriched fields, not only its conclusion.
+		const second = users[1] ?? "";
+		expect(second).toContain("Outcome for done n1");
+		expect(second).toContain("Evidence for done n1");
+		expect(second).toContain("src/fill-done n1.ts");
+		expect(second).toContain("Acceptance for done n1");
+	});
+
+	test("a fill with an empty outcome leaves the node summary unset while the other enriched fields still apply", async () => {
+		const emptyOutcome = (conclusion: string): string =>
+			`<node><rationale>1. a\n2. b\n3. c\n4. d\n5. e</rationale><outcome></outcome><evidence>Evidence ${conclusion}</evidence><files>src/x.ts</files><acceptance>Acceptance ${conclusion}</acceptance><risks>none</risks><alternatives>none</alternatives><conclusion>${conclusion}</conclusion></node>`;
+		const result = await runThink({
+			uplift,
+			...seams,
+			complete: async (_system, user) =>
+				user.includes("current_node") ? emptyOutcome(nodeId(user)) : graphJson(5),
+		});
+		expect(result.graph.nodes[0]?.summary).toBeUndefined();
+		expect(result.graph.nodes[0]?.evidence).toEqual(["Evidence n1"]);
+		expect(result.graph.nodes[0]?.conclusion).toBe("n1");
+		expect(result.graph.nodes[0]?.degraded).toBeUndefined();
+	});
+
+	test("a refilled node's own enriched fields ride along in its next payload", async () => {
+		const prompts = new Map<string, string[]>();
+		const result = await runThink({
+			uplift,
+			...seams,
+			fillRetries: 0,
+			complete: async (_system, user) => {
+				if (!user.includes("current_node")) return graphJson(5);
+				const id = nodeId(user);
+				const seen = prompts.get(id) ?? [];
+				seen.push(user);
+				prompts.set(id, seen);
+				if (id === "n2" && seen.length === 1) throw new Error("blip");
+				return fillXml(`done ${id} #${seen.length}`);
+			},
+		});
+		expect(result.degraded.repaired).toEqual(["n2", "n3", "n4", "n5"]);
+		const refill = prompts.get("n3")?.[1] ?? "";
+		expect(refill).toContain("Outcome for done n3 #1");
+		expect(refill).toContain("src/fill-done n3 #1.ts");
+		expect(refill).toContain("Evidence for done n2 #2");
 	});
 
 	test("the flight throttle is acquired per attempt, released, told of transient failures and successes (GOT-11)", async () => {

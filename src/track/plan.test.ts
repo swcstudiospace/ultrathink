@@ -472,3 +472,170 @@ describe("buildTrackPlan per-step Sub-Issues", () => {
 		expect(last.thought.endsWith("body 99")).toBe(true);
 	});
 });
+
+describe("buildTrackPlan enriched descriptions", () => {
+	const ENRICHED_SUFFIX =
+		"\n\nFiles:\n- src/a.ts\n- src/b.ts\n\nAcceptance:\n- List renders\n\nRisks:\n- Slow query\n\nEvidence:\n- Recorded session";
+
+	function enrichedGraph(): ThoughtGraph {
+		return {
+			goal: "g",
+			nodes: [
+				{
+					id: "n1",
+					title: "T",
+					kind: "synthesize",
+					question: "Q",
+					dependsOn: [],
+					thinking: "1. first step 2. second step",
+					conclusion: "C",
+					files: ["src/a.ts", "src/b.ts"],
+					acceptance: ["List renders"],
+					risks: ["Slow query"],
+					evidence: ["Recorded session"],
+				},
+			],
+		};
+	}
+
+	test("issueRow, subIssueRows, linearIssue and linearSubIssues carry labeled files/acceptance/risks/evidence sections", () => {
+		const plan = buildTrackPlan({
+			uplift,
+			graph: enrichedGraph(),
+			clarifications: [],
+			graphId: "ut-fixed",
+		});
+
+		expect(plan.issues).toEqual([
+			{ graphId: "ut-fixed", nodeId: "n1", item: "[n1] T", thought: `C${ENRICHED_SUFFIX}` },
+		]);
+		expect(plan.subIssues).toEqual([
+			{
+				graphId: "ut-fixed",
+				nodeId: "n1",
+				item: "[n1] Step 1: first step",
+				step: 1,
+				thought: `first step${ENRICHED_SUFFIX}`,
+			},
+			{
+				graphId: "ut-fixed",
+				nodeId: "n1",
+				item: "[n1] Step 2: second step",
+				step: 2,
+				thought: `second step${ENRICHED_SUFFIX}`,
+			},
+		]);
+		expect(plan.linearIssues).toEqual([
+			{ nodeId: "n1", title: "T", description: `C${ENRICHED_SUFFIX}` },
+		]);
+		expect(plan.linearSubIssues).toEqual([
+			{
+				nodeId: "n1",
+				step: 1,
+				title: "T — Step 1: first step",
+				description: `first step${ENRICHED_SUFFIX}`,
+			},
+			{
+				nodeId: "n1",
+				step: 2,
+				title: "T — Step 2: second step",
+				description: `second step${ENRICHED_SUFFIX}`,
+			},
+		]);
+	});
+
+	test("only the present sections are appended; absent arrays add no label", () => {
+		const graph: ThoughtGraph = {
+			goal: "g",
+			nodes: [
+				{
+					id: "n1",
+					title: "T",
+					kind: "synthesize",
+					question: "Q",
+					dependsOn: [],
+					thinking: "step body",
+					conclusion: "C",
+					files: ["src/only.ts"],
+				},
+			],
+		};
+		const plan = buildTrackPlan({ uplift, graph, clarifications: [], graphId: "ut-fixed" });
+		expect(plan.issues[0]?.thought).toBe("C\n\nFiles:\n- src/only.ts");
+		expect(plan.issues[0]?.thought).not.toContain("Acceptance:");
+		expect(plan.issues[0]?.thought).not.toContain("Risks:");
+		expect(plan.issues[0]?.thought).not.toContain("Evidence:");
+		expect(plan.subIssues[0]?.thought).toBe("step body\n\nFiles:\n- src/only.ts");
+		expect(plan.linearIssues[0]?.description).toBe("C\n\nFiles:\n- src/only.ts");
+		expect(plan.linearSubIssues[0]?.description).toBe("step body\n\nFiles:\n- src/only.ts");
+	});
+
+	test("absent, empty and blank-only enriched fields produce rows identical to the unenriched node", () => {
+		const baseNode: ThoughtNode = {
+			id: "n1",
+			title: "T",
+			kind: "synthesize",
+			question: "Q",
+			dependsOn: [],
+			thinking: "1. only step",
+			conclusion: "C",
+		};
+		const variants: ThoughtNode[] = [
+			baseNode,
+			{ ...baseNode, files: [], acceptance: [], risks: [], evidence: [] },
+			{ ...baseNode, files: ["  "], acceptance: ["", " "], risks: ["\t"], evidence: [""] },
+		];
+		const plans = variants.map((node) =>
+			buildTrackPlan({
+				uplift,
+				graph: { goal: "g", nodes: [node] },
+				clarifications: [],
+				graphId: "ut-fixed",
+			}),
+		);
+		for (const plan of plans.slice(1)) {
+			expect(plan.issues).toEqual(plans[0]!.issues);
+			expect(plan.subIssues).toEqual(plans[0]!.subIssues);
+			expect(plan.linearIssues).toEqual(plans[0]!.linearIssues);
+			expect(plan.linearSubIssues).toEqual(plans[0]!.linearSubIssues);
+		}
+		expect(plans[0]!.issues).toEqual([
+			{ graphId: "ut-fixed", nodeId: "n1", item: "[n1] T", thought: "C" },
+		]);
+		expect(plans[0]!.subIssues[0]?.thought).toBe("only step");
+	});
+
+	test("enriched descriptions respect the Notion cap and end with the truncation marker", () => {
+		const graph: ThoughtGraph = {
+			goal: "g",
+			nodes: [
+				{
+					id: "n1",
+					title: "T",
+					kind: "synthesize",
+					question: "Q",
+					dependsOn: [],
+					thinking: "step body",
+					conclusion: "C",
+					files: [`src/${"x".repeat(5000)}.ts`],
+					acceptance: ["List renders"],
+				},
+			],
+		};
+		const plan = buildTrackPlan({ uplift, graph, clarifications: [], graphId: "ut-fixed" });
+		for (const text of [
+			plan.issues[0]!.thought,
+			plan.subIssues[0]!.thought,
+			plan.linearIssues[0]!.description,
+			plan.linearSubIssues[0]!.description,
+		]) {
+			expect(text.length).toBeLessThanOrEqual(MAX_UPLIFTED_PROMPT_CHARS);
+			expect(text).toContain("truncated");
+			expect(text.startsWith("C") || text.startsWith("step body")).toBe(true);
+		}
+		// Titles are never enriched, so they keep the existing title/step caps.
+		expect(plan.issues[0]?.item).toBe("[n1] T");
+		expect(plan.subIssues[0]?.item).toBe("[n1] Step 1: step body");
+		expect(plan.linearSubIssues[0]?.title).toBe("T — Step 1: step body");
+	});
+});

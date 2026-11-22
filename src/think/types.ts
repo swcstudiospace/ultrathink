@@ -28,6 +28,12 @@ export const NODE_KINDS: readonly NodeKind[] = [
 	"synthesize",
 ] as const;
 
+export type NodePriority = "P0" | "P1" | "P2" | "P3";
+
+export type NodeConfidence = "low" | "medium" | "high";
+
+export type NodeEffort = "S" | "M" | "L";
+
 export interface ThoughtNode {
 	id: string;
 	title: string;
@@ -38,11 +44,22 @@ export interface ThoughtNode {
 	conclusion?: string;
 	/** Set when every fill attempt failed: thinking and conclusion stay empty and the spec XML marks the node. */
 	degraded?: boolean;
+	summary?: string;
+	evidence?: string[];
+	files?: string[];
+	acceptance?: string[];
+	risks?: string[];
+	alternatives?: string[];
+	priority?: NodePriority;
+	confidence?: NodeConfidence;
+	effort?: NodeEffort;
 }
 
 export interface ThoughtGraph {
 	goal: string;
 	nodes: ThoughtNode[];
+	risks?: string[];
+	assumptions?: string[];
 }
 
 export const THINK_ENGINES = ["auto", "claude", "grok", "muse"] as const;
