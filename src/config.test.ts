@@ -1426,11 +1426,11 @@ describe("pstack config", () => {
 		for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 	});
 
-	test("defaults to off with a 2000-char context cap and no cursor dir or mapping", () => {
-		expect(base.pstack).toEqual({ enabled: false, contextCapChars: 2000 });
+	test("defaults to off with a 4000-char context cap and no cursor dir or mapping", () => {
+		expect(base.pstack).toEqual({ enabled: false, contextCapChars: 4000 });
 		expect(loadLayerFiles(roots, undefined).pstack).toEqual({
 			enabled: false,
-			contextCapChars: 2000,
+			contextCapChars: 4000,
 		});
 	});
 
@@ -1492,7 +1492,7 @@ describe("pstack config", () => {
 	test("invalid contextCapChars values keep the lower layer's cap", () => {
 		for (const value of [0, -1, "x"]) {
 			expect(mergeConfig({ pstack: { contextCapChars: value } }, base).pstack.contextCapChars).toBe(
-				2000,
+				4000,
 			);
 		}
 		const raised = mergeConfig({ pstack: { contextCapChars: 4000 } }, base);
@@ -1518,7 +1518,7 @@ describe("pstack config", () => {
 			}).pstack,
 		).toEqual({
 			enabled: false,
-			contextCapChars: 2000,
+			contextCapChars: 4000,
 		});
 	});
 });

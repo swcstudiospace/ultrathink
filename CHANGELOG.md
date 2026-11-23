@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Pstack subagent fleet (GSD-Core × pstack bridge): after planning (uplift, graph, nodes, sub-issues), the Claude hook renders a `## PSTACK subagent fleet` roster (`src/pstack/subagents.ts`, injected as `pstackRoster` in `src/claude/output.ts`) mapping GSD stages to pstack skills (discuss→how, plan→architect then arena, execute→tdd, review→interrogate then no-comments), and `THINK_ADDENDUM` bullet 6 routes each wave unit to a subagent whose first step is reading that skill's `SKILL.md`, while GSD-Core still sequences the waves (TodoWrite, `.planning/` artifacts, verify gate) and absent the fleet section the generic parallel Task subagents run unchanged; gated by user-only `pstack.enabled` plus the `ULTRATHINK_PSTACK=0` kill-switch, fails open (any failure omits the roster), and reported by `ultrathink doctor` as finding `pstack.fleet` in section `pstack`, with the Cursor bridge and Omp host unaffected.
+
 ### Changed
 
 - Ship owner decisions (`resolve --owner`, `merge` and `run` with `--owner-override`) name only an owner listed in the new `ship.owners` key (user files only). Until it is set, these decisions are refused and nothing is written.

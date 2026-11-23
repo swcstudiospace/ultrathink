@@ -109,7 +109,10 @@ function itemRows(item: PanelItem, width: number): string[] {
 	for (const word of words) {
 		if (cur === "") cur = word;
 		else if (cur.length + 1 + word.length <= budget) cur += ` ${word}`;
-		else { lines.push(`  ${"".padEnd(9)}${cur}`); cur = word; }
+		else {
+			lines.push(`  ${"".padEnd(9)}${cur}`);
+			cur = word;
+		}
 	}
 	if (cur !== "") lines.push(`  ${"".padEnd(9)}${cur}`);
 	return lines;

@@ -6,7 +6,8 @@
  *
  * The gate never starts or stops anything itself. A host stages artifacts into it while a planner runs, the gate validates
  * them, and the host asks `release()` for the content to inject. `release()` hands the staged content over exactly
- * once, and only from `ready`. Validation failure stays silent at prompt time and the session continues with 0 blocked
+ * once, and only from `ready`, recomputing the staged verdict on every read (W1) so a stale `partial_failure`
+ * retires when the tracker completes. Validation failure stays silent at prompt time and the session continues with 0 blocked
  * turns; the host delivers the released plan inline-if-ready else as an aside. A partial plan is reported with
  * the problems that keep it from being whole, and it is never released. Nothing staged is readable any other way,
  * so no half-built plan can reach a prompt.
@@ -220,13 +221,16 @@ export function validateArtifacts(
 }
 
 /**
- * One advisory note for an incomplete (partial) plan (blueprint §3.3): information only, never an
- * instruction. The note names the missing items and says the request continues. Fatal verdicts keep
- * the host's unusable-plan notice.
+ * One advisory note for an incomplete (partial) plan (blueprint §18.4 W3, ux.spec
+ * SCR-UltrathinkPlanAdvisory): information only, never an instruction. The note names
+ * the missing items (including the pending row count), keeps 1 warning line visible, and
+ * states the autonomous continuation. It carries 0 banned STOP / proceed / confirm
+ * strings and asks the operator for nothing. Fatal verdicts keep the host's
+ * unusable-plan notice.
  */
 export function planAdvisoryNote(detail: string): string {
 	const text = detail.trim() || "the plan is incomplete";
-	return `Plan note: ${text}. The request continues as written.`;
+	return `Plan note: ${text}. Warning: incomplete-verdict refresh pending. Planning continues automatically under autonomous mode.`;
 }
 
 /** The one advisory note for a partial verdict: every partial problem joined, then the request continues. */
@@ -618,11 +622,24 @@ export class CompletionGate {
 		if (label !== undefined) this.#emit(label);
 	}
 
-	/** Stages artifacts while generating. They stay unreadable until `release()`; a later stage replaces an earlier one. */
+	/**
+	 * Stages artifacts while generating; a later stage replaces an earlier one. After
+	 * validation has settled (`ready` / `partial_failure`) a stage is a tracker
+	 * refresh (for example tracker completion rewriting the spec with 0 pending
+	 * rows): the fresh text is stored and the next `release()` recomputes the
+	 * verdict from it before answering (W1, UTR-01/UTR-02), so a stale
+	 * `partial_failure` retires instead of repeating. Refresh never un-releases.
+	 */
 	stage(artifacts: GateArtifacts, label?: string): void {
-		if (this.#state !== "generating") return;
+		if (
+			this.#state !== "generating" &&
+			this.#state !== "ready" &&
+			this.#state !== "partial_failure"
+		)
+			return;
 		this.#staged = artifacts;
-		this.touch(label);
+		if (this.#state === "generating") this.touch(label);
+		else this.#emit(label ?? "plan refreshed; verdict recomputed on next release()");
 	}
 
 	/** The planner finished: validates what was staged (or `artifacts` when given) and settles the gate. */
@@ -663,14 +680,18 @@ export class CompletionGate {
 
 	/**
 	 * The single atomic release: it returns the release-authority text exactly once, and only from
-	 * `ready`. The authority is a validated checklist `#plan` when present (it wins over any staged
-	 * artifacts, so `planRecord()`, `buildWorkerContexts()` and `getExecutionContext()` attribute the
-	 * same text); in a legacy staged-only gate it is the staged text. A partial plan reports what is
-	 * missing and stays unreleased; any other call changes nothing and says why.
+	 * `ready`. Before answering, a settled staged-only verdict is recomputed with
+	 * `validateArtifacts` against the current staged text (W1, UTR-01/UTR-02): tracker
+	 * completion rewriting the spec with 0 pending rows flips a stale `partial_failure`
+	 * to `ready`, while 1 pending row keeps `not_ready` naming the pending count. A
+	 * validated checklist `#plan` stays the release authority and is never demoted by
+	 * staged revalidation. A partial plan reports what is missing and stays unreleased;
+	 * any other call changes nothing and says why.
 	 */
 	release(): GateRelease {
 		if (this.#released)
 			return { ok: false, reason: "already_released", detail: "the plan was already released" };
+		this.#revalidateStaged();
 		const staged = this.#staged;
 		const verdict = this.#verdict;
 		if (this.#state === "failed_or_cancelled")
@@ -693,6 +714,37 @@ export class CompletionGate {
 			return { ok: false, reason: "failed", detail: "no validated artifacts are staged" };
 		this.#released = true;
 		return { ok: true, state: "ready", text: staged.text, problems: verdict.problems };
+	}
+
+	/**
+	 * Recomputes the staged verdict from the current staged text. Only a settled
+	 * staged-only gate (`ready` / `partial_failure`, no checklist `#plan`) is
+	 * recomputed: a `#plan` gate keeps its authority. A throwing validator keeps
+	 * the cached verdict instead of failing the read.
+	 */
+	#revalidateStaged(): void {
+		const staged = this.#staged;
+		if (!staged) return;
+		if (this.#state !== "ready" && this.#state !== "partial_failure") return;
+		if (this.#plan) return;
+		let fresh: GateVerdict;
+		try {
+			fresh = this.#validate(staged);
+		} catch {
+			// reason: a throwing validator must not flip a settled verdict on a read; the cached verdict stands
+			return;
+		}
+		this.#verdict = fresh;
+		if (fresh.state === "ready" || fresh.state === "partial_failure") {
+			if (fresh.state !== this.#state) {
+				this.#state = fresh.state;
+				this.#emit(fresh.state === "ready" ? "plan complete" : describe(fresh.problems));
+			}
+		} else {
+			this.#state = "failed_or_cancelled";
+			this.#reason = describe(fresh.problems);
+			this.#emit(this.#reason);
+		}
 	}
 
 	#current(): GateOutcome {

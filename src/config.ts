@@ -156,7 +156,7 @@ export interface PstackConfig {
 
 const DEFAULT_PSTACK_CONFIG: PstackConfig = {
 	enabled: false,
-	contextCapChars: 2000,
+	contextCapChars: 4000,
 };
 
 /**

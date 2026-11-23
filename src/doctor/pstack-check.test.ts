@@ -81,6 +81,11 @@ describe("checkPstack", () => {
 			expect(byId(findings, "pstack.plugin").level).toBe("info");
 			expect(byId(findings, "pstack.skills").detail).toContain("plan: architect, arena");
 			expect(byId(findings, "pstack.hook").level).toBe("info");
+			expect(byId(findings, "pstack.fleet")).toMatchObject({
+				level: "info",
+				title: "pstack subagent fleet disabled",
+				detail: "pstack subagent fleet disabled (pstack.enabled)",
+			});
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -115,6 +120,11 @@ describe("checkPstack", () => {
 				join(root, "skills", "architect", "SKILL.md"),
 			);
 			expect(byId(findings, "pstack.hook").level).toBe("ok");
+			expect(byId(findings, "pstack.fleet")).toMatchObject({
+				level: "ok",
+				title: "pstack subagent fleet",
+				detail: `fleet: ${root} (pstack 1.2.3) — discuss 1, plan 2, execute 1, review 2 skill(s)`,
+			});
 
 			// The pstack findings only: the full doctor also runs every other section, and a cold run of those is what made this test load-fragile.
 			const report = buildReport(findings);

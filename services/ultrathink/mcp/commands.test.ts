@@ -168,6 +168,7 @@ describe("the catalog over the real repository files", () => {
 				"ultrathink-protocol",
 				"ultrathink-hitl",
 				"ultrathink-cursor",
+				"poteto-autonomous",
 			].sort(),
 		);
 	});

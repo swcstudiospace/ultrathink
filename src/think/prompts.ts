@@ -77,7 +77,8 @@ Orchestrate it:
 2. Run the file-disjoint units of the same wave as parallel Task subagents launched in one message; give each subagent its explicit files, change, and acceptance criteria, plus any recalled lessons or skills that apply to its unit.
 3. Serialize dependent waves: verify each wave with the checks it names before starting the next.
 4. Do not start writing code until any blocking clarifications are settled.
-5. Run the final Verify commands before finishing.`;
+5. Run the final Verify commands before finishing.
+6. Pstack subagent fleet: when the prompt carries a \`## PSTACK subagent fleet\` section, each wave unit runs as a subagent whose first step is reading that skill's SKILL.md (<stage> units → named skill per stage: discuss→how, plan→architect then arena, execute→tdd, review→interrogate then no-comments); GSD still owns sequencing, artifacts, and verification. No fleet section → today's generic parallel Task subagents. Never invent a skill path; only use absolute paths the fleet section names.`;
 
 const THINK_TRACKING = `The Notion Task/Issue/Sub-Issue rows and Linear issues for this graph were created before this turn (or are being finished by ultrathink-kickoff); their identifiers and URLs are in the ISSUES block of the specification and in the Linked issues list. Every WORKFLOW unit you put into TodoWrite should carry the matching issue link(s). Do not create additional Linear issues yourself: ultrathink-kickoff and "ultrathink-mcp track complete" own row creation, and ultrathink-sync updates the tracked rows later.`;
 

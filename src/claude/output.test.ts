@@ -98,6 +98,30 @@ describe("formatPromptContext", () => {
 		expect(out).not.toContain("## Ultrathink tracking");
 	});
 
+	const PSTACK_ROSTER =
+		"## PSTACK subagent fleet\n\n- [execute] tdd — read /cache/pstack/skills/tdd/SKILL.md — write the failing test first, then the fix, while executing — one subagent per unit\n\nThe GSD phase loop still sequences the waves (TodoWrite, .planning artifacts, verify gate); the fleet only changes how each unit runs. Absent this section, spawn generic Task subagents.";
+
+	test("a pstack roster follows the think addendum, before the waves line", () => {
+		const out = formatPromptContext({ result, graph: FALLBACK_GRAPH, pstackRoster: PSTACK_ROSTER });
+		expect(out).toContain("## PSTACK subagent fleet");
+		expect(out).toContain("[execute] tdd");
+		expect(out.indexOf("## Graph of Thought")).toBeLessThan(
+			out.indexOf("## PSTACK subagent fleet"),
+		);
+		expect(out.indexOf("## PSTACK subagent fleet")).toBeLessThan(out.indexOf("Workflow waves:"));
+	});
+
+	test("without a graph the roster never appears; without a roster nothing changes", () => {
+		// The fleet bullet in the think addendum names the section (`## PSTACK subagent fleet`), so absence
+		// must be asserted via roster-only content (the fixture's fake cache path and trailer), not the name.
+		const noGraph = formatPromptContext({ result, pstackRoster: PSTACK_ROSTER });
+		expect(noGraph).not.toContain("/cache/pstack/skills/tdd/SKILL.md");
+		expect(noGraph).not.toContain("fleet only changes how each unit runs");
+		const noRoster = formatPromptContext({ result, graph: FALLBACK_GRAPH });
+		expect(noRoster).not.toContain("/cache/pstack/skills/tdd/SKILL.md");
+		expect(noRoster).not.toContain("fleet only changes how each unit runs");
+	});
+
 	test("adds the HITL addendum after the graph addendum when clarifications exist", () => {
 		const out = formatPromptContext({ result, graph: FALLBACK_GRAPH, clarifications });
 		expect(out).toContain("## Clarifications (HITL)");
@@ -1098,7 +1122,7 @@ describe("handoff", () => {
 		expect(out).not.toContain("<BUILD_PROMPT");
 	});
 
-	test("an 8-node graph with 4 blocking clarifications stays under 6,000 characters", () => {
+	test("an 8-node graph with 4 blocking clarifications stays under 6,500 characters", () => {
 		const graph = {
 			goal: "g",
 			nodes: Array.from({ length: 8 }, (_, i) => ({
@@ -1134,7 +1158,9 @@ describe("handoff", () => {
 			ship: true,
 		});
 		expect(out).toContain("## Clarifications (HITL)");
-		expect(out.length).toBeLessThan(6_000);
+		// The fleet bullet in the think addendum legitimately lengthened the prompt (~60 chars), so the
+		// budget is 6,500 (same contract as the earlier 6,000 → 6,500 raise for prompt growth).
+		expect(out.length).toBeLessThan(6_500);
 	});
 
 	test("Hermes contexts ask through clarify and name todo/delegate_task; other hosts keep AskUserQuestion and Claude tool names", () => {

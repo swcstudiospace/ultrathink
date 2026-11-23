@@ -51,6 +51,7 @@ When the user types one of these, relay the reason and the alternative in one or
 | `/ultrathink-skills` | it manages skills generated on the local host, and the connector has no skill store | run it in Claude Code, Omp, Grok Build, Hermes or Muse with the plugin |
 | `/ultrathink-hitl` | clarifying questions are part of every plan result | read the plan's questions |
 | `/ultrathink-cursor` | it is a Cursor host command, and the connector has no Cursor session to run it in | run it in Cursor with the ultrathink plugin installed |
+| `/poteto-autonomous` | it runs the GSD phase loop with pstack playbook subagents; the connector has no shell or GSD runtime | use it in a plugin host |
 
 ## What is not verified
 
