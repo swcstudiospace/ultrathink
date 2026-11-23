@@ -18,14 +18,14 @@ import {
 
 export type FleetStage = "discuss" | "plan" | "execute" | "review";
 
-export interface FleetSkill {
+interface FleetSkill {
 	stage: FleetStage;
 	name: string;
 	path: string;
 	purpose: string;
 }
 
-export interface PlaybookRoute {
+interface PlaybookRoute {
 	/** The GSD stage this playbook plays. */
 	stage: FleetStage;
 	/** Playbook filename under poteto-mode/playbooks (without .md). */
