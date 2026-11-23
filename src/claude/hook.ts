@@ -1996,7 +1996,6 @@ export async function runPromptSubmit(
 				url: ref.url,
 			}));
 			if (refs.length > 0) {
-				stage("uplift", "start");
 				try {
 					const prevXml = result.xml;
 					const second = await runSecondUplift({
@@ -2007,8 +2006,13 @@ export async function runPromptSubmit(
 						signal: lifetime,
 					});
 					const gate = buildDispatchGate(true);
-					if (second.source === "llm") result = { ...result, xml: second.xml };
-					else {
+					if (second.source === "llm") {
+						result = { ...result, xml: second.xml };
+						// The second pass replaces the prompt; re-embed the graph and the tracker
+						// block so the final XML keeps every gateway reference and Graph-of-Thought.
+						result = { ...result, xml: injectGraphXml(result.xml, graph) };
+						result = { ...result, xml: injectTrackingXml(result.xml, plan, tracking) };
+					} else {
 						degraded.push("second-uplift");
 						degradedCauses["second-uplift"] = second.fallbackReason ?? "provider_error";
 					}
@@ -2029,16 +2033,12 @@ export async function runPromptSubmit(
 							finalPromptLanded: gate.final_prompt_landed,
 						},
 					};
-					stage(
-						"uplift",
-						"end",
-						second.source === "llm",
-						`${second.root} · second-pass${second.fallbackReason ? ` · ${second.fallbackReason}` : ""}`,
+					log(
+						`second uplift: ${second.root} · ${second.source}${second.fallbackReason ? ` · ${second.fallbackReason}` : ""}`,
 					);
 				} catch (error) {
 					rethrowCancellation(error);
 					log(`second uplift failed: ${causeText(error)}`);
-					stage("uplift", "end", false);
 				}
 			} else {
 				const gate = buildDispatchGate(true);
