@@ -85,7 +85,7 @@ const VERBS = new Set(
 
 describe("Grok Bot native skills", () => {
 	test("every skill has exactly name and description, name matching its folder", () => {
-		expect(names.length).toBe(23);
+		expect(names.length).toBe(24);
 		for (const name of names) {
 			const parsed = readNative(name);
 			expect(parsed.keys).toEqual(["name", "description"]);

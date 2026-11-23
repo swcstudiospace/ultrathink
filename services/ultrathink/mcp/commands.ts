@@ -227,6 +227,13 @@ export const COMMAND_OVERLAY: Readonly<Record<string, OverlayEntry>> = {
 		instead: HOSTS_WITH_PLUGIN,
 		description: "Manage generated skills: list, disable or delete",
 	},
+	"poteto-autonomous": {
+		state: "unsupported",
+		tools: [],
+		reason:
+			"it runs the GSD phase loop with pstack playbook subagents; the connector has no shell or GSD runtime",
+		instead: PLUGIN_HOST,
+	},
 };
 
 /** The overlay entry of a name, own properties only: a name such as "constructor" is not a command. */
