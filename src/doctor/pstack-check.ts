@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_MAPPING, resolvePstack, skillPath, type PstackStage } from "../cursor/pstack.ts";
+import { resolveSubagentFleet } from "../pstack/subagents.ts";
 import { defaultConfig } from "../config.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
 import { isRecord, readJson } from "../shared.ts";
@@ -145,8 +146,21 @@ function hookState(cursorDir: string): { installed: boolean; detail: string } {
 /**
  * §4a availability validation: the read-only half of the autonomous §4 gate (cache present, fleet block resolvable,
  * force-off respected), checked before any §4c start. `ULTRATHINK_PSTACK=0` short-circuits to `bypassed`, so §4c/§4d
- * are skipped and the exact legacy loop runs. Never writes, never enables the bridge. Mirrors checkPstack's fleet
- * probe without importing the resolver.
+ * are skipped and the exact legacy loop runs. Never writes, never enables the bridge.
+ *
+ * Precedence chain (F-4: §4a must not degrade a fleet the host would start — keep in sync with
+ * `BackgroundHost.start`'s default `fleetResolver` in `src/pstack/background-host.ts`, which calls
+ * `resolveSubagentFleet({ enabled: true, homeDir })` from the cache alone):
+ * 1. `ULTRATHINK_PSTACK=0` → `bypassed`. Wins over everything, same as the hook and the resolver's `forcedOff`.
+ * 2. Cache + fleet resolvability via the single resolver `resolveSubagentFleet` with the host default
+ *    `enabled: true`. A granted fleet (cache present + ≥1 mapped skill resolves) is `ok` here even when no user
+ *    config sets `pstack.enabled`. Gating §4a on `pstack.enabled` (the hook/`mergePstack` opt-in, default false)
+ *    would report `unavailable` for a fleet §4c would start — the V13 surface mismatch.
+ * 3. Location/mapping only refines step 2: `ULTRATHINK_PSTACK_CURSOR_DIR` > user-config `cursorDir` >
+ *    `$HOME/.cursor` (the host default), and the per-stage `mapping` override with per-stage `DEFAULT_MAPPING`
+ *    fallback, expanded to a full stage map so the resolver counts exactly what `checkPstack`'s probe counts.
+ *    User `pstack.enabled` governs the hook roster path (`pstackRosterFor`) and `checkPstack` warn/info levels
+ *    only; it does not gate §4a. Reporting `ok` enables nothing — doctor stays read-only.
  */
 export type PstackAvailability =
 	| { status: "ok"; root: string; version: string; resolvedSkills: number }
@@ -161,17 +175,23 @@ export function validatePstackAvailability(deps: DoctorDeps): PstackAvailability
 				status: "bypassed",
 				reason: "ULTRATHINK_PSTACK=0 turns the hook off before config is applied",
 			};
-		if (!decision.enabled) return { status: "unavailable", reason: "pstack bridge disabled" };
-		const resolved = resolvePstack(cursorDirFor(deps.env, decision));
-		if ("reason" in resolved) return { status: "unavailable", reason: resolved.reason };
-		let resolvedSkills = 0;
-		for (const stage of STAGES) {
-			for (const name of namesFor(stage, decision.mapping)) {
-				if ("path" in skillPath(resolved, name)) resolvedSkills++;
-			}
-		}
-		if (resolvedSkills === 0) return { status: "unavailable", reason: "no pstack skills resolved" };
-		return { status: "ok", root: resolved.root, version: resolved.version, resolvedSkills };
+		const homeDir = deps.env.HOME?.trim() || homedir();
+		const mapping: Record<StageKey, readonly string[]> = {
+			discuss: namesFor("discuss", decision.mapping),
+			plan: namesFor("plan", decision.mapping),
+			execute: namesFor("execute", decision.mapping),
+			review: namesFor("review", decision.mapping),
+		};
+		// Host default enabled:true (precedence step 2); decision.enabled is intentionally not consulted here.
+		const fleet = resolveSubagentFleet({
+			enabled: true,
+			cursorDir: cursorDirFor(deps.env, decision),
+			homeDir,
+			mapping,
+			forcedOff: false,
+		});
+		if (!fleet.ok) return { status: "unavailable", reason: fleet.reason };
+		return { status: "ok", root: fleet.root, version: fleet.version, resolvedSkills: fleet.skills.length };
 	} catch (error) {
 		return { status: "unavailable", reason: String(error) };
 	}
