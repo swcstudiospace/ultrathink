@@ -194,6 +194,23 @@ function baseDeps(overrides: Partial<HookDeps> = {}): { deps: HookDeps; cleanup:
 
 const input: PromptSubmitInput = { session_id: "s1", cwd: "/repo", prompt: "add a widget" };
 
+/** A fake Cursor dir holding one completed pstack cache with every default-mapped skill on disk (never a real install). */
+function fakeCursorDir(): { dir: string; cleanup: () => void } {
+	const dir = mkdtempSync(join(tmpdir(), "pstack-hook-"));
+	const plugin = join(dir, "plugins", "cache", "cursor-public", "pstack", "only-ref");
+	mkdirSync(join(plugin, ".cursor-plugin"), { recursive: true });
+	writeFileSync(
+		join(plugin, ".cursor-plugin", "plugin.json"),
+		JSON.stringify({ name: "pstack", version: "0.15.15" }),
+	);
+	writeFileSync(join(plugin, ".cache-complete"), "");
+	for (const name of ["how", "architect", "arena", "tdd", "interrogate", "no-comments"]) {
+		mkdirSync(join(plugin, "skills", name), { recursive: true });
+		writeFileSync(join(plugin, "skills", name, "SKILL.md"), `# ${name}\n`);
+	}
+	return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
 describe("runPromptSubmit", () => {
 	test("trivial prompt is skipped before any engine call", async () => {
 		let called = false;
@@ -569,6 +586,42 @@ describe("runPromptSubmit", () => {
 			expect(unsaved).not.toContain("Specification file:");
 		} finally {
 			cleanup();
+		}
+	});
+
+	test("the pstack fleet roster is threaded into the context only when the bridge resolves", async () => {
+		const fake = fakeCursorDir();
+		const { deps, cleanup } = baseDeps();
+		try {
+			const enabled = {
+				...deps,
+				config: {
+					...deps.config,
+					pstack: { enabled: true, cursorDir: fake.dir, contextCapChars: 2000 },
+				},
+			};
+			const on =
+				(await runPromptSubmit(input, enabled)).output?.hookSpecificOutput.additionalContext ?? "";
+			expect(on).toContain("## PSTACK subagent fleet");
+			expect(on).toContain("[execute] tdd");
+			expect(on.indexOf("## PSTACK subagent fleet")).toBeLessThan(on.indexOf("Workflow waves:"));
+			// Disabled (the default) leaves the context unchanged: no roster content. The fleet bullet in the think
+			// addendum names the section (`## PSTACK subagent fleet`), so absence is asserted via roster-only content
+			// (the fake cache path and the roster trailer), not the section name.
+			const off =
+				(await runPromptSubmit(input, deps)).output?.hookSpecificOutput.additionalContext ?? "";
+			expect(off).not.toContain("skills/tdd/SKILL.md");
+			expect(off).not.toContain("fleet only changes how each unit runs");
+			// ULTRATHINK_PSTACK=0 forces the bridge off even when enabled and resolvable.
+			process.env.ULTRATHINK_PSTACK = "0";
+			const forced =
+				(await runPromptSubmit(input, enabled)).output?.hookSpecificOutput.additionalContext ?? "";
+			expect(forced).not.toContain("skills/tdd/SKILL.md");
+			expect(forced).not.toContain("fleet only changes how each unit runs");
+		} finally {
+			delete process.env.ULTRATHINK_PSTACK;
+			cleanup();
+			fake.cleanup();
 		}
 	});
 });

@@ -1,7 +1,7 @@
 /**
  * The information panels one prompt's plan carries (SPE-34395): the knowledge, lessons, skills, teachable moments and
- * Substrate brief lookups the planner already made, mapped to panel envelopes. Off unless `panels.informationPanels` is
- * set, so the plan view is unchanged by default. Pure: the caller passes the lookups it holds; nothing is fetched here.
+ * Substrate brief lookups the planner already made, mapped to panel envelopes. On by default
+ * (`panels.informationPanels`), so the Omp plan card renders live rows; off only when the user sets it false. Pure: the caller passes the lookups it holds; nothing is fetched here.
  */
 import type { KnowledgeLookup } from "../greptile/knowledge.ts";
 import type { LessonsLookup, SkillsLookup } from "../teach/types.ts";

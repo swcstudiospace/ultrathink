@@ -304,6 +304,8 @@ export interface PromptContextInput {
 	docs?: string;
 	/** Recalled skills, already formatted by formatSkillsSection (carries its own header); empty or absent adds nothing. */
 	skills?: string;
+	/** Rendered `## PSTACK subagent fleet` roster (src/pstack/subagents.ts); adds nothing when absent. */
+	pstackRoster?: string;
 }
 
 /**
@@ -558,6 +560,7 @@ export function formatPromptContext(input: PromptContextInput): string {
 			input.trackingOff || !input.plan ? THINK_ADDENDUM_UNTRACKED : THINK_ADDENDUM
 		).trim();
 		tail.push(hints ? `${think}\n${HERMES_TOOL_NAMES}` : think);
+		if (input.pstackRoster) tail.push(input.pstackRoster);
 		const waves = workflowWaves(input.graph)
 			.map((w) => `${w.wave}: ${w.ids.join(", ")}${w.parallel ? " (parallel)" : ""}`)
 			.join(" · ");

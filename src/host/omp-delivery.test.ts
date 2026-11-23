@@ -63,23 +63,23 @@ describe("omp delivery when planning does not produce a plan", () => {
 		expect(planner.count()).toBe(2);
 	});
 
-test("a planner that fails three times delivers the notice, never nothing", async () => {
-	const planner = counting(() => "");
-	const { run } = setup(planner.plan, 1_000, { stateDir: newRoot() });
-	const text = textOf(await run("do it"));
-	expect(text).toBeDefined();
-	expect(text).toContain("stopped planning");
-	expect(planner.count()).toBe(4);
-});
+	test("a planner that fails three times delivers the notice, never nothing", async () => {
+		const planner = counting(() => "");
+		const { run } = setup(planner.plan, 1_000, { stateDir: newRoot() });
+		const text = textOf(await run("do it"));
+		expect(text).toBeDefined();
+		expect(text).toContain("stopped planning");
+		expect(planner.count()).toBe(4);
+	});
 
-test("a planner that throws delivers the notice and carries the error into it after three relaunches", async () => {
-	const planner = counting(() => new Error("boom"));
-	const { run } = setup(planner.plan, 1_000, { stateDir: newRoot() });
-	const text = textOf(await run("do it"));
-	expect(text).toContain("stopped planning");
-	expect(text).toContain("boom");
-	expect(planner.count()).toBe(4);
-});
+	test("a planner that throws delivers the notice and carries the error into it after three relaunches", async () => {
+		const planner = counting(() => new Error("boom"));
+		const { run } = setup(planner.plan, 1_000, { stateDir: newRoot() });
+		const text = textOf(await run("do it"));
+		expect(text).toContain("stopped planning");
+		expect(text).toContain("boom");
+		expect(planner.count()).toBe(4);
+	});
 
 	test("a stored plan that never reached the model is re-delivered once", async () => {
 		const root = newRoot();
@@ -99,10 +99,10 @@ test("a planner that throws delivers the notice and carries the error into it af
 		expect(loadPlan(root, KEY)).toBe("absent");
 		// A fresh host has no flight for this submission, so its planner fails and the store is the only fallback.
 		const fallback = setup(counting(() => "").plan, 1_000, { stateDir: root });
-	const text = textOf(await fallback.run("do it"));
-	expect(text).not.toBe(delivered);
-	expect(text).toContain("stopped planning");
-});
+		const text = textOf(await fallback.run("do it"));
+		expect(text).not.toBe(delivered);
+		expect(text).toContain("stopped planning");
+	});
 
 	test("a record saved with a null view loads with that view and re-delivers its text", async () => {
 		const root = newRoot();
@@ -156,9 +156,9 @@ test("a planner that throws delivers the notice and carries the error into it af
 				sessionManager: { getSessionId: () => "s2" },
 			},
 		);
-	expect(textOf(await run("do it"))).toContain("stopped planning");
-	expect(typeof loadPlan(root, KEY)).toBe("object");
-});
+		expect(textOf(await run("do it"))).toContain("stopped planning");
+		expect(typeof loadPlan(root, KEY)).toBe("object");
+	});
 
 	test("a session with no id never touches the store", async () => {
 		const root = newRoot();
@@ -173,10 +173,10 @@ test("a planner that throws delivers the notice and carries the error into it af
 				sessionManager: { getSessionId: () => "" },
 			},
 		);
-	expect(textOf(await run("do it"))).toContain("stopped planning");
-	expect(typeof loadPlan(root, emptyKey)).toBe("object");
-	expect(existsSync(join(root, "plans", `${emptyKey}.json`))).toBe(true);
-});
+		expect(textOf(await run("do it"))).toContain("stopped planning");
+		expect(typeof loadPlan(root, emptyKey)).toBe("object");
+		expect(existsSync(join(root, "plans", `${emptyKey}.json`))).toBe(true);
+	});
 
 	test("an internal failure in the handler is reported redacted and never leaks the secret", async () => {
 		const root = newRoot();
@@ -211,18 +211,18 @@ test("a planner that throws delivers the notice and carries the error into it af
 			maxRunMs: 100,
 			clock: { now: () => clockAt },
 		});
-	expect(textOf(await run("do it"))).toContain("stopped planning");
-	expect(calls).toBe(1);
-});
+		expect(textOf(await run("do it"))).toContain("stopped planning");
+		expect(calls).toBe(1);
+	});
 
-test("native-unavailable is a planning failure: after three relaunches the notice names the reason", async () => {
-	const planner = skipping("native-unavailable");
-	const { run } = setup(planner.plan, 1_000, { stateDir: newRoot() });
-	const text = textOf(await run("do it"));
-	expect(text).toContain("stopped planning");
-	expect(text).toContain("native-unavailable");
-	expect(planner.count()).toBe(4);
-});
+	test("native-unavailable is a planning failure: after three relaunches the notice names the reason", async () => {
+		const planner = skipping("native-unavailable");
+		const { run } = setup(planner.plan, 1_000, { stateDir: newRoot() });
+		const text = textOf(await run("do it"));
+		expect(text).toContain("stopped planning");
+		expect(text).toContain("native-unavailable");
+		expect(planner.count()).toBe(4);
+	});
 
 	test("a deferred deliberate skip that outlasts the race sends no aside", async () => {
 		const gate = Promise.withResolvers<{ context: string; skipped: string }>();

@@ -239,6 +239,47 @@ export function checkPstack(deps: DoctorDeps): Finding[] {
 				: {}),
 		});
 	}
+	// Subagent fleet: mirror the fleet counts from resolvePstack + namesFor without importing
+	// src/pstack/subagents.ts, so this check stays static/read-only on the plugin cache.
+	try {
+		if (!decision.enabled) {
+			findings.push({
+				id: "pstack.fleet",
+				section: "pstack",
+				level: "info",
+				title: "pstack subagent fleet disabled",
+				detail: "pstack subagent fleet disabled (pstack.enabled)",
+			});
+		} else if ("reason" in resolved) {
+			findings.push({
+				id: "pstack.fleet",
+				section: "pstack",
+				level: "info",
+				title: "pstack subagent fleet not resolved",
+				detail: `fleet: not resolved — ${resolved.reason}`,
+			});
+		} else {
+			const counts = STAGES.map(
+				(stage) =>
+					`${stage} ${namesFor(stage, decision.mapping).filter((name) => "path" in skillPath(resolved, name)).length}`,
+			).join(", ");
+			findings.push({
+				id: "pstack.fleet",
+				section: "pstack",
+				level: "ok",
+				title: "pstack subagent fleet",
+				detail: `fleet: ${resolved.root} (pstack ${resolved.version}) — ${counts} skill(s)`,
+			});
+		}
+	} catch (error) {
+		findings.push({
+			id: "pstack.fleet",
+			section: "pstack",
+			level: "info",
+			title: "pstack subagent fleet unavailable",
+			detail: String(error),
+		});
+	}
 
 	const hook = hookState(cursorDir);
 	findings.push({

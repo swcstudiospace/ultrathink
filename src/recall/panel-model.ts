@@ -293,9 +293,7 @@ function docItem(path: string, preview = ""): PanelItem {
  * - `error` is error, classed by the reason code, with no retry scheduled.
  * Every envelope except loading carries the probe's stages.
  */
-function knowledgeState(
-	lookup: KnowledgeLookup & { digest?: string },
-): PanelEnvelope {
+function knowledgeState(lookup: KnowledgeLookup & { digest?: string }): PanelEnvelope {
 	const stages = lookup.stages ?? [];
 	switch (lookup.outcome) {
 		case "used":

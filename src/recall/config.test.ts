@@ -91,7 +91,7 @@ const FIELDS: { path: string[]; fallback: unknown; invalid: unknown[] }[] = [
 		fallback: "draft",
 		invalid: ["DRAFT", "on", 1, null],
 	},
-	{ path: ["panels", "informationPanels"], fallback: false, invalid: ["true", 1, null] },
+	{ path: ["panels", "informationPanels"], fallback: true, invalid: ["true", 1, null] },
 ];
 
 describe("recall settings defaults", () => {
@@ -121,7 +121,7 @@ describe("recall settings defaults", () => {
 				relevanceFloor: { lessons: 0.5 },
 			},
 			skills: { authoring: { enabled: false, activation: "draft" } },
-			panels: { informationPanels: false },
+			panels: { informationPanels: true },
 		});
 	});
 
@@ -230,7 +230,7 @@ describe("recall settings parsing", () => {
 		const parsed = parseRecallSettings({ recall: { enabled: true } });
 		expect(parsed.recall.enabled).toBe(true);
 		expect(parsed.recall.timeoutMs).toBe(2_500);
-		expect(parsed.panels.informationPanels).toBe(false);
+		expect(parsed.panels.informationPanels).toBe(true);
 	});
 
 	test("an invalid field keeps the base value, not the built-in default", () => {

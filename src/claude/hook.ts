@@ -9,6 +9,7 @@
  * AbortError, aborting sibling work and preventing later inference or side effects.
  */
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { UltrathinkConfig } from "../config.ts";
 import { createDecisions, type DecisionsDeps, decisionsKilled } from "../decisions/gate.ts";
@@ -94,6 +95,7 @@ import { type LockOptions, withFileLock, writeFileAtomic } from "./atomic.ts";
 import type { ClaudeCompleter } from "./complete.ts";
 import { isChildInvocation } from "./complete.ts";
 import { formatPlanSkipNotice, formatPromptContext, formatSummary } from "./output.ts";
+import { renderSubagentRoster, resolveSubagentFleet } from "../pstack/subagents.ts";
 import { JEV_PLAN_SKIP, planGate } from "./plan-gate.ts";
 import { shipApplies } from "../ship/policy.ts";
 import {
@@ -1002,6 +1004,26 @@ function partialGraphOf(error: unknown): ThoughtGraph | undefined {
 	if (!isRecord(error)) return undefined;
 	const carrier = isRecord(error.partial) ? error.partial : error;
 	return isThoughtGraph(carrier.graph) ? carrier.graph : undefined;
+}
+
+/**
+ * The `## PSTACK subagent fleet` roster for this prompt, rendered from the resolved pstack bridge config. Fail-open:
+ * any failure (bridge disabled or unresolvable, a throwing resolution) yields no roster, byte-identical to a hook
+ * without the bridge.
+ */
+function pstackRosterFor(config: UltrathinkConfig): string | undefined {
+	try {
+		const fleet = resolveSubagentFleet({
+			enabled: config.pstack.enabled,
+			cursorDir: config.pstack.cursorDir,
+			homeDir: process.env.HOME?.trim() || homedir(),
+			mapping: config.pstack.mapping,
+			forcedOff: process.env.ULTRATHINK_PSTACK === "0",
+		});
+		return renderSubagentRoster(fleet, config.pstack.contextCapChars ?? 4000) ?? undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 export async function runPromptSubmit(
@@ -1983,6 +2005,8 @@ export async function runPromptSubmit(
 		// The recalled items this prompt injected, appended to the same context; nothing is appended when none were injected.
 		const recalledSuffix =
 			recallItems.length === 0 ? "" : `\n\n${[RECALL_HEADER, ...recallItems].join("\n")}`;
+		// The pstack subagent fleet roster (undefined when the bridge is off or unresolvable).
+		const pstackRoster = pstackRosterFor(deps.config);
 		const output: HookOutput = {
 			hookSpecificOutput: {
 				hookEventName: "UserPromptSubmit",
@@ -2011,6 +2035,7 @@ export async function runPromptSubmit(
 						lessons: lessonsText,
 						docs: docsText,
 						skills: skillsText,
+						...(pstackRoster ? { pstackRoster } : {}),
 						skillHints: deps.surface === "hermes",
 						// No spec file (the write failed) means nothing to point at: fall back to the inline spec.
 						handoff: deps.surface === "hermes" && specPath !== undefined,
