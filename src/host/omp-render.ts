@@ -1171,6 +1171,61 @@ const PANEL_LABELS: Record<keyof TurnPanels, string> = {
 	substrate: "Substrate brief",
 };
 
+/** Raw terminal controls that would corrupt the card; stripped before prompt text is drawn. */
+function stripPromptControls(line: string): string {
+	const parts: string[] = [];
+	for (const ch of line) {
+		const code = ch.codePointAt(0) ?? 0;
+		if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) continue;
+		parts.push(ch);
+	}
+	return parts.join("");
+}
+
+/** Hard-break one prompt line into room-sized rows at grapheme boundaries, preserving every character. */
+function breakPromptLine(line: string, room: number): string[] {
+	const width = Math.max(1, room);
+	const rows: string[] = [];
+	const parts: string[] = [];
+	let used = 0;
+	for (const { segment } of GRAPHEMES.segment(line)) {
+		const columns = Bun.stringWidth(segment);
+		if (used > 0 && used + columns > width) {
+			rows.push(parts.join(""));
+			parts.length = 0;
+			parts.push(segment);
+			used = columns;
+		} else {
+			parts.push(segment);
+			used += columns;
+		}
+	}
+	rows.push(parts.join(""));
+	return rows;
+}
+
+/**
+ * The complete uplifted prompt as the second card section directly beneath the plan summary rows: the full XML,
+ * every character preserved across width-wrapped rows, so the user can judge the uplift. Absent when the view
+ * carries no prompt text. The summary section never carries the full text; this section never replaces it.
+ */
+export function fullPromptSectionRows(
+	fullPromptXml: string | undefined,
+	p: Paint,
+	room: number,
+): string[] {
+	if (typeof fullPromptXml !== "string" || fullPromptXml.trim() === "") return [];
+	const rows: string[] = ["", p.fg("dim", "full prompt")];
+	for (const line of fullPromptXml.split("\n")) {
+		const text = stripPromptControls(line.replace(/\r$/, ""));
+		if (text === "") {
+			rows.push("");
+			continue;
+		}
+		rows.push(...breakPromptLine(text, room));
+	}
+	return rows;
+}
 /**
  * The information panels of a plan, drawn under the plan rows. `details` is untrusted session data: an entry without a
  * string status, or one that fails to render, is not drawn, so a malformed panel never throws into Omp's renderer.
@@ -1228,6 +1283,7 @@ export function registerUltrathinkRenderers(pi: {
 			const graph = planViewToGraph(view);
 			const rows = (room: number) => [
 				...planRows(view, graph, options.expanded, p, theme, room),
+				...fullPromptSectionRows(view.fullPromptXml, p, room),
 				...panelSectionRows(view.panels, view.graphId, room),
 			];
 			return card(rows, p, {

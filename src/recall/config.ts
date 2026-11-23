@@ -3,8 +3,8 @@
 /**
  * Settings for recall, the knowledge-base probe record, skill authoring and the information panels. Every new key is
  * off (or the least intrusive value) by default: recall stays disabled until `recall.enabled` is set, generated skills
- * are drafts that are never injected, and panels stay hidden until `panels.informationPanels` is set. The probe record
- * is the one default-on key, and it only records observations; it never changes injected content.
+ * are drafts that are never injected, and information panels are on so the Omp plan card renders live rows from the
+ * planner's own lookups (AC-44, blueprint section 6). The probe record
  *
  * Parsing is total. A missing, mistyped or out-of-range field keeps its base value, field by field, so a bad value never
  * throws and never disturbs a neighbouring field. Counts and durations must be finite and at least 1; they are floored
@@ -89,7 +89,7 @@ export function defaultRecallSettings(): RecallSettings {
 			relevanceFloor: { lessons: 0.5 },
 		},
 		skills: { authoring: { enabled: false, activation: "draft" } },
-		panels: { informationPanels: false },
+		panels: { informationPanels: true },
 	};
 }
 

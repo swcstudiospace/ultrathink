@@ -3,7 +3,13 @@
 import { describe, expect, test } from "bun:test";
 import { disabledKnowledgeLookup } from "../greptile/knowledge.ts";
 import { type PanelEnvelope, knowledgeLookupToPanel } from "../recall/panel-model.ts";
-import { PLAN_TYPE, RECALL_TYPE, registerUltrathinkRenderers } from "./omp-render.ts";
+import { paint } from "./omp-paint.ts";
+import {
+	PLAN_TYPE,
+	RECALL_TYPE,
+	fullPromptSectionRows,
+	registerUltrathinkRenderers,
+} from "./omp-render.ts";
 import type { PlanView } from "./view.ts";
 
 type Renderer = Parameters<
@@ -172,5 +178,44 @@ describe("recall card expanded and collapsed (options.expanded)", () => {
 		);
 		if (card === undefined) throw new Error("recall renderer declined the view");
 		expect([...card.render(100)]).toEqual([...card.render(100)]);
+	});
+});
+
+describe("plan card full prompt section beneath the summary", () => {
+	const fullXml =
+		"<spec><issues><node>n1</node><linear>https://linear.app/x/ENG-1</linear><notion>https://notion.so/n1</notion></issues></spec>";
+
+	test("a view without prompt text renders the same rows as the same view with it undefined", () => {
+		expect(planRows({ ...view, fullPromptXml: undefined })).toEqual(planRows(view));
+	});
+
+	test("the full prompt renders beneath the plan summary with every character preserved and tracker links per node", () => {
+		const rows = planRows({ ...view, fullPromptXml: fullXml });
+		expect(rows.length).toBeGreaterThan(planRows(view).length);
+		expect(rows.join("\n")).toContain("full prompt");
+		const section = fullPromptSectionRows(fullXml, paint(theme), 96).slice(2).join("");
+		expect(section).toBe(fullXml);
+		expect(section).toContain("https://linear.app/x/ENG-1");
+		expect(section).toContain("https://notion.so/n1");
+	});
+
+	test("every character is preserved across wrapped rows at a narrow width", () => {
+		const rows = fullPromptSectionRows(fullXml, paint(theme), 40);
+		expect(rows[0]).toBe("");
+		expect(rows[1]).toContain("full prompt");
+		expect(rows.slice(2).join("")).toBe(fullXml);
+	});
+
+	test("the full prompt section renders beneath the summary and before the panels", () => {
+		const withPanels = {
+			...view,
+			fullPromptXml: fullXml,
+			panels: { knowledge: knowledgeLookupToPanel(disabledKnowledgeLookup()) },
+		};
+		const text = planRows(withPanels).join("\n");
+		const fullAt = text.indexOf("full prompt");
+		const panelAt = text.indexOf("gate_off");
+		expect(fullAt).toBeGreaterThan(-1);
+		expect(panelAt).toBeGreaterThan(fullAt);
 	});
 });
