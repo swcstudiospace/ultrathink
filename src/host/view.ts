@@ -62,6 +62,54 @@ export interface PlanView {
 	};
 	/** Pipeline stages that ran degraded (record.degraded), shown on the plan card; absent when none did. */
 	degraded?: string[];
+	/** Per-stage line counts of the Double Uplift (contract `StageMetrics`), projected from the record when the pipeline recorded them; absent on older records. */
+	stageMetrics?: { stages: Array<{ stage: string; lines: number }>; densityLossStage?: string };
+	/** 10-prompt accounting line `1 graph + N node chains + 2 uplifts = N+3`, derived from the node count; absent when the graph has no nodes. */
+	promptAccounting?: string;
+	/** Dispatch gate state (contract `DispatchGate`), projected from the record when recorded; derived from the final prompt otherwise. */
+	dispatchGate?: { specialistsBeforeFinal: number; finalPromptLanded: boolean };
+}
+
+/**
+ * Project the record's `stageMetrics` (contract `StageMetrics` shape) defensively: the record is persisted session
+ * data, so anything that is not an array of `{stage: string, lines: non-negative integer}` rows is dropped, never guessed.
+ */
+function projectStageMetrics(record: unknown): PlanView["stageMetrics"] {
+	if (!isRecord(record)) return undefined;
+	const value = record.stageMetrics;
+	if (!isRecord(value) || !Array.isArray(value.stages)) return undefined;
+	const stages: Array<{ stage: string; lines: number }> = [];
+	for (const row of value.stages) {
+		if (!isRecord(row)) continue;
+		if (typeof row.stage !== "string" || row.stage === "") continue;
+		if (typeof row.lines !== "number" || !Number.isInteger(row.lines) || row.lines < 0) continue;
+		stages.push({ stage: row.stage, lines: row.lines });
+	}
+	if (stages.length === 0) return undefined;
+	return {
+		stages,
+		...(typeof value.densityLossStage === "string" && value.densityLossStage !== ""
+			? { densityLossStage: value.densityLossStage }
+			: {}),
+	};
+}
+
+/** Project the record's `dispatchGate` (contract `DispatchGate` shape) defensively; absent when the record carries none. */
+function projectDispatchGate(record: unknown): PlanView["dispatchGate"] {
+	if (!isRecord(record)) return undefined;
+	const value = record.dispatchGate;
+	if (!isRecord(value)) return undefined;
+	if (
+		typeof value.specialistsBeforeFinal !== "number" ||
+		!Number.isInteger(value.specialistsBeforeFinal) ||
+		value.specialistsBeforeFinal < 0 ||
+		typeof value.finalPromptLanded !== "boolean"
+	)
+		return undefined;
+	return {
+		specialistsBeforeFinal: value.specialistsBeforeFinal,
+		finalPromptLanded: value.finalPromptLanded,
+	};
 }
 
 const NODE_PREFIX = /^\[[^\]]*\]\s*/;
@@ -185,5 +233,16 @@ export function buildPlanView(record: SessionRecord, elapsedMs: number): PlanVie
 				}
 			: {}),
 		...(record.degraded?.length ? { degraded: [...record.degraded] } : {}),
+		...(projectStageMetrics(record) ? { stageMetrics: projectStageMetrics(record) } : {}),
+		...(nodes.length > 0
+			? {
+					promptAccounting: `1 graph + ${nodes.length} node chains + 2 uplifts = ${nodes.length + 3}`,
+				}
+			: {}),
+		...(projectDispatchGate(record)
+			? { dispatchGate: projectDispatchGate(record) }
+			: record.result.xml
+				? { dispatchGate: { specialistsBeforeFinal: 0, finalPromptLanded: true } }
+				: {}),
 	};
 }
