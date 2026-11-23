@@ -1020,7 +1020,7 @@ function pstackRosterFor(config: UltrathinkConfig): string | undefined {
 			mapping: config.pstack.mapping,
 			forcedOff: process.env.ULTRATHINK_PSTACK === "0",
 		});
-		return renderSubagentRoster(fleet, config.pstack.contextCapChars ?? 2000) ?? undefined;
+		return renderSubagentRoster(fleet, config.pstack.contextCapChars ?? 4000) ?? undefined;
 	} catch {
 		return undefined;
 	}

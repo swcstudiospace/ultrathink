@@ -126,4 +126,13 @@ describe("renderSubagentRoster", () => {
 		const fleet = fleetOrThrow(resolveSubagentFleet({ enabled: true, homeDir: fullHomeDir }));
 		expect(renderSubagentRoster(fleet, 10)).toBeNull();
 	});
+
+	test("names the parallel-dispatch rule", () => {
+		const fleet = fleetOrThrow(resolveSubagentFleet({ enabled: true, homeDir: fullHomeDir }));
+		const roster = renderSubagentRoster(fleet);
+		expect(roster).toContain("Spawn one subagent per unit in ONE message");
+		expect(roster).toContain(
+			"units of the same wave run concurrently (no shared files within a wave), matching the GSDExecutor flow",
+		);
+	});
 });

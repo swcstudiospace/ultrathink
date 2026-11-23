@@ -7,6 +7,7 @@
  * Never throws: every failure is a `reason` or `null`.
  */
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
 	DEFAULT_MAPPING,
 	resolvePstack,
@@ -108,16 +109,14 @@ export function resolveSubagentFleet(input: {
 			version: resolved.version,
 			skills,
 			playbooks,
-			potetoModePath: existsSync(join(potetoDir, "SKILL.md"))
-				? join(potetoDir, "SKILL.md")
-				: null,
+			potetoModePath: existsSync(join(potetoDir, "SKILL.md")) ? join(potetoDir, "SKILL.md") : null,
 		};
 	} catch (error) {
 		return { ok: false, reason: String(error) };
 	}
 }
 
-export function renderSubagentRoster(fleet: SubagentFleet, cap = 2000): string | null {
+export function renderSubagentRoster(fleet: SubagentFleet, cap = 4000): string | null {
 	try {
 		if (!fleet.ok) return null;
 		const lines = ["## PSTACK subagent fleet"];
@@ -135,6 +134,9 @@ export function renderSubagentRoster(fleet: SubagentFleet, cap = 2000): string |
 					`- [playbook:${route.stage}] playbooks/${route.title}.md — read ${route.path} — the unit's subagent follows this playbook`,
 				);
 			}
+			lines.push(
+				"Spawn one subagent per unit in ONE message that reads poteto-mode/SKILL.md + worker.md first, then the selected playbook; units of the same wave run concurrently (no shared files within a wave), matching the GSDExecutor flow",
+			);
 		}
 		lines.push(
 			"The GSD phase loop still sequences the waves (TodoWrite, .planning artifacts, verify gate); the fleet only changes how each unit runs. Absent this section, spawn generic Task subagents.",
