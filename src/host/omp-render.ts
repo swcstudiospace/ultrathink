@@ -213,6 +213,11 @@ function planRows(
 	}
 	if (Array.isArray(view.degraded) && view.degraded.length > 0)
 		body.push(`${p.fg("dim", "Degraded")} ${p.fg("warning", view.degraded.join(", "))}`);
+	if (expanded) {
+		body.push(...promptAccountingRows(view, p));
+		body.push(...stageLineCountRows(view, p));
+		body.push(...dispatchGateRows(view, p));
+	}
 	// The planning model's safe record (details are untrusted session data, so it is projected again): label, reason and
 	// engine request, e.g. `omp-native:openai-codex/gpt-6.1-sol [detected] · reason live-model · engine auto (config)`.
 	const resolution = projectResolution(view.modelResolution);
@@ -1215,7 +1220,10 @@ export function fullPromptSectionRows(
 	room: number,
 ): string[] {
 	if (typeof fullPromptXml !== "string" || fullPromptXml.trim() === "") return [];
-	const rows: string[] = ["", p.fg("dim", "full prompt")];
+	const rows: string[] = [
+		"",
+		p.fg("dim", `full prompt · ${fullPromptXml.split("\n").length} lines · 0 truncation`),
+	];
 	for (const line of fullPromptXml.split("\n")) {
 		const text = stripPromptControls(line.replace(/\r$/, ""));
 		if (text === "") {
@@ -1224,6 +1232,66 @@ export function fullPromptSectionRows(
 		}
 		rows.push(...breakPromptLine(text, room));
 	}
+	return rows;
+}
+
+/** Double Uplift order banner (SCR-DispatchGate, AC-58): plain words, never colour alone. Two rows so each fits the card frame. */
+export const DOUBLE_UPLIFT_ORDER_LINES = [
+	"Order: GoT → CoT → uplift → track complete → ISSUES injected",
+	"→ second uplift → final prompt → swarm",
+	"0 dispatch before the final prompt lands",
+] as const;
+
+/** Measured line count of the complete final prompt XML, for the SCR-StageLineCounts final row and the full-prompt header. */
+export function finalPromptLineCount(fullPromptXml: string | undefined): number {
+	if (typeof fullPromptXml !== "string" || fullPromptXml.trim() === "") return 0;
+	return fullPromptXml.split("\n").length;
+}
+
+/**
+ * Per-stage line counts (SCR-StageLineCounts, AC-53): `[stage] lines:<n>` rows in recorded order, plus the
+ * density-loss stage named in words. Without recorded metrics, the only honest row is the measured final count.
+ */
+export function stageLineCountRows(view: PlanView, p: Paint): string[] {
+	const rows: string[] = [];
+	const metrics = view.stageMetrics;
+	if (metrics && metrics.stages.length > 0) {
+		for (const stage of metrics.stages)
+			rows.push(
+				`${p.fg("dim", "stage")} ${p.fg("muted", `[${stage.stage}] lines:${stage.lines}`)}`,
+			);
+		if (metrics.densityLossStage)
+			rows.push(
+				`${p.fg("dim", "density-loss")} ${p.fg("warning", `[density-loss] stage:${metrics.densityLossStage}`)}`,
+			);
+		return rows;
+	}
+	const finalLines = finalPromptLineCount(view.fullPromptXml);
+	if (finalLines > 0)
+		rows.push(`${p.fg("dim", "stage")} ${p.fg("muted", `[final] lines:${finalLines}`)}`);
+	return rows;
+}
+
+/** 10-prompt accounting row (SCR-UpliftedPromptSummary / SCR-DenseGraph, AC-56): `prompts 1 graph + N node chains + 2 uplifts = N+3`. */
+export function promptAccountingRows(view: PlanView, p: Paint): string[] {
+	if (!view.promptAccounting) return [];
+	return [`${p.fg("dim", "prompts")} ${p.fg("muted", view.promptAccounting)}`];
+}
+
+/**
+ * Dispatch-gate rows (SCR-DispatchGate, AC-58): the order banner and the gate state in words — 0 specialists
+ * before the final prompt lands. Absent when the view carries no gate state and no final prompt.
+ */
+export function dispatchGateRows(view: PlanView, p: Paint): string[] {
+	if (!view.dispatchGate && !view.fullPromptXml) return [];
+	const gate = view.dispatchGate;
+	const rows = DOUBLE_UPLIFT_ORDER_LINES.map(
+		(line) => `${p.fg("dim", "[info]")} ${p.fg("muted", line)}`,
+	);
+	if (gate)
+		rows.push(
+			`${p.fg("dim", "dispatch")} ${p.fg("muted", `${gate.specialistsBeforeFinal} specialists before final prompt · final prompt ${gate.finalPromptLanded ? "landed" : "pending"}`)}`,
+		);
 	return rows;
 }
 /**

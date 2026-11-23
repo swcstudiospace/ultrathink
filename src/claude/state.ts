@@ -108,6 +108,17 @@ export interface SessionRecord {
 	repoMismatch?: { labelled: string | null; edited: string[] } | null;
 	/** Mid-session recall (SPE-34394): the planner state and the last pass. Absent until recall is on and a prompt or tool result has run. */
 	recall?: RecallRecord;
+	/** Double Uplift stage metrics (contract StageMetrics): per-stage line counts + density-loss stage. Absent on older records. */
+	stageMetrics?: {
+		stages: Array<{ stage: string; lines: number }>;
+		density_loss_stage: string;
+		densityLossStage?: string;
+		finalPromptLanded: boolean;
+	};
+	/** 10-prompt accounting line; absent on older records. */
+	promptAccounting?: string;
+	/** Dispatch gate (contract DispatchGate, camel-case projection for src/host/view.ts). Absent on older records. */
+	dispatchGate?: { specialistsBeforeFinal: number; finalPromptLanded: boolean };
 }
 
 export function defaultStateDir(env: Record<string, string | undefined> = process.env): string {

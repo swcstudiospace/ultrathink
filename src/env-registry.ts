@@ -156,6 +156,14 @@ export const ENV_REGISTRY: readonly EnvVarDef[] = [
 		"Set to 0 so the Cursor pstack hook injects nothing for this process.",
 	),
 	row(
+		"plugin",
+		"pstack-strict",
+		"bool1",
+		"ULTRATHINK_PSTACK_STRICT",
+		"Set to 1 to fail closed when the pstack fleet cannot be resolved; unset (default) fails open to vanilla.",
+		{ reader: "raw" },
+	),
+	row(
 		"stack",
 		KILL,
 		"bool1",

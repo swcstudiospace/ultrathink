@@ -28,6 +28,13 @@ import { normalizeQuestion, type RunClarifyOptions, runClarify } from "../hitl/p
 import type { Clarification } from "../hitl/types.ts";
 import { FlightThrottle } from "../resilience/throttle.ts";
 import { injectGraphXml, isFallbackGraph } from "../think/graph.ts";
+import {
+	buildStageMetrics,
+	buildDispatchGate,
+	promptAccounting as doubleUpliftAccounting,
+	runSecondUplift,
+	type IssueRef,
+} from "../think/double-uplift.ts";
 import { type RunThinkOptions, runThink, type ThinkResult } from "../think/pipeline.ts";
 import type { ThoughtGraph } from "../think/types.ts";
 import {
@@ -1976,6 +1983,74 @@ export async function runPromptSubmit(
 				// A tracker that returned nothing may still have checkpointed rows: the record keeps them.
 				const checkpointed = readSession(deps.stateDir, sessionId)?.tracking;
 				if (checkpointed?.graphId === plan.graphId) record = { ...record, tracking: checkpointed };
+			}
+		}
+		// Double Uplift (Tdde6-be): second full uplift over tracker-completed XML with ISSUES
+		// injected. 0 specialists dispatch before this lands (AC-58 / FR-5); fail-open keeps
+		// the first XML when the second pass fails or falls back.
+		if (result.source === "llm" && plan && tracking && graph && !trackBlocked) {
+			throwIfCancelled(cancellation);
+			const refs: IssueRef[] = Object.entries(tracking.linear.nodes).map(([nodeId, ref]) => ({
+				nodeId,
+				identifier: ref.identifier,
+				url: ref.url,
+			}));
+			if (refs.length > 0) {
+				try {
+					const prevXml = result.xml;
+					const second = await runSecondUplift({
+						firstXml: result.xml,
+						original: result.original,
+						issues: refs,
+						complete,
+						signal: lifetime,
+					});
+					const gate = buildDispatchGate(true);
+					if (second.source === "llm") {
+						result = { ...result, xml: second.xml };
+						// The second pass replaces the prompt; re-embed the graph and the tracker
+						// block so the final XML keeps every gateway reference and Graph-of-Thought.
+						result = { ...result, xml: injectGraphXml(result.xml, graph) };
+						result = { ...result, xml: injectTrackingXml(result.xml, plan, tracking) };
+					} else {
+						degraded.push("second-uplift");
+						degradedCauses["second-uplift"] = second.fallbackReason ?? "provider_error";
+					}
+					record = {
+						...record,
+						result,
+						degraded: degraded.length > 0 ? [...degraded] : record.degraded,
+						stageMetrics: buildStageMetrics({
+							graph,
+							upliftXml: prevXml,
+							issuesXml: second.issuesXml,
+							secondUpliftXml: second.xml,
+							finalXml: result.xml,
+						}),
+						promptAccounting: doubleUpliftAccounting(graph.nodes.length),
+						dispatchGate: {
+							specialistsBeforeFinal: gate.specialists_before_final,
+							finalPromptLanded: gate.final_prompt_landed,
+						},
+					};
+					log(
+						`second uplift: ${second.root} · ${second.source}${second.fallbackReason ? ` · ${second.fallbackReason}` : ""}`,
+					);
+				} catch (error) {
+					rethrowCancellation(error);
+					log(`second uplift failed: ${causeText(error)}`);
+				}
+			} else {
+				const gate = buildDispatchGate(true);
+				record = {
+					...record,
+					stageMetrics: buildStageMetrics({ graph, upliftXml: result.xml, finalXml: result.xml }),
+					promptAccounting: doubleUpliftAccounting(graph.nodes.length),
+					dispatchGate: {
+						specialistsBeforeFinal: gate.specialists_before_final,
+						finalPromptLanded: gate.final_prompt_landed,
+					},
+				};
 			}
 		}
 

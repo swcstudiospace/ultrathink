@@ -48,12 +48,17 @@ export type SubagentFleet =
 const STAGE_ORDER: readonly FleetStage[] = ["discuss", "plan", "execute", "review"];
 
 /** Poteto playbook per GSD stage: the poteto command auto-selects this playbook for phase units of that stage. */
-const PLAYBOOK_ROUTES: ReadonlyArray<readonly [FleetStage, string]> = [
+export const PLAYBOOK_ROUTES: ReadonlyArray<readonly [FleetStage, string]> = [
 	["discuss", "investigation"],
 	["plan", "multi-phase-plan"],
 	["execute", "feature"],
 	["review", "shipping"],
 ];
+
+/** The routed playbook title for one stage (contract PLAYBOOK_ROUTES). */
+export function playbookForStage(stage: FleetStage): string {
+	return PLAYBOOK_ROUTES.find(([entry]) => entry === stage)?.[1] ?? "feature";
+}
 
 /** Purpose wording matches pstack.ts PURPOSES. */
 const PURPOSES: Record<string, string> = {

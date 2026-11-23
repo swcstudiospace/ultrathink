@@ -36,6 +36,7 @@ Read by the hooks, `bin/ultrathink` and the other plugin commands, on every host
 | `ULTRATHINK_TEACH` | — | no | bool01 (disabled by 0) | — | Set to 0 to turn Teachable Moments off for this process (no capture, recall or promote). |
 | `ULTRATHINK_GATEWAY` | — | no | bool01 (disabled by 0) | — | Set to 0 to force Hindsight, RAGFlow and the Substrate brief back to their direct backends. |
 | `ULTRATHINK_PSTACK` | — | no | bool01 (disabled by 0) | — | Set to 0 so the Cursor pstack hook injects nothing for this process. |
+| `ULTRATHINK_PSTACK_STRICT` | — | no | bool1 | — | Set to 1 to fail closed when the pstack fleet cannot be resolved; unset (default) fails open to vanilla. |
 | `ULTRATHINK_HINDSIGHT_BACKEND` | — | no | enum (one of direct, gateway) | — | Chooses the Hindsight backend and wins over hindsight.backend unless ULTRATHINK_GATEWAY is 0. |
 | `ULTRATHINK_RAGFLOW_BACKEND` | — | no | enum (one of direct, gateway) | — | Chooses the RAGFlow backend and wins over ragflow.backend unless ULTRATHINK_GATEWAY is 0. |
 | `ULTRATHINK_SUBSTRATE_BACKEND` | — | no | enum (one of direct, gateway) | — | Chooses the Substrate brief backend and wins over substrate.backend unless ULTRATHINK_GATEWAY is 0. |

@@ -592,6 +592,9 @@ function pruneClock(env: Record<string, string | undefined>): (() => number) | u
 // `decisions`, `hindsight`, `ragflow`, `teach`, `doctor`, `stack`, `prune` and `grok login|check` bypass runControl, which lower-cases its args (probe takes a file path; login takes a directory; check takes a model id) and returns no exit code.
 if (import.meta.main) {
 	const argv = process.argv.slice(2);
+	// `--pstack-required` is the CLI alias for ULTRATHINK_PSTACK_STRICT=1 (OQ1):
+	// fail closed when the pstack fleet cannot be resolved.
+	if (argv.includes("--pstack-required")) process.env.ULTRATHINK_PSTACK_STRICT = "1";
 	const service = argv[0]?.trim().toLowerCase();
 	const command =
 		service === "decisions"

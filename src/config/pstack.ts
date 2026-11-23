@@ -51,5 +51,6 @@ export function mergePstack(
 		cursorDir: absolutePathField(pstack.cursorDir, defaults.cursorDir),
 		mapping: mapping ? { ...defaults.mapping, ...mapping } : defaults.mapping,
 		contextCapChars: positiveInt(pstack.contextCapChars, defaults.contextCapChars ?? 2000),
+		strict: booleanOr(pstack.strict, defaults.strict ?? false),
 	};
 }

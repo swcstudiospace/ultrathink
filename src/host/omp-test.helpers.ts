@@ -325,6 +325,8 @@ export function userText(call: NativeCall): string {
 /** Answers uplift, Graph, node fill and clarify calls by payload, as the shared host suite does, and names the stage. */
 export function stageAnswer(user: string): { stage: string; text: string } {
 	if (user.includes("<user_request>")) return { stage: "uplift", text: UPLIFT("add a widget") };
+	// The Double Uplift second pass (Tdde6-be): the ISSUES-enriched XML without user_request.
+	if (user.includes("<ISSUES>")) return { stage: "uplift", text: UPLIFT("add a widget") };
 	if (user.startsWith("<spec>"))
 		return { stage: "clarify", text: JSON.stringify({ questions: [] }) };
 	if (user.includes("current_node")) {
@@ -859,12 +861,13 @@ function childLifetimeSource(
 		"	check(customTypeOf(aside) === 'ultrathink-plan', 'aside missing plan customType');",
 		"	const asideContent: unknown = contentOf(aside);",
 		"	check(typeof asideContent === 'string' && asideContent.indexOf('<BUILD_PROMPT>') !== -1, 'aside missing real plan content');",
+		"	check(typeof asideContent === 'string' && asideContent.indexOf('<BUILD_PROMPT>') !== -1, 'aside missing real plan content');",
 		"	check(asideContent === response.context, 'aside content differs from the pipeline response');",
-		"	check(JSON.stringify(stages) === JSON.stringify(['uplift', 'graph', 'fill', 'fill', 'fill', 'fill', 'fill', 'clarify']), 'unexpected stage sequence ' + JSON.stringify(stages));",
+		"	check(JSON.stringify(stages) === JSON.stringify(['uplift', 'graph', 'fill', 'fill', 'fill', 'fill', 'fill', 'clarify', 'uplift']), 'unexpected stage sequence ' + JSON.stringify(stages));",
 		"	check(response.modelResolution && response.modelResolution.state === 'detected', 'model resolution not detected');",
 		"	check(response.modelResolution.source === 'ctx.model', 'model resolution lost its source');",
 		"	check(response.modelResolution.label === 'omp-native:acme/sol-1 [detected]', 'unexpected resolution label');",
-		"	check(nativeCalls === 8, 'expected eight native completions, saw ' + nativeCalls);",
+		"	check(nativeCalls === 9, 'expected nine native completions (1 graph + 5 node chains + 2 uplifts + 1 clarify), saw ' + nativeCalls);",
 		"	check(log.resolvers.length === 1, 'resolver rebound across the cutoff');",
 		"	const snapshot = log.resolvers[0]?.model;",
 		"	check(rec.calls.every((call) => call.model === snapshot), 'a native call left the captured Model snapshot');",
@@ -881,7 +884,7 @@ function childLifetimeSource(
 		"	check(existsSync(stateDir) && readdirSync(stateDir).some((name) => name.indexOf('last-plan.s1') === 0), 'successful pipeline wrote no carrier');",
 		"	const again: unknown = await h.run('add a widget');",
 		"	check(again === undefined, 'settled reentry planned again');",
-		"	check(nativeCalls === 8, 'reentry issued a second pipeline');",
+		"	check(nativeCalls === 9, 'reentry issued a second pipeline');",
 		"	check(planMessagesOf(h.sent).length === 1, 'reentry duplicated the aside');",
 		"	check(deliverAsOf(planMessagesOf(h.sent)[0]) === 'aside', 'reentry aside missing deliverAs');",
 		"	check(h.sent.length === 2, 'reentry duplicated delivery');",
