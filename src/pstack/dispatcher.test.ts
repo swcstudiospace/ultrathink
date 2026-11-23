@@ -154,21 +154,24 @@ describe("AC-46: no pre-PLAN dispatch", () => {
 });
 
 describe("AC-48: missing playbook stops blocked", () => {
-	test.each(ROUTES)("phase %s: absent routed playbook blocks with the path named", (phaseType, title) => {
-		const record = dispatchPhasePlaybook({
-			phaseType,
-			unit: "unit-1",
-			planContext: "PLAN",
-			enabled: true,
-			homeDir: noPlaybooksDir,
-		});
-		expect(record.state).toBe("blocked");
-		expect(record.reason).toContain(`playbooks/${title}.md`);
-		expect(record.units[0]?.outcome).toBe("blocked");
-		expect(record.units[0]?.detail).toContain(`playbooks/${title}.md`);
-		expect(record.units[0]?.detail).toContain("0 improvised steps");
-		expect(shouldAdvancePhase(record)).toBe(false);
-	});
+	test.each(ROUTES)(
+		"phase %s: absent routed playbook blocks with the path named",
+		(phaseType, title) => {
+			const record = dispatchPhasePlaybook({
+				phaseType,
+				unit: "unit-1",
+				planContext: "PLAN",
+				enabled: true,
+				homeDir: noPlaybooksDir,
+			});
+			expect(record.state).toBe("blocked");
+			expect(record.reason).toContain(`playbooks/${title}.md`);
+			expect(record.units[0]?.outcome).toBe("blocked");
+			expect(record.units[0]?.detail).toContain(`playbooks/${title}.md`);
+			expect(record.units[0]?.detail).toContain("0 improvised steps");
+			expect(shouldAdvancePhase(record)).toBe(false);
+		},
+	);
 
 	// Paired control: the same call against a home that carries the playbook
 	// runs, so the block above is the absent file — not the phase or PLAN.
@@ -213,26 +216,29 @@ describe("AC-48: missing playbook stops blocked", () => {
 });
 
 describe("AC-50: a red unit does not advance", () => {
-	test.each(ROUTES)("phase %s: a failed unit is recorded and the phase holds", (phaseType, title) => {
-		const record = dispatchPhasePlaybook({
-			phaseType,
-			unit: "unit-red",
-			planContext: "PLAN",
-			enabled: true,
-			homeDir: fullDir,
-			unitOutcome: "failed",
-		});
-		expect(record.playbook).toBe(title);
-		expect(record.units).toEqual([
-			{
+	test.each(ROUTES)(
+		"phase %s: a failed unit is recorded and the phase holds",
+		(phaseType, title) => {
+			const record = dispatchPhasePlaybook({
+				phaseType,
 				unit: "unit-red",
-				outcome: "failed",
-				detail: expect.stringContaining("phase does not advance"),
-			},
-		]);
-		expect(record.summaryLine).toContain("units=0/1");
-		expect(shouldAdvancePhase(record)).toBe(false);
-	});
+				planContext: "PLAN",
+				enabled: true,
+				homeDir: fullDir,
+				unitOutcome: "failed",
+			});
+			expect(record.playbook).toBe(title);
+			expect(record.units).toEqual([
+				{
+					unit: "unit-red",
+					outcome: "failed",
+					detail: expect.stringContaining("phase does not advance"),
+				},
+			]);
+			expect(record.summaryLine).toContain("units=0/1");
+			expect(shouldAdvancePhase(record)).toBe(false);
+		},
+	);
 
 	// Paired control: the identical dispatch with a landed unit advances, so
 	// the hold above is the red unit — not the phase or the playbook.

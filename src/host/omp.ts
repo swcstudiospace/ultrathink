@@ -4028,7 +4028,6 @@ export function createOmpExtension(
 						barWrite(flight.generation, () => store.skipped("plan not ready", now()));
 					return result;
 				}
-				case "none":
 				default:
 					return undefined;
 			}
