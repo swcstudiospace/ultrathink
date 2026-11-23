@@ -205,6 +205,8 @@ export function buildPlanView(record: SessionRecord, elapsedMs: number): PlanVie
 		};
 	});
 	const modelResolution = projectResolution(record.modelResolution);
+	const stageMetrics = projectStageMetrics(record);
+	const dispatchGate = projectDispatchGate(record);
 	return {
 		root: record.result.root,
 		source: record.result.source,
@@ -233,14 +235,14 @@ export function buildPlanView(record: SessionRecord, elapsedMs: number): PlanVie
 				}
 			: {}),
 		...(record.degraded?.length ? { degraded: [...record.degraded] } : {}),
-		...(projectStageMetrics(record) ? { stageMetrics: projectStageMetrics(record) } : {}),
+		...(stageMetrics ? { stageMetrics } : {}),
 		...(nodes.length > 0
 			? {
 					promptAccounting: `1 graph + ${nodes.length} node chains + 2 uplifts = ${nodes.length + 3}`,
 				}
 			: {}),
-		...(projectDispatchGate(record)
-			? { dispatchGate: projectDispatchGate(record) }
+		...(dispatchGate
+			? { dispatchGate }
 			: record.result.xml
 				? { dispatchGate: { specialistsBeforeFinal: 0, finalPromptLanded: true } }
 				: {}),

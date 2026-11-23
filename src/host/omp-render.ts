@@ -1342,7 +1342,10 @@ export function registerUltrathinkRenderers(pi: {
 	registerMessageRenderer(type: string, renderer: Renderer): void;
 }): void {
 	pi.registerMessageRenderer(PLAN_TYPE, (message, options, theme) => {
-		// details are untrusted session data: a malformed view falls back to Omp's default card instead of throwing into Omp
+		// details are untrusted session data: a malformed view falls back to Omp's default card instead of throwing into Omp.
+		// Documented deviation (QF-102 / RF-010): ux.spec loading and error.network rows are not rendered here.
+		// This host card renderer is synchronous with no async surface; malformed views decline to Omp's
+		// default card, and fabricating loading rows would be a stub. Normal-mode AC-53..AC-58 are unaffected.
 		try {
 			const view = message.details;
 			if (!isPlanView(view)) return undefined;
