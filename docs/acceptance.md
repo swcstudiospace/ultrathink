@@ -53,3 +53,49 @@ AC-38 story: US-016 Given the source tree When residual symbol scan runs Then 0 
 AC-39 story: US-017 Given ToT and Codeblocked issue sets When closure scan runs Then 0 open issues remain and 1 evidence comment exists per closed issue check: linear-scan automated: false
 
 AC-40 story: US-017 Given the pull request to main When review scan runs Then 1 plugin-reload note is present and 0 open review threads remain check: review-scan automated: false
+
+# Acceptance Criteria: pstack Autonomy Uplift (T3b18-req)
+
+Correlation: `3b18f741-390c-4422-bdd2-4b18499c4490`. Format as before: identifier, story link, Given When Then, check tag, automation flag.
+
+AC-41 story: US-018 Given a phase with a resolvable fleet When the phase executes Then 1 playbook from the 4 PLAYBOOK_ROUTES entries is dispatched and 0 second resolvers exist check: bun-test automated: true
+
+AC-42 story: US-018 Given the fleet resolver When the discuss stage runs Then the routed playbook is `investigation` and the roster lists the `how` skill under discuss check: bun-test automated: true
+
+AC-43 story: US-018 Given the plan execute and review stages When each stage runs Then the routed playbooks are `multi-phase-plan` `feature` and `shipping` in that order check: bun-test automated: true
+
+AC-44 story: US-019 Given an absent pstack cache When gsd-autonomous runs Then 1 fallback reason is recorded in the phase SUMMARY and 0 runs stop check: bun-test automated: true
+
+AC-45 story: US-019 Given an explicit override flag When resolution fails Then the phase stops as blocked with 1 named reason and 0 vanilla units run check: bun-test automated: true
+
+AC-46 story: US-020 Given a session before the uplifted prompt lands When dispatch is attempted Then 0 subagents are spawned before the phase PLAN exists check: bun-test automated: true
+
+AC-47 story: US-021 Given a completed phase When the summary emits Then 1 line names the playbook and 1 line names the fleet or fallback and 0 phases lack provenance check: bun-test automated: true
+
+AC-48 story: US-021 Given a wave unit with a missing playbook file When dispatch runs Then that unit stops as blocked with the absent path named and 0 improvised steps run check: bun-test automated: true
+
+AC-49 story: US-022 Given each fleet outcome When resolution completes Then 1 typed state from ok disabled unresolvable forced-off or blocked is returned with 0 empty outcomes check: bun-test automated: true
+
+AC-50 story: US-022 Given a red wave unit When the wave lands Then the phase does not advance and 1 retry inside playbook rules is recorded check: bun-test automated: true
+
+AC-51 story: US-023 Given the branch When bun run check plus biome plus knip plus bun test run Then 0 tsc errors 0 biome findings 0 unused exports and 0 test failures remain check: typecheck automated: true
+
+AC-52 story: US-023 Given the pull request to main When CI completes Then 1 PR exists and 0 CI runs are red at merge time check: ci-scan automated: true
+
+# Acceptance Criteria: Dense 500-line XML Prompts via Double Uplift (Tdde6-req)
+
+Correlation: `dde6accb-e288-424f-8913-cb429e5f88ef`. Format as before: identifier, story link, Given When Then, check tag, automation flag.
+
+AC-53 story: US-024 Given session XML samples and backup branch diffs When measurement runs Then 1 density-loss stage is named with line counts check: measurement-scan automated: true
+
+AC-54 story: US-025 Given tracker rows complete When the second uplift runs Then 1 final XML carries every issue reference check: bun-test automated: true
+
+AC-55 story: US-026 Given a completed graph When the final prompt renders Then line count is 500 or more with 100 percent of rationales preserved check: line-count automated: true
+
+AC-56 story: US-027 Given a normal run When accounting is read Then total is 10 with 1 graph 7 node chains and 2 uplifts named check: doc-check automated: true
+
+AC-57 story: US-028 Given normal mode When the plan card renders Then 1 full prompt section appears beneath the summary with 100 percent of characters preserved check: bun-test automated: true
+
+AC-58 story: US-029 Given a session awaiting the final prompt When dispatch is attempted Then 0 specialists start before the final prompt lands check: bun-test automated: true
+
+AC-59 story: US-030 Given the branch When gates run Then 0 failures remain and 1 evidence comment exists per closed row check: typecheck automated: true
