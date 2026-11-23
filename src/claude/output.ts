@@ -306,6 +306,8 @@ export interface PromptContextInput {
 	skills?: string;
 	/** Rendered `## PSTACK subagent fleet` roster (src/pstack/subagents.ts); adds nothing when absent. */
 	pstackRoster?: string;
+	/** One-line-per-phase summary (src/pstack/phase-summary.ts, SCR-PhaseSummary); adds nothing when absent. */
+	phaseSummary?: string;
 }
 
 /**
@@ -561,6 +563,7 @@ export function formatPromptContext(input: PromptContextInput): string {
 		).trim();
 		tail.push(hints ? `${think}\n${HERMES_TOOL_NAMES}` : think);
 		if (input.pstackRoster) tail.push(input.pstackRoster);
+		if (input.phaseSummary) tail.push(input.phaseSummary);
 		const waves = workflowWaves(input.graph)
 			.map((w) => `${w.wave}: ${w.ids.join(", ")}${w.parallel ? " (parallel)" : ""}`)
 			.join(" · ");

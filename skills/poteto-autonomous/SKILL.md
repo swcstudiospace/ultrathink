@@ -59,6 +59,18 @@ PLAN's context or in `.planning/STATE.md`:
 Never silently invent fleet capability: the block, or the fallback, must be named
 in the SUMMARY.
 
+No dispatch happens before the phase PLAN exists: without a phase PLAN context
+(fleet block or recorded fallback), spawn 0 subagents and record `blocked: no
+phase PLAN`.
+
+Each phase resolves into a typed fleet outcome
+(`ok|disabled|unresolvable|forced-off|blocked`, contract
+`contracts/pstack-dispatch.openapi.json@1.3.0` `FleetOutcome`). Fail-open is
+the default: any non-`ok` state falls back to vanilla and the reason is
+recorded in SUMMARY. Only an explicit override fails closed (phase stops,
+named reason, 0 vanilla units): `ULTRATHINK_PSTACK_STRICT=1`,
+`pstack.strict: true` in the user config, or `--pstack-required`.
+
 ## Dispatch
 
 Spawn one `Task` subagent per wave unit, all in a single message, each with
@@ -97,3 +109,8 @@ complete: for every wave unit, its phase type, skill and playbook used (or
 `GSD executor/reviewer fallback` with the `## PSTACK subagent fleet` absence
 noted), and its outcome (landed, blocked, or failed with reason). A phase without
 a provenance section is not done.
+
+Also emit one summary line per completed phase in the data-contract shape,
+e.g. `phase=execute playbook=feature fleet=tdd outcome=landed units=1/1
+fallback=none` — record it with the fleet outcome (`state/fallback/strict`)
+so a phase without provenance is never marked done.
