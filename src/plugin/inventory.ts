@@ -60,13 +60,13 @@ export const CLI_RUNTIME_ENTRIES: Readonly<Record<string, readonly RuntimeEntry[
 };
 
 /** The single connected rule: a required id with at least one loaded entry. */
-export function isConnected(runtimeId: string, loaded: Record<string, number>): boolean {
+function isConnected(runtimeId: string, loaded: Record<string, number>): boolean {
 	return REQUIRED.has(runtimeId) && (loaded[runtimeId] ?? 0) >= 1;
 }
 
-export type ConnectionStatus = "connected" | "missing" | "excluded" | "retired";
+type ConnectionStatus = "connected" | "missing" | "excluded" | "retired";
 
-export interface ConnectionLine {
+interface ConnectionLine {
 	runtimeId: string;
 	status: "connected" | "missing";
 	code?: "PLUGIN_AGENT_MISSING";

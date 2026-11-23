@@ -16,10 +16,10 @@ export const HOLD_STATUS_PREFIX = "Ultrathink gate status: ";
 
 const WAIT_EXCEEDED_MS = WAIT_BOUND_MS + 1;
 
-export type UpliftWaitCode = "UPLIFT_WAIT_EXCEEDED";
+type UpliftWaitCode = "UPLIFT_WAIT_EXCEEDED";
 
 /** Session initiation gate phases (n2/GoT/SESSION_START_FIX/US-1). GENERATING held for entire GoT+CoT+ToT+PRD; complete XML (incl sub-PRDs) emitted only at XML_COMPLETE transition; explicit WAITING (long/hybrid 5-10min per ADR-0001, no signals/triggers/handoffs); only to ISSUED on explicit issuance. */
-export type GatePhase = "GENERATING" | "XML_COMPLETE" | "WAITING" | "ISSUED";
+type GatePhase = "GENERATING" | "XML_COMPLETE" | "WAITING" | "ISSUED";
 
 export interface DeliverUpliftInput {
 	plannable: boolean;

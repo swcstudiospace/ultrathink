@@ -29,7 +29,7 @@ export interface CodeBlockedPrdRequest {
 	step?: number;
 }
 
-export type PrdErrorCode = "PRD_NO_PRICE" | "PRD_NO_SELECTED_MODEL" | "PRD_SECRET_SCAN_MATCH";
+type PrdErrorCode = "PRD_NO_PRICE" | "PRD_NO_SELECTED_MODEL" | "PRD_SECRET_SCAN_MATCH";
 
 /** GET/POST result. secretScanMatches stays 0; a secret is never echoed. */
 export interface CodeBlockedPrd {

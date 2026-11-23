@@ -25,7 +25,7 @@ export type FleetFallback = "vanilla" | "blocked";
 /** Phase types a pstack playbook can play (PLAYBOOK_ROUTES stages). */
 export type PhaseType = "discuss" | "plan" | "execute" | "review";
 /** Contract PhaseDispatchRecord unit outcomes. */
-export type DispatchUnitOutcome = "landed" | "blocked" | "failed";
+type DispatchUnitOutcome = "landed" | "blocked" | "failed";
 
 /** Presentation view of contract FleetOutcome; only rendered fields. */
 export interface FleetOutcomeView {
@@ -51,7 +51,7 @@ export interface PhaseDispatchRecordView {
 	readonly units: readonly PhaseDispatchUnitView[];
 }
 
-export interface PhaseDispatchUnitView {
+interface PhaseDispatchUnitView {
 	readonly unit: string;
 	readonly outcome: DispatchUnitOutcome;
 	readonly detail?: string;
