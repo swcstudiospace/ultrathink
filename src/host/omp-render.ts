@@ -1204,7 +1204,7 @@ function breakPromptLine(line: string, room: number): string[] {
  * every character preserved across width-wrapped rows, so the user can judge the uplift. Absent when the view
  * carries no prompt text. The summary section never carries the full text; this section never replaces it.
  */
-export function fullPromptSectionRows(fullPromptXml: unknown, p: Paint, room: number): string[] {
+export function fullPromptSectionRows(fullPromptXml: string | undefined, p: Paint, room: number): string[] {
 	if (typeof fullPromptXml !== "string" || fullPromptXml.trim() === "") return [];
 	const rows: string[] = ["", p.fg("dim", "full prompt")];
 	for (const line of fullPromptXml.split("\n")) {
