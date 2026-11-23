@@ -12,6 +12,11 @@ import { abortableSleep } from "../resilience/sleep.ts";
 import type { FlightThrottle } from "../resilience/throttle.ts";
 import { isAbortError } from "../shared.ts";
 import { nodeStepTitles } from "../track/plan.ts";
+import {
+	buildStageMetrics,
+	promptAccounting as accountingLine,
+	type StageMetrics,
+} from "./double-uplift.ts";
 import { readReport } from "../completion-report.ts";
 import { TRUNCATED_REPLY, type UpliftResult } from "../types.ts";
 import { escapeXml } from "../uplift/xml.ts";
@@ -37,6 +42,8 @@ import {
 } from "./types.ts";
 
 export interface ThinkResult extends UpliftResult {
+	stageMetrics?: StageMetrics;
+	promptAccounting?: string;
 	graph: ThoughtGraph;
 	/** True when the graph fell back to boilerplate or any node fill is still failed after the repair pass. */
 	partial?: boolean;
@@ -491,10 +498,13 @@ export async function runThink(opts: RunThinkOptions): Promise<ThinkResult> {
 	const causes = Object.fromEntries(
 		fills.map((id) => [id, ctx.causes.get(id) ?? "unknown failure"]),
 	);
+	const finalXml = injectGraphXml(opts.uplift.xml, graph);
 	return {
 		...opts.uplift,
-		xml: injectGraphXml(opts.uplift.xml, graph),
+		xml: finalXml,
 		graph,
+		stageMetrics: buildStageMetrics({ graph, upliftXml: finalXml, finalXml }),
+		promptAccounting: accountingLine(graph.nodes.length),
 		source: opts.uplift.source,
 		partial: built.fallback || fills.length > 0,
 		degraded: {
