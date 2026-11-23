@@ -117,6 +117,19 @@ describe("background host", () => {
 		expect(spawns()).toBe(0);
 	});
 
+	// F-1 §4b recorded bypass: degraded/skipped/stopped/blocked outcomes are honored, zero spawns.
+	for (const outcome of ["degraded", "skipped", "stopped", "blocked"] as const) {
+		test(`reconcile with recorded bypass "${outcome}": honored-recorded, no instance`, () => {
+			const { host, spawns } = harness();
+			const runId = makeRunId("M-3b", `s-${outcome}`);
+			const result = host.reconcile(runId, outcome);
+			expect(result.action).toBe("honored-recorded");
+			expect(result.status).toBe(outcome);
+			expect(spawns()).toBe(0);
+			expect(host.instanceCount(runId)).toBe(0);
+		});
+	}
+
 	test("resume on fresh host with recorded running: exactly one instance", () => {
 		const { host, spawns } = harness();
 		const runId = makeRunId("M-4", "s4");
