@@ -54,3 +54,138 @@ export function mergePstack(
 		strict: booleanOr(pstack.strict, defaults.strict ?? false),
 	};
 }
+
+/** One config value the strict parse rejected: what was expected, what arrived, and which default stayed. */
+export interface PstackConfigIssue {
+	field: string;
+	expected: string;
+	received: string;
+	kept: string;
+}
+
+/** Result of `validatePstackConfig`: the merged config, the rejected values, and the defaults they fell back to. */
+export interface PstackConfigValidation {
+	config: PstackConfig;
+	issues: PstackConfigIssue[];
+	defaults: PstackConfig;
+}
+
+const PSTACK_KEYS: readonly string[] = ["enabled", "cursorDir", "mapping", "contextCapChars", "strict"];
+
+function kindOf(value: unknown): string {
+	if (Array.isArray(value)) return "array";
+	if (value === null) return "null";
+	return typeof value === "object" ? "object" : typeof value;
+}
+
+/**
+ * Strict parse of one raw `pstack` layer (mergeUplift style, no silent coercion): only exact types are accepted —
+ * "true"/1 for a boolean, "4000" for contextCapChars, a relative cursorDir — and every rejected value is reported
+ * with the default/lower-layer value that stayed, so a typo is visible instead of silently inert. The merged config
+ * is exactly `mergePstack`'s; this function only surfaces what the merge drops.
+ */
+export function validatePstackConfig(
+	pstack: Record<string, unknown> | undefined,
+	defaults: PstackConfig,
+	project = false,
+): PstackConfigValidation {
+	const config = mergePstack(pstack, defaults, project);
+	const issues: PstackConfigIssue[] = [];
+	if (!pstack) return { config, issues, defaults };
+	if (project) {
+		for (const key of Object.keys(pstack)) {
+			issues.push({
+				field: key,
+				expected: "absent (a project layer cannot set pstack)",
+				received: kindOf(pstack[key]),
+				kept: "default (project layer ignored)",
+			});
+		}
+		return { config, issues, defaults };
+	}
+	for (const key of Object.keys(pstack)) {
+		if (!PSTACK_KEYS.includes(key)) {
+			issues.push({
+				field: key,
+				expected: "a known pstack key",
+				received: kindOf(pstack[key]),
+				kept: "ignored",
+			});
+		}
+	}
+	if ("enabled" in pstack && typeof pstack.enabled !== "boolean") {
+		issues.push({
+			field: "enabled",
+			expected: "boolean",
+			received: kindOf(pstack.enabled),
+			kept: String(config.enabled),
+		});
+	}
+	if ("strict" in pstack && typeof pstack.strict !== "boolean") {
+		issues.push({
+			field: "strict",
+			expected: "boolean",
+			received: kindOf(pstack.strict),
+			kept: String(config.strict),
+		});
+	}
+	if ("cursorDir" in pstack) {
+		const value = pstack.cursorDir;
+		if (typeof value !== "string" || !value.trim() || !isAbsolute(value.trim())) {
+			issues.push({
+				field: "cursorDir",
+				expected: "absolute path",
+				received: kindOf(value),
+				kept: config.cursorDir ?? "(absent)",
+			});
+		}
+	}
+	if ("contextCapChars" in pstack) {
+		const value = pstack.contextCapChars;
+		if (typeof value !== "number" || !Number.isFinite(value) || value < 1) {
+			issues.push({
+				field: "contextCapChars",
+				expected: "positive integer",
+				received: kindOf(value),
+				kept: String(config.contextCapChars),
+			});
+		}
+	}
+	if ("mapping" in pstack) {
+		const record = asRecord(pstack.mapping);
+		if (!record) {
+			issues.push({
+				field: "mapping",
+				expected: "object of stage to string[]",
+				received: kindOf(pstack.mapping),
+				kept: config.mapping ? "lower-layer mapping kept" : "(default mapping)",
+			});
+		} else {
+			for (const [stage, value] of Object.entries(record)) {
+				if (!PSTACK_MAPPING_STAGES.includes(stage as PstackMappingStage)) {
+					issues.push({
+						field: `mapping.${stage}`,
+						expected: "a known stage (discuss, plan, execute, review)",
+						received: kindOf(value),
+						kept: "ignored",
+					});
+				} else if (!Array.isArray(value)) {
+					issues.push({
+						field: `mapping.${stage}`,
+						expected: "string[]",
+						received: kindOf(value),
+						kept: "lower-layer mapping kept",
+					});
+				} else if (value.some((name) => typeof name !== "string")) {
+					issues.push({
+						field: `mapping.${stage}`,
+						expected: "string[]",
+						received: "array with non-string entries",
+						kept: "non-string entries dropped",
+					});
+				}
+			}
+		}
+	}
+	return { config, issues, defaults };
+}

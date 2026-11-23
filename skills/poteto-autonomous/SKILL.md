@@ -114,3 +114,7 @@ Also emit one summary line per completed phase in the data-contract shape,
 e.g. `phase=execute playbook=feature fleet=tdd outcome=landed units=1/1
 fallback=none` — record it with the fleet outcome (`state/fallback/strict`)
 so a phase without provenance is never marked done.
+
+## Continuous-session contract
+
+Within the fleet rules above, a continuous pstack session (started once at the §4 gate in `gsd-autonomous` and stopped at closeout) contributes playbook units only: it muxes the per-stage playbook (`PLAYBOOK_ROUTES`) without re-triggering, re-ordering phases, or taking phase-transition ownership. The ownership rule is unchanged: GSD owns the loop — TodoWrite, phase transitions, `.planning/` state, verification, and the only-to-advance user gates stay with the phase owner, and a pstack unit never mutates planning state. Advisory failures defer to vanilla `GSD executor/reviewer` with the reason recorded; required failures (strict-armed, units-dispatched, or playbook-sole-executor) stop the unit as `blocked` with a named reason and never improvise steps. The per-phase provenance line shape is unchanged: `phase=<type> playbook=<playbook> fleet=<token> outcome=… units=… fallback=…`.

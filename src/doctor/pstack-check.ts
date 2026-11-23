@@ -4,14 +4,17 @@
  * Static report of the Cursor pstack bridge. Reads the same user-config files the staged hook reads, the pstack
  * plugin cache and `hooks.json`. It never writes, never enables the bridge, and never opens a network connection.
  * A missing plugin or an unknown skill is a warning only while the bridge is enabled; disabled is info, so a
- * machine that never opted in stays free of warnings.
+ * machine that never opted in stays free of warnings. Section 4a availability validation (validatePstackAvailability)
+ * is the read-only half of the autonomous §4 gate: cache present, fleet block resolvable, force-off respected.
  */
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_MAPPING, resolvePstack, skillPath, type PstackStage } from "../cursor/pstack.ts";
+import { defaultConfig } from "../config.ts";
 import type { DoctorDeps, Finding } from "./types.ts";
 import { isRecord, readJson } from "../shared.ts";
+import { validatePstackConfig } from "../config/pstack.ts";
 
 type StageKey = Exclude<PstackStage, "orchestrate">;
 
@@ -28,6 +31,8 @@ interface Decision {
 	forcedOff: boolean;
 	cursorDir?: string | undefined;
 	mapping?: Partial<Record<StageKey, string[]>> | undefined;
+	/** Raw user-file `pstack` record, when the deciding file had one; strictly validated by `validatePstackConfig`. */
+	pstack?: Record<string, unknown> | undefined;
 	/** Set when `ULTRATHINK_CONFIG_DIR` names a file that exists but is not valid JSON. config-check reports the standard files. */
 	invalidOverride?: string | undefined;
 }
@@ -83,6 +88,7 @@ function readDecision(env: Env): Decision {
 			forcedOff,
 			cursorDir,
 			mapping: mappingOverride(pstack.mapping),
+			pstack,
 		};
 	}
 	return { source: "default", enabled: false, forcedOff, invalidOverride };
@@ -136,6 +142,41 @@ function hookState(cursorDir: string): { installed: boolean; detail: string } {
 	};
 }
 
+/**
+ * §4a availability validation: the read-only half of the autonomous §4 gate (cache present, fleet block resolvable,
+ * force-off respected), checked before any §4c start. `ULTRATHINK_PSTACK=0` short-circuits to `bypassed`, so §4c/§4d
+ * are skipped and the exact legacy loop runs. Never writes, never enables the bridge. Mirrors checkPstack's fleet
+ * probe without importing the resolver.
+ */
+export type PstackAvailability =
+	| { status: "ok"; root: string; version: string; resolvedSkills: number }
+	| { status: "unavailable"; reason: string }
+	| { status: "bypassed"; reason: string };
+
+export function validatePstackAvailability(deps: DoctorDeps): PstackAvailability {
+	try {
+		const decision = readDecision(deps.env);
+		if (decision.forcedOff)
+			return {
+				status: "bypassed",
+				reason: "ULTRATHINK_PSTACK=0 turns the hook off before config is applied",
+			};
+		if (!decision.enabled) return { status: "unavailable", reason: "pstack bridge disabled" };
+		const resolved = resolvePstack(cursorDirFor(deps.env, decision));
+		if ("reason" in resolved) return { status: "unavailable", reason: resolved.reason };
+		let resolvedSkills = 0;
+		for (const stage of STAGES) {
+			for (const name of namesFor(stage, decision.mapping)) {
+				if ("path" in skillPath(resolved, name)) resolvedSkills++;
+			}
+		}
+		if (resolvedSkills === 0) return { status: "unavailable", reason: "no pstack skills resolved" };
+		return { status: "ok", root: resolved.root, version: resolved.version, resolvedSkills };
+	} catch (error) {
+		return { status: "unavailable", reason: String(error) };
+	}
+}
+
 /** Pstack findings for doctor. Never throws: a probe that fails becomes a finding inside this function. */
 export function checkPstack(deps: DoctorDeps): Finding[] {
 	const decision = readDecision(deps.env);
@@ -160,6 +201,25 @@ export function checkPstack(deps: DoctorDeps): Finding[] {
 			detail: `File: ${decision.invalidOverride}`,
 			fix: "Fix the JSON in that file, or unset ULTRATHINK_CONFIG_DIR to use the standard config files.",
 		});
+	}
+	// Strict config validation: values the merge drops are surfaced with the default that stayed.
+	if (decision.pstack) {
+		const validation = validatePstackConfig(decision.pstack, defaultConfig().pstack, false);
+		if (validation.issues.length > 0) {
+			findings.push({
+				id: "pstack.config-values",
+				section: "pstack",
+				level: decision.enabled ? "warn" : "info",
+				title: "pstack config values ignored",
+				detail: validation.issues
+					.map(
+						(issue) =>
+							`${issue.field}: expected ${issue.expected}, got ${issue.received}; kept ${issue.kept}`,
+					)
+					.join("\n"),
+				fix: "Fix the pstack values in the deciding user config; the defaults shown were kept.",
+			});
+		}
 	}
 
 	const projectFile = join(deps.cwd, ".claude", "ultrathink.json");
@@ -278,6 +338,39 @@ export function checkPstack(deps: DoctorDeps): Finding[] {
 			level: "info",
 			title: "pstack subagent fleet unavailable",
 			detail: String(error),
+		});
+	}
+
+	// §4a availability: one finding summarizing the read-only gate outcome (bypass skips §4c/§4d, legacy loop).
+	const availability = validatePstackAvailability(deps);
+	if (availability.status === "bypassed") {
+		findings.push({
+			id: "pstack.availability",
+			section: "pstack",
+			level: "info",
+			title: "pstack availability bypassed",
+			detail: `ULTRATHINK_PSTACK=0: §4a short-circuits, §4c/§4d skipped, exact legacy loop. ${availability.reason}.`,
+		});
+	} else if (availability.status === "ok") {
+		findings.push({
+			id: "pstack.availability",
+			section: "pstack",
+			level: "ok",
+			title: `pstack availability ok (pstack ${availability.version})`,
+			detail: `${availability.root} — ${availability.resolvedSkills} mapped skill(s) resolve`,
+		});
+	} else {
+		findings.push({
+			id: "pstack.availability",
+			section: "pstack",
+			level: decision.enabled ? "warn" : "info",
+			title: "pstack availability unavailable",
+			detail: availability.reason,
+			...(decision.enabled
+				? {
+						fix: "Install the pstack plugin or fix pstack.mapping; the autonomous §4 gate degrades and the legacy loop continues.",
+					}
+				: {}),
 		});
 	}
 
