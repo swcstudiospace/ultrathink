@@ -4029,6 +4029,7 @@ export function createOmpExtension(
 					return result;
 				}
 				case "none":
+				default:
 					return undefined;
 			}
 		};
