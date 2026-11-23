@@ -1427,11 +1427,24 @@ describe("pstack config", () => {
 	});
 
 	test("defaults to off with a 4000-char context cap and no cursor dir or mapping", () => {
-		expect(base.pstack).toEqual({ enabled: false, contextCapChars: 4000 });
+		expect(base.pstack).toEqual({ enabled: false, contextCapChars: 4000, strict: false });
 		expect(loadLayerFiles(roots, undefined).pstack).toEqual({
 			enabled: false,
 			contextCapChars: 4000,
+			strict: false,
 		});
+	});
+
+	test("a user file sets strict; a project file cannot, and a non-boolean keeps the lower layer's", () => {
+		expect(mergeConfig({ pstack: { strict: true } }, base).pstack.strict).toBe(true);
+		expect(loadLayerFiles(roots, { pstack: { strict: true } }).pstack.strict).toBe(true);
+		expect(
+			loadLayerFiles(roots, undefined, undefined, { pstack: { strict: true } }).pstack.strict,
+		).toBe(false);
+		const on = mergeConfig({ pstack: { strict: true } }, base);
+		for (const value of ["yes", 1, null]) {
+			expect(mergeConfig({ pstack: { strict: value } }, on).pstack.strict).toBe(true);
+		}
 	});
 
 	test("a user file enables the bridge", () => {
@@ -1514,11 +1527,12 @@ describe("pstack config", () => {
 		);
 		expect(
 			loadLayerFiles(roots, undefined, undefined, {
-				pstack: { cursorDir: "/evil/cursor", enabled: true },
+				pstack: { cursorDir: "/evil/cursor", enabled: true, strict: true },
 			}).pstack,
 		).toEqual({
 			enabled: false,
 			contextCapChars: 4000,
+			strict: false,
 		});
 	});
 });

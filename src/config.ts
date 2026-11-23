@@ -152,11 +152,17 @@ export interface PstackConfig {
 	mapping?: Partial<Record<PstackMappingStage, string[]>>;
 	/** Character cap for the injected context block. */
 	contextCapChars?: number;
+	/**
+	 * Fail closed when the fleet cannot be resolved (OQ1): absent/false = fail-open to vanilla.
+	 * `ULTRATHINK_PSTACK_STRICT=1` and `--pstack-required` are the other explicit overrides.
+	 */
+	strict?: boolean;
 }
 
 const DEFAULT_PSTACK_CONFIG: PstackConfig = {
 	enabled: false,
 	contextCapChars: 4000,
+	strict: false,
 };
 
 /**
