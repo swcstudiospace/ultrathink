@@ -171,33 +171,33 @@ describe("fail-open default, fail-closed only on override (AC-44/AC-45)", () => 
 		expect(resolveStrictFlag({ argv: ["something-else"] })).toBe(false);
 	});
 
-describe("resolveStrictFlag precedence (THREAT-STRICT-WIRING)", () => {
-	test("explicit disable never disarms an arming source", () => {
-		expect(
-			resolveStrictFlag({ strict: false, configStrict: true, env: { [PSTACK_STRICT_ENV]: "0" } }),
-		).toBe(true);
-		expect(
-			resolveStrictFlag({ env: { [PSTACK_STRICT_ENV]: "0" }, argv: [PSTACK_REQUIRED_ARG] }),
-		).toBe(true);
-		expect(resolveStrictFlag({ strict: false, configStrict: false })).toBe(false);
-	});
+	describe("resolveStrictFlag precedence (THREAT-STRICT-WIRING)", () => {
+		test("explicit disable never disarms an arming source", () => {
+			expect(
+				resolveStrictFlag({ strict: false, configStrict: true, env: { [PSTACK_STRICT_ENV]: "0" } }),
+			).toBe(true);
+			expect(
+				resolveStrictFlag({ env: { [PSTACK_STRICT_ENV]: "0" }, argv: [PSTACK_REQUIRED_ARG] }),
+			).toBe(true);
+			expect(resolveStrictFlag({ strict: false, configStrict: false })).toBe(false);
+		});
 
-	test("precedence order: caller > config > env > argv, default fail-open", () => {
-		expect(resolveStrictFlag({ strict: true })).toBe(true);
-		expect(resolveStrictFlag({ configStrict: true })).toBe(true);
-		expect(resolveStrictFlag({ env: { [PSTACK_STRICT_ENV]: "1" } })).toBe(true);
-		expect(resolveStrictFlag({ argv: [PSTACK_REQUIRED_ARG] })).toBe(true);
-		expect(resolveStrictFlag({})).toBe(false);
-		expect(
-			resolveStrictFlag({
-				strict: false,
-				configStrict: false,
-				env: { [PSTACK_STRICT_ENV]: "0" },
-				argv: ["other"],
-			}),
-		).toBe(false);
+		test("precedence order: caller > config > env > argv, default fail-open", () => {
+			expect(resolveStrictFlag({ strict: true })).toBe(true);
+			expect(resolveStrictFlag({ configStrict: true })).toBe(true);
+			expect(resolveStrictFlag({ env: { [PSTACK_STRICT_ENV]: "1" } })).toBe(true);
+			expect(resolveStrictFlag({ argv: [PSTACK_REQUIRED_ARG] })).toBe(true);
+			expect(resolveStrictFlag({})).toBe(false);
+			expect(
+				resolveStrictFlag({
+					strict: false,
+					configStrict: false,
+					env: { [PSTACK_STRICT_ENV]: "0" },
+					argv: ["other"],
+				}),
+			).toBe(false);
+		});
 	});
-});
 });
 
 describe("redactReason (NFR-19)", () => {
@@ -213,8 +213,12 @@ describe("redactReason (NFR-19)", () => {
 	test("parity with redactSecrets: JWT, Bearer, PEM, URL and auth header", () => {
 		const jwt = `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c`;
 		expect(redactReason(`JWT ${jwt}`)).not.toContain(jwt);
-		expect(redactReason("Authorization: Bearer abcdefghij123456")).not.toContain("abcdefghij123456");
-		expect(redactReason("fetch https://user:pass123456789@example.com/x")).not.toContain("pass123456789");
+		expect(redactReason("Authorization: Bearer abcdefghij123456")).not.toContain(
+			"abcdefghij123456",
+		);
+		expect(redactReason("fetch https://user:pass123456789@example.com/x")).not.toContain(
+			"pass123456789",
+		);
 		expect(redactReason("-----BEGIN PRIVATE KEY----- MII")).not.toContain("PRIVATE KEY");
 		expect(redactReason("")).toBe("");
 	});
