@@ -443,7 +443,7 @@ describe("omp extension", () => {
 		// with one graph node, matching VIEW's one node) delivers as exactly one aside.
 		gate.resolve({
 			context:
-				"Ultrathink plan\n<BUILD_PROMPT><SYSTEM_ROLE>r</SYSTEM_ROLE><CONTEXT>c</CONTEXT><SCOPE>s</SCOPE><CONSTRAINTS>k</CONSTRAINTS><ACCEPTANCE_CRITERIA>a</ACCEPTANCE_CRITERIA><GRAPH_OF_THOUGHT><NODE id=\"n1\" kind=\"task\" title=\"t\"></NODE></GRAPH_OF_THOUGHT></BUILD_PROMPT>",
+				'Ultrathink plan\n<BUILD_PROMPT><SYSTEM_ROLE>r</SYSTEM_ROLE><CONTEXT>c</CONTEXT><SCOPE>s</SCOPE><CONSTRAINTS>k</CONSTRAINTS><ACCEPTANCE_CRITERIA>a</ACCEPTANCE_CRITERIA><GRAPH_OF_THOUGHT><NODE id="n1" kind="task" title="t"></NODE></GRAPH_OF_THOUGHT></BUILD_PROMPT>',
 			view: VIEW,
 		});
 		await flush();
