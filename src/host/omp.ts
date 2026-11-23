@@ -3255,6 +3255,7 @@ export function createOmpExtension(
 		type GateDelivery =
 			| { kind: "plan"; text: string; planId?: string; planHash?: string }
 			| { kind: "notice"; text: string }
+			| { kind: "advisory"; text: string }
 			| { kind: "none" };
 		const gateDelivery = (flight: Flight, gate: CompletionGate): GateDelivery => {
 			if (flight.releasedText !== undefined) {
