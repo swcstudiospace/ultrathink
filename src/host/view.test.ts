@@ -136,6 +136,12 @@ describe("buildPlanView", () => {
 		expect(buildPlanView({ ...record(), degraded: [] }, 0)).not.toHaveProperty("degraded");
 		expect(buildPlanView(record(), 0)).not.toHaveProperty("degraded");
 	});
+	test("exposes the complete uplifted prompt xml on the view, and no key without prompt text", () => {
+		expect(buildPlanView(record(), 0).fullPromptXml).toBe("<x/>");
+		expect(
+			buildPlanView({ ...record(), result: { ...record().result, xml: "" } }, 0),
+		).not.toHaveProperty("fullPromptXml");
+	});
 });
 
 describe("buildPlanView model resolution (§9 path 3)", () => {

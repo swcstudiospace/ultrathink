@@ -27,6 +27,8 @@ export interface PlanView {
 	modelResolution?: ModelResolution;
 	/** The information panels of the plan's prompt; absent unless `panels.informationPanels` is on. */
 	panels?: TurnPanels;
+	/** The complete uplifted prompt XML for the second card section beneath the plan summary; absent when the record carries none. */
+	fullPromptXml?: string;
 	/** Name of the skill the user invoked, when the plan covers a skill invocation. */
 	skill?: string;
 	graphId?: string;
@@ -166,6 +168,7 @@ export function buildPlanView(record: SessionRecord, elapsedMs: number): PlanVie
 		...(record.skill ? { skill: record.skill.name } : {}),
 		...(plan?.graphId ? { graphId: plan.graphId } : {}),
 		...(graph?.goal ? { goal: graph.goal } : {}),
+		...(record.result.xml ? { fullPromptXml: record.result.xml } : {}),
 		elapsedMs,
 		nodes,
 		waves: levels.map((level) => level.map((node) => node.id)),
