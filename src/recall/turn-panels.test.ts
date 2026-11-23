@@ -83,6 +83,32 @@ describe("buildTurnPanels: gating", () => {
 	test("with the panels on but no lookup supplied it returns undefined", () => {
 		expect(buildTurnPanels({}, settings(true))).toBeUndefined();
 	});
+
+	test("AC-44 production path: default settings build panels for all five sources", () => {
+		const defaults = defaultRecallSettings();
+		expect(defaults.panels.informationPanels).toBe(true);
+		const panels = buildTurnPanels(
+			{
+				knowledge: disabledKnowledgeLookup(),
+				lessons: lessons([row()]),
+				skills: skills([skillRow()]),
+				moments: lessons([row()]),
+				substrate: { text: "## Brief\n- widget edited", state: "complete" },
+			},
+			defaults,
+			{ trigger: "prompt_turn", startedAt: 1_000, query: "production" },
+		);
+		expect(Object.keys(panels ?? {}).sort()).toEqual([
+			"knowledge",
+			"lessons",
+			"moments",
+			"skills",
+			"substrate",
+		]);
+		for (const key of ["knowledge", "lessons", "skills", "moments", "substrate"] as const) {
+			expect(typeof panels?.[key]?.status).toBe("string");
+		}
+	});
 });
 
 describe("buildTurnPanels: one envelope per supplied lookup", () => {

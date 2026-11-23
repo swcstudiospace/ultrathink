@@ -1173,29 +1173,34 @@ const PANEL_LABELS: Record<keyof TurnPanels, string> = {
 
 /** Raw terminal controls that would corrupt the card; stripped before prompt text is drawn. */
 function stripPromptControls(line: string): string {
-	let out = "";
+	const parts: string[] = [];
 	for (const ch of line) {
 		const code = ch.codePointAt(0) ?? 0;
 		if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) continue;
-		out = `${out}${ch}`;
+		parts.push(ch);
 	}
-	return out;
+	return parts.join("");
 }
 
 /** Hard-break one prompt line into room-sized rows at grapheme boundaries, preserving every character. */
 function breakPromptLine(line: string, room: number): string[] {
 	const width = Math.max(1, room);
 	const rows: string[] = [];
-	let current = "";
+	const parts: string[] = [];
+	let used = 0;
 	for (const { segment } of GRAPHEMES.segment(line)) {
-		if (current !== "" && visibleWidth(current + segment) > width) {
-			rows.push(current);
-			current = segment;
+		const columns = Bun.stringWidth(segment);
+		if (used > 0 && used + columns > width) {
+			rows.push(parts.join(""));
+			parts.length = 0;
+			parts.push(segment);
+			used = columns;
 		} else {
-			current = `${current}${segment}`;
+			parts.push(segment);
+			used += columns;
 		}
 	}
-	rows.push(current);
+	rows.push(parts.join(""));
 	return rows;
 }
 
