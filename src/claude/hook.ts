@@ -50,6 +50,7 @@ import { buildTrackPlan } from "../track/plan.ts";
 import type { CloseSubIssueInput, SubIssueCloseoutOutcome, Tracker } from "../track/gateway.ts";
 import { stepKey } from "../track/create.ts";
 import { injectTrackingXml } from "../track/render.ts";
+import { syncTodos } from "../track/sync-todos.ts";
 import type { TrackingRefs, TrackPlan } from "../track/types.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import { type ActivityNotice, toActivityNotice } from "../host/activity-notice.ts";
@@ -2065,6 +2066,14 @@ export async function runPromptSubmit(
 			log(`state write failed: ${cause}`);
 			markStateFailed(cause);
 			stage("state", "end", false, cause);
+		}
+		// Producer-side success root for injection (SPE-37792): the uplifted prompt's wave todos are
+		// issued here, once the record the command emits is on disk. `syncTodos` retries once and only
+		// reports done after the marker lands in the session state file; a failure is a logged line,
+		// never a throw — the prompt already went through.
+		if (plan && statePath && !isTurnSessionId(sessionId)) {
+			const synced = syncTodos(plan, { stateDir: deps.stateDir, sessionId, log });
+			if (!synced.ok) log(`syncTodos failed: ${synced.error ?? "unknown"}`);
 		}
 		// Opt-in retention (state.retentionDays above 0): at most one bounded sweep a day. It never throws and never waits.
 		pruneSessionsBestEffort({

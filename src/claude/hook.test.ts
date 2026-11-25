@@ -370,6 +370,21 @@ describe("runPromptSubmit", () => {
 		}
 	});
 
+	test("syncTodos issues wave todos and completes in session state after uplift", async () => {
+		const { deps, cleanup } = baseDeps({ complete: smartComplete() });
+		try {
+			const result = await runPromptSubmit(input, deps);
+			const graphId = result.record?.plan?.graphId;
+			expect(graphId).toBeTruthy();
+			const persisted = readSession(deps.stateDir, "s1");
+			expect(persisted?.syncTodos?.graphId).toBe(graphId);
+			expect(persisted?.recall?.lastTodos?.length).toBeGreaterThan(0);
+			expect(persisted?.recall?.lastTodos?.[0]?.content).toContain("Wave 1");
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("clarify failure is fail-open: no clarifications, everything else still proceeds", async () => {
 		const { deps, cleanup } = baseDeps({
 			complete: smartComplete(),
