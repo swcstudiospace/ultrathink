@@ -63,7 +63,7 @@ function recording(order: string[], linearFails = false) {
 		async call(name, args) {
 			const props = args.properties as Record<string, unknown>;
 			order.push(
-				`notion:${name}:${String(args.page_id)}:${String(props.Status)}:${String(props["Linear State"])}:${String(props.Completed)}`,
+				`notion:${name}:${String(args.page_id)}:${String(args.command)}:${String(props.Status)}:${String(props["Linear State"])}:${String(props["date:Completed:start"])}`,
 			);
 			return { object: "page", id: args.page_id };
 		},
@@ -121,7 +121,7 @@ describe("closeSubIssue", () => {
 		});
 		expect(order).toEqual([
 			"linear:save_issue:ENG-2:Done",
-			"notion:notion-update-page:12345678-1234-1234-1234-123412345678:Done:Done:2026-11-19T00:00:00.000Z",
+			"notion:notion-update-page:12345678-1234-1234-1234-123412345678:update_properties:Done:Done:2026-11-19T00:00:00.000Z",
 		]);
 		// The parent (node) issue was never addressed.
 		expect(order.some((entry) => entry.includes("ENG-1"))).toBe(false);
@@ -162,7 +162,7 @@ describe("runSubIssueCloseout (production)", () => {
 		});
 		expect(order).toEqual([
 			"linear:save_issue:ENG-2:Done",
-			"notion:notion-update-page:12345678-1234-1234-1234-123412345678:Done:Done:2026-11-19T00:00:00.000Z",
+			"notion:notion-update-page:12345678-1234-1234-1234-123412345678:update_properties:Done:Done:2026-11-19T00:00:00.000Z",
 		]);
 		expect(events).toEqual([
 			{

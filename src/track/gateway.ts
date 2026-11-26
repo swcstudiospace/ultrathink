@@ -305,10 +305,11 @@ export async function closeSubIssue(
 			deps.notionTool ?? "notion-update-page",
 			{
 				[deps.notionPageIdField ?? "page_id"]: plan.notionPageId,
+				command: "update_properties",
 				properties: {
 					Status: "Done",
 					"Linear State": "Done",
-					Completed: completedAt,
+					"date:Completed:start": completedAt,
 				},
 			},
 			input.signal,
