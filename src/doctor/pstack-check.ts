@@ -191,7 +191,12 @@ export function validatePstackAvailability(deps: DoctorDeps): PstackAvailability
 			forcedOff: false,
 		});
 		if (!fleet.ok) return { status: "unavailable", reason: fleet.reason };
-		return { status: "ok", root: fleet.root, version: fleet.version, resolvedSkills: fleet.skills.length };
+		return {
+			status: "ok",
+			root: fleet.root,
+			version: fleet.version,
+			resolvedSkills: fleet.skills.length,
+		};
 	} catch (error) {
 		return { status: "unavailable", reason: String(error) };
 	}

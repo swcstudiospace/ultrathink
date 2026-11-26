@@ -70,7 +70,13 @@ export interface PstackConfigValidation {
 	defaults: PstackConfig;
 }
 
-const PSTACK_KEYS: readonly string[] = ["enabled", "cursorDir", "mapping", "contextCapChars", "strict"];
+const PSTACK_KEYS: readonly string[] = [
+	"enabled",
+	"cursorDir",
+	"mapping",
+	"contextCapChars",
+	"strict",
+];
 
 function kindOf(value: unknown): string {
 	if (Array.isArray(value)) return "array";
