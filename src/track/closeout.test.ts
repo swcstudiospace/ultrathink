@@ -63,7 +63,7 @@ function recording(order: string[], linearFails = false) {
 		async call(name, args) {
 			const props = args.properties as Record<string, unknown>;
 			order.push(
-				`notion:${name}:${String(args.page_id)}:${String(props.Status)}:${String(props["Linear State"])}:${String(props.Completed)}`,
+				`notion:${name}:${String(args.page_id)}:${String(props.Status)}:${String(props["Linear State"])}:${String(props["date:Completed:start"])}`,
 			);
 			return { object: "page", id: args.page_id };
 		},
