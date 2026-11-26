@@ -29,6 +29,7 @@ import type { ClassifyVerdict } from "../swarm/classify.ts";
 import { type LaneClassify, spawnLanes, type TeamsFs } from "../swarm/teams.ts";
 import { runUplift } from "../uplift/run.ts";
 import type { TrackPlan } from "../track/types.ts";
+import { defaultPendingStore, PENDING_GATE_HELD_REASON } from "../track/pending.ts";
 import { DEFAULT_SHIP_CONFIG, type ShipConfig } from "../ship/types.ts";
 import { DEFAULT_HINDSIGHT_CONFIG } from "../hindsight/types.ts";
 import { DEFAULT_TEACH_CONFIG, type CaptureMode, type TeachDigest } from "../teach/types.ts";
@@ -2758,6 +2759,40 @@ describe("swarm auto-run", () => {
 			expect(repliesOf(sent)).toContain("classifier unavailable");
 			expect(laneDirNames(stateDir)).toHaveLength(1);
 		} finally {
+			python.restore();
+			restore();
+			rmSync(root, { recursive: true, force: true });
+			rmSync(stateDir, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("/ultrathink-swarm with an armed pending gates substantive spawn; no pending spawns as before", async () => {
+		const { root, stateDir, restore } = withSwarmRoot();
+		const python = withSpawnablePython({ classifyRc: 1 });
+		const cwd = mkdtempSync(join(tmpdir(), "sw-cmd-gate-"));
+		try {
+			defaultPendingStore.create("s1", "raw input", 1000);
+			const { command, sent } = setup(async () => "PLAN", 1_000, {}, { cwd });
+			await command("ultrathink-swarm", "build a health endpoint");
+			expect(repliesOf(sent)).toContain(PENDING_GATE_HELD_REASON);
+			expect(laneDirNames(stateDir)).toEqual([]);
+		} finally {
+			const pending = defaultPendingStore.get("s1");
+			if (pending) {
+				try {
+					defaultPendingStore.transition(
+						"s1",
+						"Cancelled",
+						"test cleanup",
+						{ invocationId: pending.invocationId, epoch: pending.epoch },
+						2000,
+					);
+					defaultPendingStore.dismiss("s1", 2000);
+				} catch {
+					// reason: cleanup only; a settled pending needs no dismissal
+				}
+			}
 			python.restore();
 			restore();
 			rmSync(root, { recursive: true, force: true });
