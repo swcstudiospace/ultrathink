@@ -44,6 +44,15 @@ export interface SyncTodosDeps {
 	now?: () => number;
 	/** Test seam: replaces the locked session write. Defaults to `updateSession`. */
 	update?: typeof updateSession;
+	/**
+	 * Master-switch gate for the `recall.lastTodos` write (default `true`, so
+	 * existing callers keep today's behavior). When `false` (recall disabled),
+	 * only the `syncTodos` marker lands — no recall record is synthesized, so
+	 * `record.recall` stays `undefined` exactly as the master-switch-off
+	 * contract requires. The marker itself is never gated: `isSyncTodosDone`
+	 * must keep working for recall-off sessions.
+	 */
+	recallOn?: boolean;
 }
 
 /** Node ids the plan tracks, in issue order, de-duplicated (missing ids never invent a wave). */
@@ -158,6 +167,18 @@ export function syncTodos(plan: TrackPlan, deps: SyncTodosDeps): SyncTodosResult
 				deps.sessionId,
 				(record) => {
 					if (record.plan?.graphId !== plan.graphId) return undefined;
+					if (deps.recallOn === false) {
+						return {
+							...record,
+							syncTodos: {
+								graphId: plan.graphId,
+								at: now(),
+								waveCount: waves.length,
+								todoCount: todos.length,
+								attempts: attempt,
+							},
+						};
+					}
 					const state = record.recall?.state ?? serializeRecallState(createRecallState());
 					return {
 						...record,
@@ -182,7 +203,12 @@ export function syncTodos(plan: TrackPlan, deps: SyncTodosDeps): SyncTodosResult
 		}
 		log(`syncTodos attempt ${attempt} failed: ${lastError}`);
 	}
-	return { ok: false, graphId: plan.graphId, waves, todos, attempts: maxAttempts, error: lastError };
+	return {
+		ok: false,
+		graphId: plan.graphId,
+		waves,
+		todos,
+		attempts: maxAttempts,
+		error: lastError,
+	};
 }
-
-

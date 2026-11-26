@@ -596,7 +596,13 @@ export type InjectionStrategy = "deterministic-in-session" | "replace-via-out";
 export type SessionOperation = "create_chat_tab" | "steer" | "resume" | "injection_handoff";
 
 /** Banned as a primary chat channel: never preselected, never fired. */
-export const BANNED_INJECTION_STRATEGIES = ["native-dialog", "popup", "focus", "speech", "echo"] as const;
+export const BANNED_INJECTION_STRATEGIES = [
+	"native-dialog",
+	"popup",
+	"focus",
+	"speech",
+	"echo",
+] as const;
 
 /** Host capabilities as exposed through the host LSP descriptor. */
 export interface HostLspCapabilities {
@@ -655,7 +661,7 @@ export class ArtifactStore {
 	removeNonSeededNegatives(): ArtifactEntry[] {
 		const removed: ArtifactEntry[] = [];
 		for (let i = this.#entries.length - 1; i >= 0; i -= 1) {
-			const entry = this.#entries[i];
+			const entry = this.#entries[i]!;
 			if (entry.seeded === false && entry.negative === true) {
 				removed.push({ ...entry });
 				this.#entries.splice(i, 1);
@@ -692,7 +698,10 @@ export class TranscriptStore {
 	}
 
 	list(): TranscriptEntry[] {
-		return [...this.#byKey.values()].map((entry) => ({ ...entry, outParams: { ...entry.outParams } }));
+		return [...this.#byKey.values()].map((entry) => ({
+			...entry,
+			outParams: { ...entry.outParams },
+		}));
 	}
 }
 
@@ -712,9 +721,16 @@ export function buildReplaceViaOutUrl(input: {
 }
 
 /** Parse a `replace-via-out://` (or `out://`) URL such that params demonstrably land in the transcript. */
-export function parseReplaceViaOutUrl(url: string): { sessionId: string; replaceKey: string; outParams: Record<string, string> } {
+export function parseReplaceViaOutUrl(url: string): {
+	sessionId: string;
+	replaceKey: string;
+	outParams: Record<string, string>;
+} {
 	const parsed = new URL(url);
-	const raw = parsed.host === "session" ? parsed.pathname.replace(/^\//, "") : parsed.pathname.replace(/^\/session\//, "");
+	const raw =
+		parsed.host === "session"
+			? parsed.pathname.replace(/^\//, "")
+			: parsed.pathname.replace(/^\/session\//, "");
 	const sessionId = decodeURIComponent(raw);
 	const replaceKey = parsed.searchParams.get("key") ?? "";
 	const outParams: Record<string, string> = {};
@@ -827,7 +843,10 @@ export class GatedFinalHopInjector {
 			strategy: "deterministic-in-session",
 			resume: input.resume,
 		});
-		const outOperation = sessionOperationFor({ sessionKind: input.sessionKind, strategy: "replace-via-out" });
+		const outOperation = sessionOperationFor({
+			sessionKind: input.sessionKind,
+			strategy: "replace-via-out",
+		});
 		const outUrl = buildReplaceViaOutUrl({
 			sessionId: input.sessionId,
 			replaceKey: input.replaceKey,
@@ -835,7 +854,10 @@ export class GatedFinalHopInjector {
 		});
 		const parsed = parseReplaceViaOutUrl(outUrl);
 
-		const fire = (strategy: InjectionStrategy, operation: SessionOperation): GatedInjectionResult => {
+		const fire = (
+			strategy: InjectionStrategy,
+			operation: SessionOperation,
+		): GatedInjectionResult => {
 			const removedArtifacts = this.#artifacts.removeNonSeededNegatives();
 			const transcriptEntry: TranscriptEntry = {
 				sessionId: parsed.sessionId,
@@ -862,20 +884,23 @@ export class GatedFinalHopInjector {
 			let delivered = false;
 			let failure = "";
 			try {
-				delivered = (await this.#deterministic({
-					sessionId: input.sessionId,
-					promptText: storedPrompt,
-					sessionKind: input.sessionKind,
-					operation: deterministicOperation,
-					replaceKey: input.replaceKey,
-					outParams,
-				})) === true;
+				delivered =
+					(await this.#deterministic({
+						sessionId: input.sessionId,
+						promptText: storedPrompt,
+						sessionKind: input.sessionKind,
+						operation: deterministicOperation,
+						replaceKey: input.replaceKey,
+						outParams,
+					})) === true;
 				if (!delivered) failure = "deterministic channel returned false";
 			} catch (error) {
 				failure = error instanceof Error ? error.message : "deterministic channel threw";
 			}
 			if (delivered) return fire("deterministic-in-session", deterministicOperation);
-			retryLog.push(`deterministic (${deterministicOperation}): failed (${redactSecrets(failure)})`);
+			retryLog.push(
+				`deterministic (${deterministicOperation}): failed (${redactSecrets(failure)})`,
+			);
 		}
 
 		let outDelivered = false;
@@ -896,7 +921,9 @@ export class GatedFinalHopInjector {
 			outFailure = error instanceof Error ? error.message : "replace-via-out channel threw";
 		}
 		if (outDelivered) return fire("replace-via-out", outOperation);
-		retryLog.push(`replace-via-out: failed (${redactSecrets(outFailure)}); prompt retained (${storedPrompt.length} chars, sha256 ${sha256Hex(storedPrompt).slice(0, 12)}...)`);
+		retryLog.push(
+			`replace-via-out: failed (${redactSecrets(outFailure)}); prompt retained (${storedPrompt.length} chars, sha256 ${sha256Hex(storedPrompt).slice(0, 12)}...)`,
+		);
 		return {
 			state: "dropped-with-reason",
 			removedArtifacts: [],

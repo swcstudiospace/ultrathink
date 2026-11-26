@@ -60,15 +60,17 @@ describe("event schema", () => {
 	test("wait clamps at zero and defaults to zero without an anchor", () => {
 		expect(waitDurationMs(2000, 1500)).toBe(0);
 		expect(waitDurationMs(undefined, 1500)).toBe(0);
-		expect(createObservabilityEvent({
-			type: "gate.blocked",
-			invocationId: "i",
-			epoch: 1,
-			sessionId: "s",
-			from: "a",
-			to: "a",
-			now: 99,
-		}).wait_duration_ms).toBe(0);
+		expect(
+			createObservabilityEvent({
+				type: "gate.blocked",
+				invocationId: "i",
+				epoch: 1,
+				sessionId: "s",
+				from: "a",
+				to: "a",
+				now: 99,
+			}).wait_duration_ms,
+		).toBe(0);
 	});
 
 	test("unknown runtime event type fails loudly, never silently", () => {
@@ -89,8 +91,26 @@ describe("event schema", () => {
 describe("recorder + formatting", () => {
 	test("recorder appends, filters by type, and clears", () => {
 		const recorder = createEventRecorder();
-		recorder.emit({ type: "ultrathink.invoked", invocationId: "i", epoch: 1, sessionId: "s", from: "Idle", to: "Invoked", startedAt: 0, now: 5 });
-		recorder.emit({ type: "gate.blocked", invocationId: "i", epoch: 1, sessionId: "s", from: "Invoked", to: "Invoked", startedAt: 0, now: 6 });
+		recorder.emit({
+			type: "ultrathink.invoked",
+			invocationId: "i",
+			epoch: 1,
+			sessionId: "s",
+			from: "Idle",
+			to: "Invoked",
+			startedAt: 0,
+			now: 5,
+		});
+		recorder.emit({
+			type: "gate.blocked",
+			invocationId: "i",
+			epoch: 1,
+			sessionId: "s",
+			from: "Invoked",
+			to: "Invoked",
+			startedAt: 0,
+			now: 6,
+		});
 		expect(recorder.events).toHaveLength(2);
 		expect(recorder.eventsOf("gate.blocked")).toHaveLength(1);
 		recorder.clear();
@@ -128,7 +148,9 @@ describe("transition mapping + a11y contract", () => {
 		expect(eventTypeForTransition("Injected", "TODOsSynced")).toBe("todo.sync.succeeded");
 		expect(eventTypeForTransition("Injected", "Failed")).toBe("todo.sync.failed");
 		expect(eventTypeForTransition("TODOsSynced", "Failed")).toBe("todo.sync.failed");
-		expect(eventTypeForTransition("TODOsSynced", "ForceStoppedOrFinishedOff")).toBe("swarm.force_stop");
+		expect(eventTypeForTransition("TODOsSynced", "ForceStoppedOrFinishedOff")).toBe(
+			"swarm.force_stop",
+		);
 		expect(eventTypeForTransition("ForceStoppedOrFinishedOff", "HandedOff")).toBe("swarm.handoff");
 		expect(eventTypeForTransition("UpliftPending", "TimedOut")).toBe("uplift.timeout");
 		expect(eventTypeForTransition("Injecting", "TimedOut")).toBe("uplift.timeout");

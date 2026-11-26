@@ -20,11 +20,21 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readSession, type SessionRecord, type TodoSnapshotItem, writeSession } from "../claude/state.ts";
+import {
+	readSession,
+	type SessionRecord,
+	type TodoSnapshotItem,
+	writeSession,
+} from "../claude/state.ts";
 import { consumeChatSyncNoDrop, onChatCancel } from "../host/chat-handoff.ts";
 import { ArtifactStore, GatedFinalHopInjector, TranscriptStore } from "../host/uplift-delivery.ts";
 import { buildChatSyncView, type PlanView } from "../host/view.ts";
-import { createEventRecorder, formatObservabilityEvent, type ObservabilityEvent, type ObservabilityEventType } from "./observability.ts";
+import {
+	createEventRecorder,
+	formatObservabilityEvent,
+	type ObservabilityEvent,
+	type ObservabilityEventType,
+} from "./observability.ts";
 import {
 	PENDING_ARIA_LIVE,
 	PendingStore,
@@ -123,7 +133,14 @@ function setup(): Ctx {
 	const recorder = createEventRecorder();
 	const store = new PendingStore({ onEvent: recorder.sink });
 	const invocation = store.create(SESSION, "build it", NOW);
-	return { store, recorder, dir, sessionId: SESSION, invocation, identity: { invocationId: invocation.invocationId, epoch: invocation.epoch } };
+	return {
+		store,
+		recorder,
+		dir,
+		sessionId: SESSION,
+		invocation,
+		identity: { invocationId: invocation.invocationId, epoch: invocation.epoch },
+	};
 }
 
 /** Producer root: persists wave todos + the injection-gate marker, then binds them to the pending. */
@@ -158,7 +175,11 @@ function expectWellFormed(events: ObservabilityEvent[]): void {
 	}
 }
 
-function injector(transcript: TranscriptStore, artifacts: ArtifactStore, channel: () => boolean | Promise<boolean>) {
+function injector(
+	transcript: TranscriptStore,
+	artifacts: ArtifactStore,
+	channel: () => boolean | Promise<boolean>,
+) {
 	return new GatedFinalHopInjector({ deterministic: channel, out: channel, artifacts, transcript });
 }
 
@@ -175,7 +196,11 @@ describe("1 - before Swarm: gate blocks, Planning visible, no TODO mutation", ()
 
 		// Planning is visible: one labelled pending line + chat rows, without claiming sync completeness.
 		expect(pendingStatusText(ctx.store.get(ctx.sessionId))).toContain("UpliftPending");
-		const syncView = buildChatSyncView(PLAN_VIEW, { sessionId: ctx.sessionId, kind: "managed", syncDone: false });
+		const syncView = buildChatSyncView(PLAN_VIEW, {
+			sessionId: ctx.sessionId,
+			kind: "managed",
+			syncDone: false,
+		});
 		expect(syncView.rows.map((row) => [row.wave_id, row.node_id])).toEqual([
 			["w1", "n1"],
 			["w2", "n2"],
@@ -205,7 +230,13 @@ describe("2 - during/after Swarm: forced injection once, stopped/finished, zero 
 	test("one forced injection, seam stop, single chat entry per invocationId", async () => {
 		const ctx = setup();
 		ctx.store.transition(ctx.sessionId, "UpliftPending", "uplift started", ctx.identity, NOW + 1);
-		ctx.store.transition(ctx.sessionId, "SwarmGated", "pre-plan Swarm running", ctx.identity, NOW + 2);
+		ctx.store.transition(
+			ctx.sessionId,
+			"SwarmGated",
+			"pre-plan Swarm running",
+			ctx.identity,
+			NOW + 2,
+		);
 		expect(swarmDispatch(ctx.store, ctx.sessionId, NOW + 3)).toBe(false);
 		produce(ctx, NOW + 4);
 		ctx.store.transition(ctx.sessionId, "PlanReady", "plan complete", ctx.identity, NOW + 5);
@@ -234,20 +265,37 @@ describe("2 - during/after Swarm: forced injection once, stopped/finished, zero 
 
 		// Idempotent re-delivery replaces, never duplicates.
 		expect(
-			(await inj.inject({
-				record: readSession(ctx.dir, ctx.sessionId),
-				graphId: "ut-matrix",
-				sessionId: ctx.sessionId,
-				promptText: UPLIFTED,
-				replaceKey: ctx.identity.invocationId,
-				sessionKind: "managed",
-			})).state,
+			(
+				await inj.inject({
+					record: readSession(ctx.dir, ctx.sessionId),
+					graphId: "ut-matrix",
+					sessionId: ctx.sessionId,
+					promptText: UPLIFTED,
+					replaceKey: ctx.identity.invocationId,
+					sessionKind: "managed",
+				})
+			).state,
 		).toBe("injected");
 		ctx.store.transition(ctx.sessionId, "Injected", "injected", ctx.identity, NOW + 8);
-		expect(syncValidatedTodos({ store: ctx.store, sessionId: ctx.sessionId, identity: ctx.identity, todos: ctx.store.get(ctx.sessionId)!.validatedTodos, stateDir: ctx.dir, now: () => NOW + 9 }).ok).toBe(true);
+		expect(
+			syncValidatedTodos({
+				store: ctx.store,
+				sessionId: ctx.sessionId,
+				identity: ctx.identity,
+				todos: ctx.store.get(ctx.sessionId)!.validatedTodos,
+				stateDir: ctx.dir,
+				now: () => NOW + 9,
+			}).ok,
+		).toBe(true);
 
 		// No seam: fail closed with the missing primitive, state unmoved (no Swarm cancel primitive in repo).
-		const noSeam = await forceStopFinishOff(ctx.store, ctx.sessionId, ctx.identity, undefined, NOW + 10);
+		const noSeam = await forceStopFinishOff(
+			ctx.store,
+			ctx.sessionId,
+			ctx.identity,
+			undefined,
+			NOW + 10,
+		);
 		expect(noSeam).toEqual({ ok: false, missingPrimitive: "Swarm cancel seam not provided" });
 		expect(ctx.store.get(ctx.sessionId)!.state).toBe("TODOsSynced");
 
@@ -268,7 +316,9 @@ describe("2 - during/after Swarm: forced injection once, stopped/finished, zero 
 		ctx.store.transition(ctx.sessionId, "HandedOff", "resume/handoff", ctx.identity, NOW + 12);
 
 		// Zero orphans/duplicates: one chat entry for this invocationId, contiguous command chain.
-		const mine = transcript.list().filter((entry) => entry.replaceKey === ctx.identity.invocationId);
+		const mine = transcript
+			.list()
+			.filter((entry) => entry.replaceKey === ctx.identity.invocationId);
 		expect(mine).toHaveLength(1);
 		expect(mine[0]!.promptText).toBe(UPLIFTED);
 		expect(result.removedArtifacts.map((a) => a.key)).toEqual(["neg"]);
@@ -279,7 +329,9 @@ describe("2 - during/after Swarm: forced injection once, stopped/finished, zero 
 			expect(pending.transitions[i]!.invocationId).toBe(ctx.identity.invocationId);
 		}
 		expectWellFormed(ctx.recorder.events);
-		expect(ctx.recorder.events.every((e) => e.invocationId === ctx.identity.invocationId)).toBe(true);
+		expect(ctx.recorder.events.every((e) => e.invocationId === ctx.identity.invocationId)).toBe(
+			true,
+		);
 	});
 });
 
@@ -292,20 +344,41 @@ describe("3 - success order: Injected -> TODOsSynced -> handoff, TODOs equal pla
 		const inj = injector(transcript, new ArtifactStore(), () => true);
 		ctx.store.transition(ctx.sessionId, "Injecting", "injection started", ctx.identity, NOW + 6);
 		expect(
-			(await inj.inject({
-				record: readSession(ctx.dir, ctx.sessionId),
-				graphId: "ut-matrix",
-				sessionId: ctx.sessionId,
-				promptText: UPLIFTED,
-				replaceKey: ctx.identity.invocationId,
-				sessionKind: "managed",
-			})).state,
+			(
+				await inj.inject({
+					record: readSession(ctx.dir, ctx.sessionId),
+					graphId: "ut-matrix",
+					sessionId: ctx.sessionId,
+					promptText: UPLIFTED,
+					replaceKey: ctx.identity.invocationId,
+					sessionKind: "managed",
+				})
+			).state,
 		).toBe("injected");
 		ctx.store.transition(ctx.sessionId, "Injected", "injected", ctx.identity, NOW + 7);
-		expect(syncValidatedTodos({ store: ctx.store, sessionId: ctx.sessionId, identity: ctx.identity, todos, stateDir: ctx.dir, now: () => NOW + 8 }).ok).toBe(true);
+		expect(
+			syncValidatedTodos({
+				store: ctx.store,
+				sessionId: ctx.sessionId,
+				identity: ctx.identity,
+				todos,
+				stateDir: ctx.dir,
+				now: () => NOW + 8,
+			}).ok,
+		).toBe(true);
 		expect(readSession(ctx.dir, ctx.sessionId)!.recall!.lastTodos).toEqual(todos);
-		expect(readSession(ctx.dir, ctx.sessionId)!.recall!.lastTodos).toEqual(waveTodos(planWaves(plan())));
-		expect(await forceStopFinishOff(ctx.store, ctx.sessionId, ctx.identity, { forceStop: () => {} }, NOW + 9)).toMatchObject({ ok: true });
+		expect(readSession(ctx.dir, ctx.sessionId)!.recall!.lastTodos).toEqual(
+			waveTodos(planWaves(plan())),
+		);
+		expect(
+			await forceStopFinishOff(
+				ctx.store,
+				ctx.sessionId,
+				ctx.identity,
+				{ forceStop: () => Promise.resolve() },
+				NOW + 9,
+			),
+		).toMatchObject({ ok: true });
 		ctx.store.transition(ctx.sessionId, "HandedOff", "resume/handoff", ctx.identity, NOW + 10);
 
 		const states = ctx.store.get(ctx.sessionId)!.transitions.map((t) => t.to);
@@ -321,7 +394,12 @@ describe("3 - success order: Injected -> TODOsSynced -> handoff, TODOs equal pla
 			"HandedOff",
 		]);
 		const types = ctx.recorder.events.map((e) => e.type);
-		const order: ObservabilityEventType[] = ["inject.succeeded", "todo.sync.succeeded", "swarm.force_stop", "swarm.handoff"];
+		const order: ObservabilityEventType[] = [
+			"inject.succeeded",
+			"todo.sync.succeeded",
+			"swarm.force_stop",
+			"swarm.handoff",
+		];
 		let prev = -1;
 		for (const type of order) {
 			const idx = types.indexOf(type);
@@ -353,7 +431,9 @@ describe("3 - success order: Injected -> TODOsSynced -> handoff, TODOs equal pla
 		expect(result.state).toBe("dropped-with-reason");
 		expect(transcript.list()).toHaveLength(0);
 		expect(ctx.store.get(ctx.sessionId)!.state).toBe("Injecting");
-		expect(() => ctx.store.transition(ctx.sessionId, "HandedOff", "resume", ctx.identity, NOW + 11)).toThrow(/illegal/);
+		expect(() =>
+			ctx.store.transition(ctx.sessionId, "HandedOff", "resume", ctx.identity, NOW + 11),
+		).toThrow(/illegal/);
 		expect(ctx.store.get(ctx.sessionId)!.state).not.toBe("HandedOff");
 	});
 
@@ -379,7 +459,9 @@ describe("3 - success order: Injected -> TODOsSynced -> handoff, TODOs equal pla
 		expect(failed.error).toBe("disk on fire");
 		expect(JSON.stringify(readSession(ctx.dir, ctx.sessionId))).toBe(before);
 		expect(ctx.store.get(ctx.sessionId)!.state).toBe("Injected");
-		expect(() => ctx.store.transition(ctx.sessionId, "HandedOff", "resume", ctx.identity, NOW + 13)).toThrow(/illegal/);
+		expect(() =>
+			ctx.store.transition(ctx.sessionId, "HandedOff", "resume", ctx.identity, NOW + 13),
+		).toThrow(/illegal/);
 	});
 });
 
@@ -391,17 +473,25 @@ describe("4 - empty / malformed / error / timeout: distinct, no injection/mutati
 		const before = JSON.stringify(readSession(ctx.dir, ctx.sessionId));
 		ctx.store.transition(ctx.sessionId, "UpliftPending", "uplift started", ctx.identity, NOW + 1);
 		ctx.store.setUpliftedPrompt(ctx.sessionId, ctx.identity, "   ");
-		ctx.store.transition(ctx.sessionId, "Failed", "uplifted prompt is empty", ctx.identity, NOW + 2);
+		ctx.store.transition(
+			ctx.sessionId,
+			"Failed",
+			"uplifted prompt is empty",
+			ctx.identity,
+			NOW + 2,
+		);
 		expect(ctx.store.checkCompletion(ctx.store.get(ctx.sessionId)!).complete).toBe(false);
 		expect(
-			(await inj.inject({
-				record: readSession(ctx.dir, ctx.sessionId),
-				graphId: "ut-matrix",
-				sessionId: ctx.sessionId,
-				promptText: "",
-				replaceKey: ctx.identity.invocationId,
-				sessionKind: "direct",
-			})).state,
+			(
+				await inj.inject({
+					record: readSession(ctx.dir, ctx.sessionId),
+					graphId: "ut-matrix",
+					sessionId: ctx.sessionId,
+					promptText: "",
+					replaceKey: ctx.identity.invocationId,
+					sessionKind: "direct",
+				})
+			).state,
 		).toBe("queued");
 		expect(transcript.list()).toHaveLength(0);
 		expect(JSON.stringify(readSession(ctx.dir, ctx.sessionId))).toBe(before);
@@ -424,7 +514,11 @@ describe("4 - empty / malformed / error / timeout: distinct, no injection/mutati
 		for (const error of errors) expect(typeof error).toBe("string");
 		const ctx = setup();
 		const before = JSON.stringify(readSession(ctx.dir, ctx.sessionId));
-		expect(() => ctx.store.setValidatedTodos(ctx.sessionId, ctx.identity, [{ content: "", status: "pending" }])).toThrow(/invalid todos/);
+		expect(() =>
+			ctx.store.setValidatedTodos(ctx.sessionId, ctx.identity, [
+				{ content: "", status: "pending" },
+			]),
+		).toThrow(/invalid todos/);
 		expect(JSON.stringify(readSession(ctx.dir, ctx.sessionId))).toBe(before);
 		expect(ctx.store.checkCompletion(ctx.store.get(ctx.sessionId)!).complete).toBe(false);
 	});
@@ -461,7 +555,9 @@ describe("4 - empty / malformed / error / timeout: distinct, no injection/mutati
 		expect(ctx.recorder.eventsOf("uplift.timeout")).toHaveLength(1);
 		expect(ctx.recorder.eventsOf("plan.rejected")).toHaveLength(0);
 		// No injection after timeout: the injector still queues behind the missing marker.
-		expect(JSON.stringify(readSession(ctx.dir, ctx.sessionId))).not.toContain(ctx.identity.invocationId);
+		expect(JSON.stringify(readSession(ctx.dir, ctx.sessionId))).not.toContain(
+			ctx.identity.invocationId,
+		);
 		ctx.store.retry(ctx.sessionId, NOW + 6000);
 		expect(ctx.store.get(ctx.sessionId)!.state).toBe("Invoked");
 		expect(ctx.store.get(ctx.sessionId)!.upliftedPrompt).toBeUndefined();
@@ -515,11 +611,29 @@ describe("5 - transient injection failure: backoff, plan preserved, dedupe to on
 		expect(ctx.store.get(ctx.sessionId)!.upliftedPrompt).toBe(UPLIFTED);
 		expect(ctx.store.get(ctx.sessionId)!.validatedTodos).toEqual(todos);
 		ctx.store.transition(ctx.sessionId, "Injected", "injected after retry", ctx.identity, NOW + 11);
-		expect(syncValidatedTodos({ store: ctx.store, sessionId: ctx.sessionId, identity: ctx.identity, todos, stateDir: ctx.dir, now: () => NOW + 12 }).ok).toBe(true);
+		expect(
+			syncValidatedTodos({
+				store: ctx.store,
+				sessionId: ctx.sessionId,
+				identity: ctx.identity,
+				todos,
+				stateDir: ctx.dir,
+				now: () => NOW + 12,
+			}).ok,
+		).toBe(true);
 		// Dedupe: one chat entry + one TODO batch even though delivery ran twice.
-		expect(transcript.list().filter((e) => e.replaceKey === ctx.identity.invocationId)).toHaveLength(1);
+		expect(
+			transcript.list().filter((e) => e.replaceKey === ctx.identity.invocationId),
+		).toHaveLength(1);
 		expect(readSession(ctx.dir, ctx.sessionId)!.recall!.lastTodos).toEqual(todos);
-		const second = syncValidatedTodos({ store: ctx.store, sessionId: ctx.sessionId, identity: ctx.identity, todos, stateDir: ctx.dir, now: () => NOW + 13 });
+		const second = syncValidatedTodos({
+			store: ctx.store,
+			sessionId: ctx.sessionId,
+			identity: ctx.identity,
+			todos,
+			stateDir: ctx.dir,
+			now: () => NOW + 13,
+		});
 		expect(second.ok).toBe(false);
 		expect(second.error).toContain("ordering violation");
 		expect(readSession(ctx.dir, ctx.sessionId)!.recall!.lastTodos).toEqual(todos);
@@ -539,12 +653,16 @@ describe("6 - new input/second invocation: queued, epoch++, stale rejected", () 
 		expect(second.epoch).toBe(2);
 		expect(second.invocationId).not.toBe(ctx.identity.invocationId);
 		expect(ctx.recorder.eventsOf("user_input.superseded")).toHaveLength(1);
-		expect(ctx.recorder.eventsOf("user_input.superseded")[0]!.invocationId).toBe(ctx.identity.invocationId);
+		expect(ctx.recorder.eventsOf("user_input.superseded")[0]!.invocationId).toBe(
+			ctx.identity.invocationId,
+		);
 		const invoked = ctx.recorder.eventsOf("ultrathink.invoked");
 		expect(invoked[invoked.length - 1]!.epoch).toBe(2);
 
 		// Stale identity + epoch is rejected on every write path.
-		expect(() => ctx.store.transition(ctx.sessionId, "UpliftPending", "stale", ctx.identity, NOW + 5)).toThrow(/stale/);
+		expect(() =>
+			ctx.store.transition(ctx.sessionId, "UpliftPending", "stale", ctx.identity, NOW + 5),
+		).toThrow(/stale/);
 		expect(
 			syncValidatedTodos({
 				store: ctx.store,
@@ -555,7 +673,9 @@ describe("6 - new input/second invocation: queued, epoch++, stale rejected", () 
 				now: () => NOW + 5,
 			}).ok,
 		).toBe(false);
-		expect(() => ctx.store.queueInput(ctx.sessionId, ctx.identity, "stale", NOW + 5)).toThrow(/stale/);
+		expect(() => ctx.store.queueInput(ctx.sessionId, ctx.identity, "stale", NOW + 5)).toThrow(
+			/stale/,
+		);
 
 		// The new invocation gates again and queues independently.
 		expect(swarmDispatch(ctx.store, ctx.sessionId, NOW + 6)).toBe(false);
@@ -591,7 +711,11 @@ describe("7 - accessibility: focus/history/aria-live preserved", () => {
 		for (const event of ctx.recorder.events) {
 			expect(formatObservabilityEvent(event)).toContain(event.type);
 		}
-		const view = buildChatSyncView(PLAN_VIEW, { sessionId: ctx.sessionId, kind: "managed", syncDone: true });
+		const view = buildChatSyncView(PLAN_VIEW, {
+			sessionId: ctx.sessionId,
+			kind: "managed",
+			syncDone: true,
+		});
 		expect(view.rows.map((row) => row.node_id)).toEqual(["n1", "n2", "n3"]);
 	});
 });

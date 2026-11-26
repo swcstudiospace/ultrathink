@@ -91,9 +91,7 @@ export function parseChatHandoff(text: string): ChatCancelEntry[] {
 			node_id: parsed.node_id,
 			...(typeof parsed.graphId === "string" ? { graphId: parsed.graphId } : {}),
 			...(typeof parsed.sessionId === "string" ? { sessionId: parsed.sessionId } : {}),
-			...(parsed.kind === "direct" || parsed.kind === "managed"
-				? { kind: parsed.kind }
-				: {}),
+			...(parsed.kind === "direct" || parsed.kind === "managed" ? { kind: parsed.kind } : {}),
 			reason: "cancel",
 			at: typeof parsed.at === "number" ? parsed.at : 0,
 		});

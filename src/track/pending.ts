@@ -129,7 +129,11 @@ function causeText(error: unknown): string {
 }
 
 /** Schema validation for a TODO set: non-empty, each item names real content with a lifecycle status. */
-export function validateTodoSnapshot(todos: unknown): { ok: boolean; todos?: TodoSnapshotItem[]; error?: string } {
+export function validateTodoSnapshot(todos: unknown): {
+	ok: boolean;
+	todos?: TodoSnapshotItem[];
+	error?: string;
+} {
 	if (!Array.isArray(todos)) return { ok: false, error: "todos must be an array" };
 	if (todos.length === 0) return { ok: false, error: "todos must be non-empty" };
 	const copy: TodoSnapshotItem[] = [];
@@ -325,10 +329,18 @@ export class PendingStore {
 	}
 
 	/** Logged transition: validates identity+epoch and legality, appends `{invocationId, timestamp, reason}`. Throws on stale or illegal. */
-	transition(sessionId: string, to: PendingState, reason: string, identity: Identity, now: number = Date.now()): PendingInvocation {
+	transition(
+		sessionId: string,
+		to: PendingState,
+		reason: string,
+		identity: Identity,
+		now: number = Date.now(),
+	): PendingInvocation {
 		const current = this.#assertCurrent(sessionId, identity);
 		if (!canTransition(current.state, to)) {
-			throw new Error(`illegal pending transition ${current.state} -> ${to} for session ${sessionId}`);
+			throw new Error(
+				`illegal pending transition ${current.state} -> ${to} for session ${sessionId}`,
+			);
 		}
 		const from = current.state;
 		current.transitions.push({
@@ -378,7 +390,12 @@ export class PendingStore {
 	}
 
 	/** Queue input that arrives while waiting: held until the pending resolves, never dispatched from raw input. */
-	queueInput(sessionId: string, identity: Identity, text: string, now: number = Date.now()): number {
+	queueInput(
+		sessionId: string,
+		identity: Identity,
+		text: string,
+		now: number = Date.now(),
+	): number {
 		const current = this.#assertCurrent(sessionId, identity);
 		current.queuedInputs.push(text);
 		this.#emit(
@@ -414,7 +431,10 @@ export class PendingStore {
 	}
 
 	/** Record one injection attempt; `budgetExceeded` once past the 3-attempt budget (exp backoff in `injectionBackoffMs`). */
-	recordInjectionAttempt(sessionId: string, identity: Identity): { attempt: number; budgetExceeded: boolean; backoffMs: number } {
+	recordInjectionAttempt(
+		sessionId: string,
+		identity: Identity,
+	): { attempt: number; budgetExceeded: boolean; backoffMs: number } {
 		const current = this.#assertCurrent(sessionId, identity);
 		current.injectionAttemptCount += 1;
 		return {
@@ -425,19 +445,39 @@ export class PendingStore {
 	}
 
 	/** Timeout check against `startedAt`; distinction from `Failed` is preserved by the caller drilling into `getFailureSurface`. */
-	checkTimeout(sessionId: string, now: number = Date.now(), timeoutMs: number = UPLIFT_TIMEOUT_MS): boolean {
+	checkTimeout(
+		sessionId: string,
+		now: number = Date.now(),
+		timeoutMs: number = UPLIFT_TIMEOUT_MS,
+	): boolean {
 		const current = this.#pending.get(sessionId);
-		return !!current && now - current.startedAt > timeoutMs && (current.state === "UpliftPending" || current.state === "SwarmGated" || current.state === "Injecting");
+		return (
+			!!current &&
+			now - current.startedAt > timeoutMs &&
+			(current.state === "UpliftPending" ||
+				current.state === "SwarmGated" ||
+				current.state === "Injecting")
+		);
 	}
 
 	/** Apply the timeout: move an in-flight pending to `TimedOut`. Returns true when applied. */
-	applyTimeout(sessionId: string, now: number = Date.now(), timeoutMs: number = UPLIFT_TIMEOUT_MS): boolean {
+	applyTimeout(
+		sessionId: string,
+		now: number = Date.now(),
+		timeoutMs: number = UPLIFT_TIMEOUT_MS,
+	): boolean {
 		const current = this.#pending.get(sessionId);
 		if (!current || !this.checkTimeout(sessionId, now, timeoutMs)) return false;
-		this.transition(sessionId, "TimedOut", `uplift timed out after ${timeoutMs}ms`, {
-			invocationId: current.invocationId,
-			epoch: current.epoch,
-		}, now);
+		this.transition(
+			sessionId,
+			"TimedOut",
+			`uplift timed out after ${timeoutMs}ms`,
+			{
+				invocationId: current.invocationId,
+				epoch: current.epoch,
+			},
+			now,
+		);
 		return true;
 	}
 
@@ -458,24 +498,40 @@ export class PendingStore {
 		current.injected = false;
 		current.injectionAttemptCount = 0;
 		current.startedAt = now;
-		const retried = this.transition(sessionId, "Invoked", "retry after failure/timeout", {
-			invocationId: current.invocationId,
-			epoch: current.epoch,
-		}, now);
+		const retried = this.transition(
+			sessionId,
+			"Invoked",
+			"retry after failure/timeout",
+			{
+				invocationId: current.invocationId,
+				epoch: current.epoch,
+			},
+			now,
+		);
 		return retried;
 	}
 
 	/** Dismiss a `Failed`/`TimedOut`/`Cancelled` pending back to `Idle`. Throws when not dismissible. */
 	dismiss(sessionId: string, now: number = Date.now()): PendingInvocation {
 		const current = this.#pending.get(sessionId);
-		if (!current || ![ "Failed", "TimedOut", "Cancelled" ].includes(current.state)) {
+		if (!current || !["Failed", "TimedOut", "Cancelled"].includes(current.state)) {
 			throw new Error(`pending for session ${sessionId} is not dismissible`);
 		}
-		return this.transition(sessionId, "Idle", "dismissed", { invocationId: current.invocationId, epoch: current.epoch }, now);
+		return this.transition(
+			sessionId,
+			"Idle",
+			"dismissed",
+			{ invocationId: current.invocationId, epoch: current.epoch },
+			now,
+		);
 	}
 
 	/** Hard Swarm gate: `substantive` blocks in `Invoked`/`UpliftPending`/`SwarmGated`; `read-only` prep is always allowed. */
-	gateFor(sessionId: string, mode: "substantive" | "read-only", now: number = Date.now()): { allowed: boolean; reason: string } {
+	gateFor(
+		sessionId: string,
+		mode: "substantive" | "read-only",
+		now: number = Date.now(),
+	): { allowed: boolean; reason: string } {
 		if (mode === "read-only") return { allowed: true, reason: "" };
 		const current = this.#pending.get(sessionId);
 		if (!current || !isSubstantiveBlocked(current.state)) return { allowed: true, reason: "" };
@@ -503,7 +559,11 @@ export class PendingStore {
 /** Process-wide store for the host wiring (`gatePasses` at the spawn entry). Tests inject their own `PendingStore`. */
 export const defaultPendingStore = new PendingStore();
 
-export function createPending(sessionId: string, rawInput: string, now: number = Date.now()): PendingInvocation {
+export function createPending(
+	sessionId: string,
+	rawInput: string,
+	now: number = Date.now(),
+): PendingInvocation {
 	return defaultPendingStore.create(sessionId, rawInput, now);
 }
 
@@ -522,6 +582,13 @@ export interface SyncValidatedInput {
 	log?: (message: string) => void;
 	/** Test seam: replaces the locked session write. Defaults to `updateSession`. */
 	update?: typeof updateSession;
+	/**
+	 * Master-switch gate for the `recall.lastTodos` write (default `true`).
+	 * When `false` (recall disabled), the atomic sync still validates and
+	 * transitions the pending to `TODOsSynced`, but no recall record is
+	 * synthesized or written — `record.recall` stays `undefined`.
+	 */
+	recallOn?: boolean;
 }
 
 /**
@@ -540,14 +607,20 @@ export function syncValidatedTodos(input: SyncValidatedInput): SyncValidatedResu
 	try {
 		pending = input.store.get(input.sessionId) as PendingInvocation;
 		if (!pending) return { ok: false, error: "no pending for session" };
-		if (pending.invocationId !== input.identity.invocationId || pending.epoch !== input.identity.epoch) {
+		if (
+			pending.invocationId !== input.identity.invocationId ||
+			pending.epoch !== input.identity.epoch
+		) {
 			return { ok: false, error: "stale pending identity" };
 		}
 	} catch (error) {
 		return { ok: false, error: causeText(error) };
 	}
 	if (pending.state !== "Injected") {
-		return { ok: false, error: `ordering violation: sync requires Injected, have ${pending.state}` };
+		return {
+			ok: false,
+			error: `ordering violation: sync requires Injected, have ${pending.state}`,
+		};
 	}
 	if (pending.validatedTodosInvocationId !== pending.invocationId) {
 		return { ok: false, error: "todos are not bound to this invocation" };
@@ -560,10 +633,17 @@ export function syncValidatedTodos(input: SyncValidatedInput): SyncValidatedResu
 			input.sessionId,
 			(record: SessionRecord) => {
 				if (!record) return undefined;
+				if (input.recallOn === false) {
+					return { ...record };
+				}
 				const state = record.recall?.state ?? serializeRecallState(createRecallState());
 				return {
 					...record,
-					recall: { ...(record.recall ?? { state }), state, lastTodos: todos.map((todo) => ({ ...todo })) },
+					recall: {
+						...(record.recall ?? { state }),
+						state,
+						lastTodos: todos.map((todo) => ({ ...todo })),
+					},
 				};
 			},
 			HOOK_LOCK,
@@ -574,7 +654,13 @@ export function syncValidatedTodos(input: SyncValidatedInput): SyncValidatedResu
 		return { ok: false, error: causeText(error) };
 	}
 	try {
-		input.store.transition(input.sessionId, "TODOsSynced", "todos synced atomically", input.identity, now());
+		input.store.transition(
+			input.sessionId,
+			"TODOsSynced",
+			"todos synced atomically",
+			input.identity,
+			now(),
+		);
 	} catch (error) {
 		return { ok: false, error: causeText(error) };
 	}
@@ -600,13 +686,22 @@ export async function forceStopFinishOff(
 		return { ok: false, error: "stale pending identity" };
 	}
 	if (pending.state !== "TODOsSynced") {
-		return { ok: false, error: `ordering violation: force-stop requires TODOsSynced, have ${pending.state}` };
+		return {
+			ok: false,
+			error: `ordering violation: force-stop requires TODOsSynced, have ${pending.state}`,
+		};
 	}
 	try {
 		await seam.forceStop({ sessionId, invocationId: identity.invocationId });
 	} catch (error) {
 		return { ok: false, error: causeText(error) };
 	}
-	store.transition(sessionId, "ForceStoppedOrFinishedOff", "force-stopped/finished-off via seam", identity, now);
+	store.transition(
+		sessionId,
+		"ForceStoppedOrFinishedOff",
+		"force-stopped/finished-off via seam",
+		identity,
+		now,
+	);
 	return { ok: true };
 }

@@ -69,9 +69,7 @@ describe("planWaves", () => {
 	});
 
 	test("unknown and cyclic dependencies degrade to wave 1 and never hang", () => {
-		const waves = planWaves(
-			plan({ dependencies: { n1: ["missing"], n2: ["n2"], n3: ["n1"] } }),
-		);
+		const waves = planWaves(plan({ dependencies: { n1: ["missing"], n2: ["n2"], n3: ["n1"] } }));
 		const ids = waves.flatMap((wave) => wave.ids);
 		expect(ids.sort()).toEqual(["n1", "n2", "n3"]);
 	});

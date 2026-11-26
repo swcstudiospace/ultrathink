@@ -6,11 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { consumeChatSyncNoDrop, onChatCancel } from "./chat-handoff.ts";
-import {
-	CHAT_SYNC_TYPE,
-	chatSyncFallbackLine,
-	registerUltrathinkRenderers,
-} from "./omp-render.ts";
+import { CHAT_SYNC_TYPE, chatSyncFallbackLine, registerUltrathinkRenderers } from "./omp-render.ts";
 import { visibleWidth } from "./omp-paint.ts";
 import { buildChatSyncView, isChatSyncView, type PlanView } from "./view.ts";
 
@@ -118,7 +114,11 @@ describe("chat sync card (no NativeDialog)", () => {
 	const sync = buildChatSyncView(view, { sessionId: "s1", kind: "managed", syncDone: true });
 
 	test("renders the wave/node rows through the chat/session channel at exactly the render width", () => {
-		const component = renderChatSync({ content: "sync", details: sync }, { expanded: false }, theme);
+		const component = renderChatSync(
+			{ content: "sync", details: sync },
+			{ expanded: false },
+			theme,
+		);
 		expect(component).toBeDefined();
 		const rows = component?.render(80) ?? [];
 		expect(rows.map(visibleWidth)).toEqual(rows.map(() => 80));
@@ -134,7 +134,9 @@ describe("chat sync card (no NativeDialog)", () => {
 	test("a pending sync is stated in words, never treated as complete", () => {
 		const pending = buildChatSyncView(view, { sessionId: "s1", kind: "direct", syncDone: false });
 		const plain = Bun.stripANSI(
-			renderChatSync({ content: "sync", details: pending }, { expanded: false }, theme)?.render(80)?.join("\n") ?? "",
+			renderChatSync({ content: "sync", details: pending }, { expanded: false }, theme)
+				?.render(80)
+				?.join("\n") ?? "",
 		);
 		expect(plain).toContain("sync pending");
 		expect(plain).not.toContain("sync complete");
@@ -142,7 +144,9 @@ describe("chat sync card (no NativeDialog)", () => {
 
 	test("malformed details fall back to Omp's default card", () => {
 		for (const details of [undefined, "x", null, { sessionId: "s" }]) {
-			expect(renderChatSync({ content: "sync", details }, { expanded: false }, theme)).toBeUndefined();
+			expect(
+				renderChatSync({ content: "sync", details }, { expanded: false }, theme),
+			).toBeUndefined();
 		}
 	});
 

@@ -124,7 +124,13 @@ export interface SessionRecord {
 	 * prompt's wave todos into this record (see `recall.lastTodos`) and completed the tool invocation.
 	 * Injection may proceed only once this marker names the plan's graph id. Absent on older records.
 	 */
-	syncTodos?: { graphId: string; at: number; waveCount: number; todoCount: number; attempts: number };
+	syncTodos?: {
+		graphId: string;
+		at: number;
+		waveCount: number;
+		todoCount: number;
+		attempts: number;
+	};
 }
 
 export function defaultStateDir(env: Record<string, string | undefined> = process.env): string {

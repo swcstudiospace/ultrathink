@@ -102,7 +102,10 @@ export function createObservabilityEvent(input: CreateObservabilityEventInput): 
 }
 
 /** Builds and delivers one event to `sink`, returning the event. */
-export function emitObservabilityEvent(sink: ObservabilitySink, input: CreateObservabilityEventInput): ObservabilityEvent {
+export function emitObservabilityEvent(
+	sink: ObservabilitySink,
+	input: CreateObservabilityEventInput,
+): ObservabilityEvent {
 	const event = createObservabilityEvent(input);
 	sink(event);
 	return event;
@@ -152,7 +155,10 @@ export function formatObservabilityEvent(event: ObservabilityEvent): string {
  * `ForceStoppedOrFinishedOff -> HandedOff` = swarm.handoff;
  * `* -> TimedOut` = uplift.timeout.
  */
-export function eventTypeForTransition(from: string, to: string): ObservabilityEventType | undefined {
+export function eventTypeForTransition(
+	from: string,
+	to: string,
+): ObservabilityEventType | undefined {
 	if (to === "TimedOut") return "uplift.timeout";
 	if (from === "Idle" && to === "Invoked") return "ultrathink.invoked";
 	if (to === "PlanReady") return "plan.ready";

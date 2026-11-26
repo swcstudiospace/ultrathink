@@ -42,7 +42,12 @@ const TODOS: TodoSnapshotItem[] = [
 	{ content: "step two", status: "pending" },
 ];
 
-function driveToInjected(store: PendingStore, sessionId: string, rawInput = "build it", now = 1000) {
+function driveToInjected(
+	store: PendingStore,
+	sessionId: string,
+	rawInput = "build it",
+	now = 1000,
+) {
 	const invocation = store.create(sessionId, rawInput, now);
 	const identity = { invocationId: invocation.invocationId, epoch: invocation.epoch };
 	store.transition(sessionId, "UpliftPending", "uplift started", identity, now + 1);
@@ -71,14 +76,28 @@ describe("create / supersession", () => {
 
 		// Stale identity + epoch: old invocation can no longer transition.
 		expect(() =>
-			store.transition("s1", "UpliftPending", "stale", { invocationId: first.invocationId, epoch: 1 }, 3000),
+			store.transition(
+				"s1",
+				"UpliftPending",
+				"stale",
+				{ invocationId: first.invocationId, epoch: 1 },
+				3000,
+			),
 		).toThrow(/stale/);
 		// Current identity moves forward and every log entry carries invocationId+timestamp+reason.
-		store.transition("s1", "UpliftPending", "uplift started", { invocationId: second.invocationId, epoch: 2 }, 3000);
+		store.transition(
+			"s1",
+			"UpliftPending",
+			"uplift started",
+			{ invocationId: second.invocationId, epoch: 2 },
+			3000,
+		);
 		const current = store.get("s1")!;
 		expect(current.state).toBe("UpliftPending");
 		expect(current.transitions.every((t) => t.invocationId === second.invocationId)).toBe(true);
-		expect(current.transitions.every((t) => typeof t.timestamp === "number" && t.reason !== "")).toBe(true);
+		expect(
+			current.transitions.every((t) => typeof t.timestamp === "number" && t.reason !== ""),
+		).toBe(true);
 	});
 });
 
@@ -225,14 +244,16 @@ describe("timeout / failure", () => {
 		seedRecord(dir, "s1");
 		const invocation = driveToInjected(store, "s1");
 		const identity = { invocationId: invocation.invocationId, epoch: invocation.epoch };
-		expect(syncValidatedTodos({
-			store,
-			sessionId: "s1",
-			identity,
-			todos: TODOS,
-			stateDir: dir,
-			now: () => 9000,
-		}).ok).toBe(true);
+		expect(
+			syncValidatedTodos({
+				store,
+				sessionId: "s1",
+				identity,
+				todos: TODOS,
+				stateDir: dir,
+				now: () => 9000,
+			}).ok,
+		).toBe(true);
 
 		const withoutSeam = await forceStopFinishOff(store, "s1", identity, undefined, 9500);
 		expect(withoutSeam.ok).toBe(false);

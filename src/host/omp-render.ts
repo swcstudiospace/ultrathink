@@ -12,7 +12,13 @@ import { type GraphModel, renderGraph } from "./omp-graph.ts";
 import { sanitizeInsightText } from "./omp-insights.ts";
 import { type ActivityNotice, toActivityNotice } from "./activity-notice.ts";
 import { formatElapsed, type Paint, paint, truncateToWidth, visibleWidth } from "./omp-paint.ts";
-import { type ChatSyncView, type DeliveryState, isChatSyncView, type PlanView, projectResolution } from "./view.ts";
+import {
+	type ChatSyncView,
+	type DeliveryState,
+	isChatSyncView,
+	type PlanView,
+	projectResolution,
+} from "./view.ts";
 import { isRecord } from "../shared.ts";
 import { renderPanel } from "../recall/panel-render.ts";
 import type { TurnPanels } from "../recall/turn-panels.ts";

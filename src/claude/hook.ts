@@ -427,6 +427,8 @@ export async function completePendingComposition(input: {
 	sessionKind?: InjectionSessionKind;
 	now?: number;
 	log?: (message: string) => void;
+	/** Master-switch gate forwarded to `syncValidatedTodos` (default true). */
+	recallOn?: boolean;
 	readRecord?: (stateDir: string, sessionId: string) => InjectionGateRecord;
 }): Promise<PendingCompositionOutcome> {
 	const log = input.log ?? (() => undefined);
@@ -503,6 +505,7 @@ export async function completePendingComposition(input: {
 		stateDir: input.stateDir,
 		now,
 		log,
+		recallOn: input.recallOn,
 	});
 	if (!synced.ok) return fail("todo-sync", synced.error ?? "unknown");
 	const stopped = await forceStopFinishOff(store, sessionId, identity, input.forceStopSeam, now);
@@ -2341,7 +2344,7 @@ export async function runPromptSubmit(
 		// reports done after the marker lands in the session state file; a failure is a logged line,
 		// never a throw — the prompt already went through.
 		if (plan && statePath && !isTurnSessionId(sessionId)) {
-			const synced = syncTodos(plan, { stateDir: deps.stateDir, sessionId, log });
+			const synced = syncTodos(plan, { stateDir: deps.stateDir, sessionId, log, recallOn });
 			if (!synced.ok) log(`syncTodos failed: ${synced.error ?? "unknown"}`);
 			else if (pendingCtx) {
 				await completePendingComposition({
@@ -2357,6 +2360,7 @@ export async function runPromptSubmit(
 					sessionKind: deps.pendingSessionKind,
 					now: now(),
 					log,
+					recallOn,
 				});
 			}
 		}

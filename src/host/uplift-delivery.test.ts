@@ -14,7 +14,6 @@ import {
 	GatedFinalHopInjector,
 	OrderGate,
 	StatusLedger,
-	TranscriptStore,
 	assertRaceChecks,
 	buildReplaceViaOutUrl,
 	parseReplaceViaOutUrl,
@@ -269,7 +268,9 @@ describe("production-grade invariants", () => {
 
 describe("SPE-37786 gated final-hop injection (n3)", () => {
 	const GRAPH_ID = "graph-n3";
-	const doneRecord = { syncTodos: { graphId: GRAPH_ID, at: 1, waveCount: 1, todoCount: 1, attempts: 1 } };
+	const doneRecord = {
+		syncTodos: { graphId: GRAPH_ID, at: 1, waveCount: 1, todoCount: 1, attempts: 1 },
+	};
 
 	test("queued no-op until isSyncTodosDone is true: channels and artifacts untouched", async () => {
 		let deterministicCalls = 0;
@@ -287,7 +288,11 @@ describe("SPE-37786 gated final-hop injection (n3)", () => {
 			},
 			artifacts,
 		});
-		for (const record of [undefined, {}, { syncTodos: { graphId: "other", at: 1, waveCount: 1, todoCount: 1, attempts: 1 } }]) {
+		for (const record of [
+			undefined,
+			{},
+			{ syncTodos: { graphId: "other", at: 1, waveCount: 1, todoCount: 1, attempts: 1 } },
+		]) {
 			const queued = await injector.inject({
 				record,
 				graphId: GRAPH_ID,
@@ -334,7 +339,12 @@ describe("SPE-37786 gated final-hop injection (n3)", () => {
 		expect(result.strategy).toBe("deterministic-in-session");
 		expect(seenOps).toEqual(["create_chat_tab"]);
 		expect(result.removedArtifacts.map((a) => a.key)).toEqual(["neg"]);
-		expect(artifacts.list().map((a) => a.key).sort()).toEqual(["pos", "seeded-neg"]);
+		expect(
+			artifacts
+				.list()
+				.map((a) => a.key)
+				.sort(),
+		).toEqual(["pos", "seeded-neg"]);
 		expect(result.transcriptEntry?.outParams).toEqual({ lane: "direct", trace: "abc" });
 		expect(parseReplaceViaOutUrl(result.outUrl ?? "")).toMatchObject({
 			sessionId: "s1",
@@ -381,26 +391,60 @@ describe("SPE-37786 gated final-hop injection (n3)", () => {
 		expect(second.state).toBe("injected");
 		const transcript = injector.transcript().list();
 		expect(transcript).toHaveLength(1);
-		expect(transcript[0].promptText).toBe("second");
-		expect(transcript[0].outParams).toEqual({ lane: "managed", again: "1" });
+		expect(transcript[0]!.promptText).toBe("second");
+		expect(transcript[0]!.outParams).toEqual({ lane: "managed", again: "1" });
 	});
 
 	test("managed sessions steer (resume on request); preselect never returns a banned heuristic", async () => {
-		expect(sessionOperationFor({ sessionKind: "managed", strategy: "deterministic-in-session" })).toBe("steer");
-		expect(sessionOperationFor({ sessionKind: "managed", strategy: "deterministic-in-session", resume: true })).toBe("resume");
-		expect(sessionOperationFor({ sessionKind: "direct", strategy: "replace-via-out" })).toBe("injection_handoff");
-		expect(preselectInjectionStrategy({ sessionKind: "direct", supportsDeterministic: true, supportsOut: true })).toBe("deterministic-in-session");
-		expect(preselectInjectionStrategy({ sessionKind: "managed", supportsDeterministic: false, supportsOut: true })).toBe("replace-via-out");
+		expect(
+			sessionOperationFor({ sessionKind: "managed", strategy: "deterministic-in-session" }),
+		).toBe("steer");
+		expect(
+			sessionOperationFor({
+				sessionKind: "managed",
+				strategy: "deterministic-in-session",
+				resume: true,
+			}),
+		).toBe("resume");
+		expect(sessionOperationFor({ sessionKind: "direct", strategy: "replace-via-out" })).toBe(
+			"injection_handoff",
+		);
+		expect(
+			preselectInjectionStrategy({
+				sessionKind: "direct",
+				supportsDeterministic: true,
+				supportsOut: true,
+			}),
+		).toBe("deterministic-in-session");
+		expect(
+			preselectInjectionStrategy({
+				sessionKind: "managed",
+				supportsDeterministic: false,
+				supportsOut: true,
+			}),
+		).toBe("replace-via-out");
 		const banned: string[] = ["native-dialog", "popup", "focus", "speech", "echo"];
 		for (const supportsDeterministic of [true, false]) {
-			const strategy = preselectInjectionStrategy({ sessionKind: "direct", supportsDeterministic, supportsOut: true });
+			const strategy = preselectInjectionStrategy({
+				sessionKind: "direct",
+				supportsDeterministic,
+				supportsOut: true,
+			});
 			expect(banned).not.toContain(strategy);
 		}
 	});
 
 	test("out params round-trip through buildReplaceViaOutUrl; drop leaves artifacts in place", async () => {
-		const url = buildReplaceViaOutUrl({ sessionId: "s 1", replaceKey: "k", outParams: { a: "b c", d: "e" } });
-		expect(parseReplaceViaOutUrl(url)).toEqual({ sessionId: "s 1", replaceKey: "k", outParams: { a: "b c", d: "e" } });
+		const url = buildReplaceViaOutUrl({
+			sessionId: "s 1",
+			replaceKey: "k",
+			outParams: { a: "b c", d: "e" },
+		});
+		expect(parseReplaceViaOutUrl(url)).toEqual({
+			sessionId: "s 1",
+			replaceKey: "k",
+			outParams: { a: "b c", d: "e" },
+		});
 		const artifacts = new ArtifactStore();
 		artifacts.add({ key: "neg", seeded: false, negative: true, text: "keep on drop" });
 		const injector = new GatedFinalHopInjector({

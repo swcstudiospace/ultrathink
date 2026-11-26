@@ -370,8 +370,25 @@ describe("runPromptSubmit", () => {
 		}
 	});
 
-	test("syncTodos issues wave todos and completes in session state after uplift", async () => {
+	test("syncTodos with recall off lands the completion marker and synthesizes no recall record", async () => {
 		const { deps, cleanup } = baseDeps({ complete: smartComplete() });
+		try {
+			const result = await runPromptSubmit(input, deps);
+			const graphId = result.record?.plan?.graphId;
+			expect(graphId).toBeTruthy();
+			const persisted = readSession(deps.stateDir, "s1");
+			expect(persisted?.syncTodos?.graphId).toBe(graphId);
+			// Master switch off = no recall state written; the injection gate
+			// (`isSyncTodosDone`) reads the marker, which always lands.
+			expect(persisted?.recall).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("with recall on, syncTodos issues wave todos into recall.lastTodos", async () => {
+		const { deps, cleanup } = baseDeps({ complete: smartComplete() });
+		deps.config.recallSettings.recall.enabled = true;
 		try {
 			const result = await runPromptSubmit(input, deps);
 			const graphId = result.record?.plan?.graphId;
