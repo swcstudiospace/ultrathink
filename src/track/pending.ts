@@ -27,7 +27,12 @@ import {
 	type TodoSnapshotItem,
 } from "../claude/state.ts";
 import { createRecallState } from "../recall/engine.ts";
-
+import {
+	createObservabilityEvent,
+	eventTypeForTransition,
+	type ObservabilityEvent,
+	type ObservabilitySink,
+} from "./observability.ts";
 /** Closed state set (contract §states). `Failed` and `TimedOut` are distinct terminal-ish states. */
 export type PendingState =
 	| "Idle"
@@ -219,13 +224,27 @@ interface Identity {
 export class PendingStore {
 	readonly #pending = new Map<string, PendingInvocation>();
 	readonly #nextEpoch = new Map<string, number>();
+	readonly #onEvent?: ObservabilitySink;
 
+	/**
+	 * Optional observability sink (n6): every keyed transition emits its contract
+	 * event. Unset means the store behaves exactly as before (no observer, no log).
+	 */
+	constructor(options?: { onEvent?: ObservabilitySink }) {
+		this.#onEvent = options?.onEvent;
+	}
+
+	#emit(event: ObservabilityEvent): void {
+		this.#onEvent?.(event);
+	}
 	/** Create (or supersede into) a pending at magic-words invocation; starts in `Invoked`. */
 	create(sessionId: string, rawInput: string, now: number = Date.now()): PendingInvocation {
 		const epoch = (this.#nextEpoch.get(sessionId) ?? 0) + 1;
 		this.#nextEpoch.set(sessionId, epoch);
 		const prior = this.#pending.get(sessionId);
+		let priorFrom: string | undefined;
 		if (prior && prior.state !== "Idle") {
+			priorFrom = prior.state;
 			prior.transitions.push({
 				invocationId: prior.invocationId,
 				timestamp: now,
@@ -258,8 +277,34 @@ export class PendingStore {
 			],
 			lastReason: "magic-words invoked",
 		};
-		invocation.transitions[0].invocationId = invocation.invocationId;
+		invocation.transitions[0]!.invocationId = invocation.invocationId;
 		this.#pending.set(sessionId, invocation);
+		if (prior && priorFrom !== undefined) {
+			this.#emit(
+				createObservabilityEvent({
+					type: "user_input.superseded",
+					invocationId: prior.invocationId,
+					epoch: prior.epoch,
+					sessionId,
+					from: priorFrom,
+					to: "Cancelled",
+					startedAt: prior.startedAt,
+					now,
+				}),
+			);
+		}
+		this.#emit(
+			createObservabilityEvent({
+				type: "ultrathink.invoked",
+				invocationId: invocation.invocationId,
+				epoch,
+				sessionId,
+				from: "Idle",
+				to: "Invoked",
+				startedAt: now,
+				now,
+			}),
+		);
 		return invocation;
 	}
 
@@ -285,6 +330,7 @@ export class PendingStore {
 		if (!canTransition(current.state, to)) {
 			throw new Error(`illegal pending transition ${current.state} -> ${to} for session ${sessionId}`);
 		}
+		const from = current.state;
 		current.transitions.push({
 			invocationId: current.invocationId,
 			timestamp: now,
@@ -295,6 +341,21 @@ export class PendingStore {
 		current.state = to;
 		current.lastReason = reason;
 		if (to === "Injected") current.injected = true;
+		const eventType = eventTypeForTransition(from, to);
+		if (eventType !== undefined) {
+			this.#emit(
+				createObservabilityEvent({
+					type: eventType,
+					invocationId: current.invocationId,
+					epoch: current.epoch,
+					sessionId,
+					from,
+					to,
+					startedAt: current.startedAt,
+					now,
+				}),
+			);
+		}
 		return current;
 	}
 
@@ -317,9 +378,21 @@ export class PendingStore {
 	}
 
 	/** Queue input that arrives while waiting: held until the pending resolves, never dispatched from raw input. */
-	queueInput(sessionId: string, identity: Identity, text: string): number {
+	queueInput(sessionId: string, identity: Identity, text: string, now: number = Date.now()): number {
 		const current = this.#assertCurrent(sessionId, identity);
 		current.queuedInputs.push(text);
+		this.#emit(
+			createObservabilityEvent({
+				type: "user_input.queued",
+				invocationId: current.invocationId,
+				epoch: current.epoch,
+				sessionId,
+				from: current.state,
+				to: current.state,
+				startedAt: current.startedAt,
+				now,
+			}),
+		);
 		return current.queuedInputs.length;
 	}
 
@@ -402,16 +475,28 @@ export class PendingStore {
 	}
 
 	/** Hard Swarm gate: `substantive` blocks in `Invoked`/`UpliftPending`/`SwarmGated`; `read-only` prep is always allowed. */
-	gateFor(sessionId: string, mode: "substantive" | "read-only"): { allowed: boolean; reason: string } {
+	gateFor(sessionId: string, mode: "substantive" | "read-only", now: number = Date.now()): { allowed: boolean; reason: string } {
 		if (mode === "read-only") return { allowed: true, reason: "" };
 		const current = this.#pending.get(sessionId);
 		if (!current || !isSubstantiveBlocked(current.state)) return { allowed: true, reason: "" };
+		this.#emit(
+			createObservabilityEvent({
+				type: "gate.blocked",
+				invocationId: current.invocationId,
+				epoch: current.epoch,
+				sessionId,
+				from: current.state,
+				to: current.state,
+				startedAt: current.startedAt,
+				now,
+			}),
+		);
 		return { allowed: false, reason: PENDING_GATE_HELD_REASON };
 	}
 
 	/** Substantive gate for the spawn entry: true when substantive work may proceed. */
-	gatePasses(sessionId: string): boolean {
-		return this.gateFor(sessionId, "substantive").allowed;
+	gatePasses(sessionId: string, now?: number): boolean {
+		return this.gateFor(sessionId, "substantive", now).allowed;
 	}
 }
 
@@ -432,7 +517,8 @@ export interface SyncValidatedInput {
 	identity: Identity;
 	todos: unknown;
 	stateDir: string;
-	now?: number;
+	/** Clock or fixed instant used for the transition timestamp; defaults to `Date.now`. */
+	now?: number | (() => number);
 	log?: (message: string) => void;
 	/** Test seam: replaces the locked session write. Defaults to `updateSession`. */
 	update?: typeof updateSession;
@@ -445,7 +531,8 @@ export interface SyncValidatedInput {
  * state untouched (no partial mutation). Never throws.
  */
 export function syncValidatedTodos(input: SyncValidatedInput): SyncValidatedResult {
-	const now = input.now ?? Date.now;
+	const nowValue = input.now ?? Date.now;
+	const now = typeof nowValue === "function" ? nowValue : () => nowValue;
 	const log = input.log ?? (() => undefined);
 	const validated = validateTodoSnapshot(input.todos);
 	if (!validated.ok || !validated.todos) return { ok: false, error: validated.error };
