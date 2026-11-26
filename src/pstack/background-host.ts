@@ -438,4 +438,3 @@ export class BackgroundHost {
 		return { status: run.status, handle };
 	}
 }
-

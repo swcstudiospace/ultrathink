@@ -32,12 +32,7 @@ import { isSyncTodosDone as isSyncTodosDoneGate } from "../track/sync-todos.ts";
 import type { SessionRecord } from "../claude/state.ts";
 
 /** Contract `DeliveryState`: the closed outcome set. `dropped-with-reason` always names its reason. */
-type DeliveryState =
-	| "injected"
-	| "retrying"
-	| "drained"
-	| "timed-out"
-	| "dropped-with-reason";
+type DeliveryState = "injected" | "retrying" | "drained" | "timed-out" | "dropped-with-reason";
 
 /** Contract `RecordType` (`SC-UpliftDeliveryRecord.recordType`). */
 type DeliveryRecordType = "force_inject" | "order_gate" | "drain";
@@ -594,7 +589,6 @@ export type InjectionStrategy = "deterministic-in-session" | "replace-via-out";
 
 /** Session operations the deterministic channel maps onto, plus the final-hop handoff. */
 export type SessionOperation = "create_chat_tab" | "steer" | "resume" | "injection_handoff";
-
 
 /** Host capabilities as exposed through the host LSP descriptor. */
 export interface HostLspCapabilities {

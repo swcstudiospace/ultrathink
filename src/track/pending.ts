@@ -559,8 +559,6 @@ export class PendingStore {
 /** Process-wide store for the host wiring (`gatePasses` at the spawn entry). Tests inject their own `PendingStore`. */
 export const defaultPendingStore = new PendingStore();
 
-
-
 export interface SyncValidatedInput {
 	store: PendingStore;
 	sessionId: string;
