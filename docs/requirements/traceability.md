@@ -108,3 +108,35 @@ NFR links, not acceptance ids:
 - NFR-25 -> A08.unit
 - NFR-26 -> A08.unit
 - NFR-27 -> A08.compliance
+
+# Tdfe6-req traceability (Swarm×Ultrathink Race)
+
+Correlation: `dfe6b075-b574-47af-9556-0c7845221d85`. Story -> criteria; NFR -> verifier.
+
+AC-60 story: US-031 Given uplift complete during orchestration When delivery runs Then 1 full prompt lands in session and TODO list shows 1 updated entry check: bun-test automated: true
+
+AC-61 story: US-031 Given the injection channel busy When the first delivery fails Then 1 retry occurs and 1 log line names the failure check: bun-test automated: true
+
+AC-62 story: US-032 Given a delivery attempt that fails When the retry budget ends Then 1 named dropped-with-reason state is recorded and 0 silent drops occur check: bun-test automated: true
+
+AC-63 story: US-033 Given orchestration running When a new prompt starts Then orchestration reports drained state within 30 seconds bound and 0 mid-write kills occur check: bun-test automated: true
+
+AC-64 story: US-033 Given drain exceeding the bound When the bound elapses Then 1 timed-out state is recorded and 1 new turn proceeds check: bun-test automated: true
+
+AC-65 story: US-034 Given injection not yet confirmed When dispatch is attempted Then 0 subagents start and 1 held reason is recorded check: bun-test automated: true
+
+AC-66 story: US-034 Given injection confirmed When dispatch opens Then 1 or more lanes start only after the confirmation timestamp appears in log check: bun-test automated: true
+
+AC-67 story: US-035 Given the mid-flight completion scenario When the race check runs Then 1 injected prompt and 0 lost plans are asserted check: bun-test automated: true
+
+AC-68 story: US-035 Given the new-prompt-during-uplift scenario When the race check runs Then 1 drained orchestration and 1 landed prompt are asserted with 0 drops check: bun-test automated: true
+
+AC-69 story: US-036 Given any delivery outcome When the status query runs Then 1 named state from the closed set of 5 is returned check: bun-test automated: true
+
+NFR links, not acceptance ids:
+
+- NFR-28 -> A08.load
+- NFR-29 -> A08.security
+- NFR-30 -> A08.unit
+- NFR-31 -> A08.unit
+- NFR-32 -> A08.compliance

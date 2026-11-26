@@ -76,3 +76,23 @@ Kind: i18n. Target: User-facing strings use en-US text with 0 locale-dependent f
 ## NFR-27 — Compliance (Tdde6-req)
 
 Kind: compliance. Target: Change adds 0 new first-party dependencies and keeps AGPL license for 100% of changed files. Verified by: A08.compliance.
+
+## NFR-28 — Perf (Tdfe6-req)
+
+Kind: perf. Target: The forced injection completes in 5000 ms or less after uplift completion at 1 concurrent session with 0 dropped prompts. Verified by: A08.load.
+
+## NFR-29 — Security (Tdfe6-req)
+
+Kind: security. Target: Injection and drain messages send 0 secrets and redact 100% of matched secret patterns, verified by secret scan with 0 findings. Verified by: A08.security.
+
+## NFR-30 — A11y (Tdfe6-req)
+
+Kind: a11y. Target: Injection and drain notices use plain text with 0 color-only meanings and 100% readable without a dialog. Verified by: A08.unit.
+
+## NFR-31 — I18n (Tdfe6-req)
+
+Kind: i18n. Target: User-facing strings use en-US text with 0 locale-dependent formats across 100% of shipped strings. Verified by: A08.unit.
+
+## NFR-32 — Compliance (Tdfe6-req)
+
+Kind: compliance. Target: Change adds 0 new first-party dependencies and keeps AGPL license for 100% of changed files. Verified by: A08.compliance.
