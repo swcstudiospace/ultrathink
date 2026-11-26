@@ -227,3 +227,61 @@ As a program owner, I want tracker rows closed through the gateway with evidence
 - Dependencies: none.
 - Priority class: Must.
 - Source: Tdde6-req. Scope: FR-7 gateway closure, bun run check/test/lint/knip, PR to main, CI green before merge.
+
+# User Stories: Swarm×Ultrathink Race (Tdfe6-req)
+
+Correlation: `dfe6b075-b574-47af-9556-0c7845221d85`. Source: `docs/requirements/spec-Tdfe6-req.md`. Each story states what and how well, never how. All 6 scored INVEST 6/6 with req_invest_score; 0 duplicate pairs with req_story_duplicates.
+
+## US-031 — Force-injection regardless of orchestration
+
+As a session owner, I want the completed uplifted plan to reach my chat even when orchestration is in flight, so that I see the full plan and my TODO list reflects it.
+
+- Estimate: 5 points.
+- Dependencies: none.
+- Priority class: Must.
+- Source: Tdfe6-req. Scope: FR-1 force-injection; proven loss point is the deferred single aside cancelled on supersede in src/host/omp.ts.
+
+## US-032 — No silent loss, logged with retry
+
+As a maintainer, I want every failed delivery attempt logged with a named reason and retried, so that a plan never disappears without a trace.
+
+- Estimate: 3 points.
+- Dependencies: none.
+- Priority class: Must.
+- Source: Tdfe6-req. Scope: FR-2; replaces today's silent skips in the auto-run path.
+
+## US-033 — Force-stop with bounded drain
+
+As a session owner, I want a new prompt to stop or cleanly finish running orchestration within a bounded drain window, so that the new request starts without starved resources and without a cut-off write.
+
+- Estimate: 5 points.
+- Dependencies: none.
+- Priority class: Must.
+- Source: Tdfe6-req. Scope: FR-3; drain bound 30 seconds, 0 mid-write kills.
+
+## US-034 — Order gate: prompt lands first
+
+As a session owner, I want subagent dispatch held until the uplifted prompt has landed, so that execution always starts from the complete plan.
+
+- Estimate: 3 points.
+- Dependencies: none.
+- Priority class: Must.
+- Source: Tdfe6-req. Scope: FR-4 hard rule; dispatch stays at 0 before injection confirmation.
+
+## US-035 — Race pinned by automated checks
+
+As a maintainer, I want the lost-plan race reproduced and pinned by automated checks covering the mid-flight completion and new-prompt cases, so that the fix stays fixed.
+
+- Estimate: 5 points.
+- Dependencies: none.
+- Priority class: Must.
+- Source: Tdfe6-req. Scope: FR-5; 2 scenarios, 0 lost plans asserted.
+
+## US-036 — Explicit failure states
+
+As an operator, I want each injection and drain outcome reported as a named state, so that I can diagnose a stuck session from its log within 60 seconds.
+
+- Estimate: 2 points.
+- Dependencies: none.
+- Priority class: Should.
+- Source: Tdfe6-req. Scope: FR-2 closed state set {injected, retrying, drained, timed-out, dropped-with-reason}.

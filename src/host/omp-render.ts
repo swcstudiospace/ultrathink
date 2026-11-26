@@ -1360,7 +1360,7 @@ const RACE_ORDER_LINES = [
  * `fullPromptSectionRows` in the same card; here the char count, the one TODO update and one log line per failed
  * delivery attempt (0 silent drops). Absent when the view carries no injection evidence.
  */
-function forceInjectedPromptRows(view: PlanView, p: Paint): string[] {
+export function forceInjectedPromptRows(view: PlanView, p: Paint): string[] {
 	const evidence = view.forceInjected;
 	if (!evidence) return [];
 	const rows = [
@@ -1376,7 +1376,7 @@ function forceInjectedPromptRows(view: PlanView, p: Paint): string[] {
  * Delivery outcome rows (SCR-DeliveryOutcome, AC-62/69): exactly 1 named state of the closed set
  * {injected, retrying, drained, timed-out, dropped-with-reason}; the reason is named in words when the outcome carries one.
  */
-function deliveryOutcomeRows(view: PlanView, p: Paint): string[] {
+export function deliveryOutcomeRows(view: PlanView, p: Paint): string[] {
 	const outcome = view.deliveryOutcome;
 	if (!outcome) return [];
 	const stateColor: Record<DeliveryState, string> = {
@@ -1396,7 +1396,7 @@ function deliveryOutcomeRows(view: PlanView, p: Paint): string[] {
  * Force-stop drain rows (SCR-ForceStopDrain, AC-63/64): `[drained]` within the 30s bound or `[timed-out]` when the
  * bound elapsed, with elapsed seconds in words; `[manual-override]` only ever renders with its one logged reason.
  */
-function forceStopDrainRows(view: PlanView, p: Paint): string[] {
+export function forceStopDrainRows(view: PlanView, p: Paint): string[] {
 	const drain = view.forceStop;
 	if (!drain) return [];
 	const color = drain.state === "drained" ? "success" : "warning";
@@ -1411,7 +1411,7 @@ function forceStopDrainRows(view: PlanView, p: Paint): string[] {
  * Order-gate rows (SCR-OrderGate, AC-65/66): the race order banner, 1 held reason per refused attempt, and the
  * confirmation timestamp at or before lane start.
  */
-function orderGateRows(view: PlanView, p: Paint): string[] {
+export function orderGateRows(view: PlanView, p: Paint): string[] {
 	const gate = view.orderGate;
 	if (!gate) return [];
 	const rows: string[] = RACE_ORDER_LINES.map(
@@ -1433,7 +1433,7 @@ function orderGateRows(view: PlanView, p: Paint): string[] {
  * Race-check rows (SCR-RaceChecks, AC-67/68): mid-flight completion — 1 injected prompt, 0 lost plans; new prompt
  * during uplift — 1 drained orchestration, 1 landed prompt, 0 drops. Both scenario lines render as words.
  */
-function raceCheckRows(view: PlanView, p: Paint): string[] {
+export function raceCheckRows(view: PlanView, p: Paint): string[] {
 	const checks = view.raceChecks;
 	if (!checks) return [];
 	return [
