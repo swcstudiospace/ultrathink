@@ -32,7 +32,7 @@ import { isSyncTodosDone as isSyncTodosDoneGate } from "../track/sync-todos.ts";
 import type { SessionRecord } from "../claude/state.ts";
 
 /** Contract `DeliveryState`: the closed outcome set. `dropped-with-reason` always names its reason. */
-export type DeliveryState =
+type DeliveryState =
 	| "injected"
 	| "retrying"
 	| "drained"
@@ -40,7 +40,7 @@ export type DeliveryState =
 	| "dropped-with-reason";
 
 /** Contract `RecordType` (`SC-UpliftDeliveryRecord.recordType`). */
-export type DeliveryRecordType = "force_inject" | "order_gate" | "drain";
+type DeliveryRecordType = "force_inject" | "order_gate" | "drain";
 
 /**
  * Runtime projection of one `UpliftDeliveryRecord` row
@@ -108,11 +108,11 @@ export interface DeliveryStatusResult {
 }
 
 /** NFR-28: injection latency budget, ms from uplift completion to session delivery. */
-export const INJECTION_LATENCY_BUDGET_MS = 5000;
+const INJECTION_LATENCY_BUDGET_MS = 5000;
 /** FR-3: bounded graceful drain, seconds. A2 may tighten, never remove. */
 export const DRAIN_BOUND_S = 30;
 /** FR-1: finite retry budget (migration default). */
-export const FORCE_INJECT_RETRY_BUDGET = 3;
+const FORCE_INJECT_RETRY_BUDGET = 3;
 /** FR-4: the one held reason carried by a refused dispatch attempt. */
 export const ORDER_GATE_HELD_REASON =
 	"Waiting for the uplift prompt injection confirmation before starting subagents.";
@@ -595,14 +595,6 @@ export type InjectionStrategy = "deterministic-in-session" | "replace-via-out";
 /** Session operations the deterministic channel maps onto, plus the final-hop handoff. */
 export type SessionOperation = "create_chat_tab" | "steer" | "resume" | "injection_handoff";
 
-/** Banned as a primary chat channel: never preselected, never fired. */
-export const BANNED_INJECTION_STRATEGIES = [
-	"native-dialog",
-	"popup",
-	"focus",
-	"speech",
-	"echo",
-] as const;
 
 /** Host capabilities as exposed through the host LSP descriptor. */
 export interface HostLspCapabilities {
@@ -742,7 +734,7 @@ export function parseReplaceViaOutUrl(url: string): {
 }
 
 /** Input to the deterministic in-session channel (attempted first). */
-export interface DeterministicChannelInput {
+interface DeterministicChannelInput {
 	sessionId: string;
 	promptText: string;
 	sessionKind: InjectionSessionKind;
@@ -771,7 +763,7 @@ export interface GatedInjectionInput {
 }
 
 /** Closed outcome set for the gated final hop. `queued` is the pre-gate no-op. */
-export type GatedInjectionState = "queued" | "injected" | "dropped-with-reason";
+type GatedInjectionState = "queued" | "injected" | "dropped-with-reason";
 
 /** Result of `GatedFinalHopInjector.inject`. */
 export interface GatedInjectionResult {

@@ -376,7 +376,7 @@ export function buildPlanView(record: SessionRecord, elapsedMs: number): PlanVie
  * through a NativeDialog select — a native select forces the selected text to echo as speech into chat.
  * Every row carries both the `wave_id` and the `node_id` the cancel path hands off.
  */
-export interface ChatSyncRow {
+interface ChatSyncRow {
 	wave_id: string;
 	node_id: string;
 	title?: string;

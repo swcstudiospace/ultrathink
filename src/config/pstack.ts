@@ -56,7 +56,7 @@ export function mergePstack(
 }
 
 /** One config value the strict parse rejected: what was expected, what arrived, and which default stayed. */
-export interface PstackConfigIssue {
+interface PstackConfigIssue {
 	field: string;
 	expected: string;
 	received: string;

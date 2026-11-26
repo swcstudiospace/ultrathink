@@ -316,7 +316,7 @@ export interface PromptSubmitResult {
  * Pending-invocation identity: the one pending this flight armed, in invocationId+epoch form. Every write is
  * stamped with it, so a superseded flight's late write is rejected as stale instead of landing.
  */
-export interface PendingCompositionContext {
+interface PendingCompositionContext {
 	store: PendingStore;
 	sessionId: string;
 	identity: { invocationId: string; epoch: number };
@@ -336,7 +336,7 @@ export interface PendingCompositionOutcome {
  * from raw input can start while the uplift is still in flight. One `PendingInvocation` per session; a second
  * invocation supersedes (`epoch++`, the old one `Cancelled`) and any write stamped with the old identity is stale.
  */
-export function armPending(
+function armPending(
 	store: PendingStore,
 	sessionId: string,
 	rawInput: string,

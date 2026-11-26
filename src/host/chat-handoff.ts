@@ -72,7 +72,7 @@ export function consumeChatSyncNoDrop(handoffPath: string): ChatCancelEntry[] | 
 }
 
 /** Parses handoff lines defensively: blank and malformed lines are skipped, never fatal. */
-export function parseChatHandoff(text: string): ChatCancelEntry[] {
+function parseChatHandoff(text: string): ChatCancelEntry[] {
 	const entries: ChatCancelEntry[] = [];
 	for (const line of text.split("\n")) {
 		const trimmed = line.trim();

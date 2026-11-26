@@ -49,7 +49,6 @@ export const ACTIVITY_DELIVERY = { deliverAs: "nextTurn", triggerTurn: false } a
  * turn — never through a NativeDialog select, which forces the selected text to echo as speech into chat.
  * NativeDialog remains an engineered fallback only (`chatSyncFallbackLine`), for hosts without card renderers.
  */
-export const CHAT_SYNC_DELIVERY = { deliverAs: "nextTurn", triggerTurn: false } as const;
 
 /** Graph rows in the collapsed card; the graph degrades its layout to fit. */
 const COLLAPSED_GRAPH_ROWS = 18;
@@ -1351,7 +1350,7 @@ export function dispatchGateRows(view: PlanView, p: Paint): string[] {
 }
 
 /** Race order banner (SCR-OrderGate, AC-65/66): uplift → injection confirmed → dispatch. Supersedes the SCR-DispatchGate banner on the race path; plain words, never colour alone. */
-export const RACE_ORDER_LINES = [
+const RACE_ORDER_LINES = [
 	"Order: uplift → injection confirmed → dispatch",
 	"0 dispatch before injection confirmed",
 ] as const;

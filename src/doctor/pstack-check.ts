@@ -162,12 +162,12 @@ function hookState(cursorDir: string): { installed: boolean; detail: string } {
  *    User `pstack.enabled` governs the hook roster path (`pstackRosterFor`) and `checkPstack` warn/info levels
  *    only; it does not gate §4a. Reporting `ok` enables nothing — doctor stays read-only.
  */
-export type PstackAvailability =
+type PstackAvailability =
 	| { status: "ok"; root: string; version: string; resolvedSkills: number }
 	| { status: "unavailable"; reason: string }
 	| { status: "bypassed"; reason: string };
 
-export function validatePstackAvailability(deps: DoctorDeps): PstackAvailability {
+function validatePstackAvailability(deps: DoctorDeps): PstackAvailability {
 	try {
 		const decision = readDecision(deps.env);
 		if (decision.forcedOff)

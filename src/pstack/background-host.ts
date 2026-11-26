@@ -53,7 +53,7 @@ export const STOP_TIMEOUT_MS = 5_000;
  * 2 attempts total per run id. After the bound: degraded, never infinite.
  */
 export const MAX_START_ATTEMPTS = 2;
-export const MAX_RESTARTS = 1;
+const MAX_RESTARTS = 1;
 
 export type HostStatus =
 	| "running"
@@ -439,6 +439,3 @@ export class BackgroundHost {
 	}
 }
 
-export function createBackgroundHost(deps: HostDeps = {}): BackgroundHost {
-	return new BackgroundHost(deps);
-}

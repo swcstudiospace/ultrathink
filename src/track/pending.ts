@@ -50,7 +50,7 @@ export type PendingState =
 	| "Cancelled";
 
 /** One logged transition: every `transition()` appends exactly one entry. */
-export interface PendingTransition {
+interface PendingTransition {
 	invocationId: string;
 	timestamp: number;
 	reason: string;
@@ -81,11 +81,11 @@ export interface PendingInvocation {
 /** Uplift deadline (contract default). Configurable per caller via `checkTimeout`/`applyTimeout` timeoutMs. */
 export const UPLIFT_TIMEOUT_MS = 120_000;
 /** Uplift retry budget (contract default): one retry after `Failed`/`TimedOut`. */
-export const UPLIFT_RETRY_BUDGET = 1;
+const UPLIFT_RETRY_BUDGET = 1;
 /** Injection retry budget (contract default): 3 attempts with exponential backoff. */
 export const INJECTION_RETRY_BUDGET = 3;
 /** Base delay for injection exponential backoff: `base * 2^(attempt-1)`. */
-export const INJECTION_RETRY_BASE_MS = 500;
+const INJECTION_RETRY_BASE_MS = 500;
 /** aria-live mode for the visible pending entry: announced politely, focus never moves. */
 export const PENDING_ARIA_LIVE = "polite" as const;
 /** The one held reason a blocked substantive gate reports. */
@@ -115,12 +115,12 @@ const ALLOWED_TRANSITIONS: Record<PendingState, readonly PendingState[]> = {
 };
 
 /** `state` may move to `to` (forward progress, cancel, and dismiss/retry only; nothing else). */
-export function canTransition(from: PendingState, to: PendingState): boolean {
+function canTransition(from: PendingState, to: PendingState): boolean {
 	return ALLOWED_TRANSITIONS[from].includes(to);
 }
 
 /** True while substantive raw-input work must stay gated. */
-export function isSubstantiveBlocked(state: PendingState): boolean {
+function isSubstantiveBlocked(state: PendingState): boolean {
 	return BLOCKING_STATES.includes(state);
 }
 
@@ -559,17 +559,7 @@ export class PendingStore {
 /** Process-wide store for the host wiring (`gatePasses` at the spawn entry). Tests inject their own `PendingStore`. */
 export const defaultPendingStore = new PendingStore();
 
-export function createPending(
-	sessionId: string,
-	rawInput: string,
-	now: number = Date.now(),
-): PendingInvocation {
-	return defaultPendingStore.create(sessionId, rawInput, now);
-}
 
-export function gatePasses(sessionId: string): boolean {
-	return defaultPendingStore.gatePasses(sessionId);
-}
 
 export interface SyncValidatedInput {
 	store: PendingStore;
