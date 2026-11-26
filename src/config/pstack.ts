@@ -56,7 +56,7 @@ export function mergePstack(
 }
 
 /** One config value the strict parse rejected: what was expected, what arrived, and which default stayed. */
-export interface PstackConfigIssue {
+interface PstackConfigIssue {
 	field: string;
 	expected: string;
 	received: string;
@@ -70,7 +70,13 @@ export interface PstackConfigValidation {
 	defaults: PstackConfig;
 }
 
-const PSTACK_KEYS: readonly string[] = ["enabled", "cursorDir", "mapping", "contextCapChars", "strict"];
+const PSTACK_KEYS: readonly string[] = [
+	"enabled",
+	"cursorDir",
+	"mapping",
+	"contextCapChars",
+	"strict",
+];
 
 function kindOf(value: unknown): string {
 	if (Array.isArray(value)) return "array";

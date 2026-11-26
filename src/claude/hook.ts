@@ -50,6 +50,20 @@ import { buildTrackPlan } from "../track/plan.ts";
 import type { CloseSubIssueInput, SubIssueCloseoutOutcome, Tracker } from "../track/gateway.ts";
 import { stepKey } from "../track/create.ts";
 import { injectTrackingXml } from "../track/render.ts";
+import { syncTodos } from "../track/sync-todos.ts";
+import {
+	defaultPendingStore,
+	forceStopFinishOff,
+	syncValidatedTodos,
+	type ForceStopSeam,
+	type PendingStore,
+} from "../track/pending.ts";
+import type {
+	GatedFinalHopInjector,
+	GatedInjectionResult,
+	InjectionGateRecord,
+	InjectionSessionKind,
+} from "../host/uplift-delivery.ts";
 import type { TrackingRefs, TrackPlan } from "../track/types.ts";
 import type { ModelResolution } from "../host/engine.ts";
 import { type ActivityNotice, toActivityNotice } from "../host/activity-notice.ts";
@@ -260,6 +274,28 @@ export interface HookDeps {
 	 * (only when `teach.enabled` is on). Each lookup is bounded by `recall.timeoutMs`.
 	 */
 	recallSeams?: RecallSeams;
+	/**
+	 * Pending-invocation store (SPE-38126, n5). Absent: `defaultPendingStore` — on an uplift invocation the schedule
+	 * is armed there before `runUplift`, so the Omp spawn entry's `gateFor(sessionId, "substantive")` holds until the
+	 * composition hands off. Non-uplift/skipped flows never arm a pending, so with no pending for the session every
+	 * step is a pass-through and behavior is bit-identical to before.
+	 */
+	pendingStore?: PendingStore;
+	/**
+	 * Gated final-hop injector for the uplifted prompt. Absent, the inject stage fails stage-specifically (the
+	 * pending goes `Failed`, non-blocking, and the prompt still goes through — never an un-uplifted fallback).
+	 */
+	pendingInjector?: GatedFinalHopInjector;
+	/**
+	 * Force-stop/finish-off seam, required for the final `HandedOff`. No Swarm cancel primitive exists in this repo
+	 * (`src/swarm/lane.ts` only exposes a stop hint), so the host must provide it; a seam implementation drains to
+	 * the boundary (per user decision q2: cancel only where the drain itself proves safe), never cancels immediately.
+	 * Absent, `forceStopFinishOff` keeps its fail-closed `missingPrimitive` path and the pending holds at
+	 * `TODOsSynced` — past the gate, so spawn is not held.
+	 */
+	pendingForceStopSeam?: ForceStopSeam;
+	/** Session kind the injection channel targets. Defaults to `"managed"`. */
+	pendingSessionKind?: InjectionSessionKind;
 }
 
 export interface PromptSubmitResult {
@@ -274,6 +310,230 @@ export interface PromptSubmitResult {
 	decisions?: DecisionRecord[];
 	/** The information panels of this prompt's plan; absent unless `panels.informationPanels` is on and a source was looked up. */
 	panels?: TurnPanels;
+}
+
+/**
+ * Pending-invocation identity: the one pending this flight armed, in invocationId+epoch form. Every write is
+ * stamped with it, so a superseded flight's late write is rejected as stale instead of landing.
+ */
+interface PendingCompositionContext {
+	store: PendingStore;
+	sessionId: string;
+	identity: { invocationId: string; epoch: number };
+}
+
+/** Outcome of `completePendingComposition`: `ok` means the pending reached `HandedOff` (or held at `TODOsSynced` on the fail-closed force-stop path). */
+export interface PendingCompositionOutcome {
+	ok: boolean;
+	stage: "validate" | "inject" | "todo-sync" | "force-stop" | "pass-through";
+	error?: string;
+	missingPrimitive?: string;
+}
+
+/**
+ * Arm the pending for a magic-word/uplift invocation: `createPending` plus the walk to `SwarmGated`, the state the
+ * host spawn entry gates on. This is the gate-arming point — it runs before `runUplift`, so no substantive spawn
+ * from raw input can start while the uplift is still in flight. One `PendingInvocation` per session; a second
+ * invocation supersedes (`epoch++`, the old one `Cancelled`) and any write stamped with the old identity is stale.
+ */
+function armPending(
+	store: PendingStore,
+	sessionId: string,
+	rawInput: string,
+	now: number = Date.now(),
+): PendingCompositionContext {
+	const invocation = store.create(sessionId, rawInput, now);
+	const identity = { invocationId: invocation.invocationId, epoch: invocation.epoch };
+	store.transition(sessionId, "UpliftPending", "uplift started", identity, now);
+	store.transition(
+		sessionId,
+		"SwarmGated",
+		"swarm gated until the uplifted prompt lands",
+		identity,
+		now,
+	);
+	return { store, sessionId, identity };
+}
+
+/** Queue input that arrives while a pending is in flight: held, never dispatched from raw input. No pending: pass-through (`undefined`). */
+export function queuePendingInput(
+	store: PendingStore,
+	sessionId: string,
+	text: string,
+): number | undefined {
+	const pending = store.get(sessionId);
+	if (!pending) return undefined;
+	return store.queueInput(
+		sessionId,
+		{ invocationId: pending.invocationId, epoch: pending.epoch },
+		text,
+	);
+}
+
+/** Cancel the session's pending and clear its queued input (the queued injection is dropped, never delivered). No pending: pass-through. */
+export function cancelPending(store: PendingStore, sessionId: string, reason: string): void {
+	const pending = store.get(sessionId);
+	if (!pending) return;
+	pending.queuedInputs = [];
+	try {
+		store.transition(sessionId, "Cancelled", reason, {
+			invocationId: pending.invocationId,
+			epoch: pending.epoch,
+		});
+	} catch {
+		// reason: already past the gate, where cancellation is not a legal transition; nothing to clear but the queue
+	}
+}
+
+/** Mark the armed pending `Failed` for one stage, surfacing the stage-specific cause while the prompt is retained. Best effort: an illegal transition (already resolved) is ignored. */
+function failPending(
+	ctx: PendingCompositionContext,
+	stage: string,
+	error: string,
+	log: (message: string) => void,
+): void {
+	try {
+		ctx.store.transition(ctx.sessionId, "Failed", `${stage} failed: ${error}`, ctx.identity);
+	} catch {
+		// reason: the pending already resolved or moved past the gate; the failure just does not get a state line
+	}
+	log(`pending ${stage} failed: ${error}`);
+}
+
+/**
+ * The post-uplift composition (SPE-38126, n5), in strict order: bind the uplifted prompt and the validated TODOs to
+ * the invocation and check completion (non-empty prompt plus schema-validated TODOs bound to the same
+ * invocationId) -> `PlanReady`; inject through the gated final hop (its own `isSyncTodosDone(record, graphId)` gate
+ * refuses a partial plan) -> only on `Injected`, `syncValidatedTodos` (single atomic write, no partial TODOs) ->
+ * only on `TODOsSynced`, `forceStopFinishOff` (drain-to-boundary per q2; with no seam it keeps the fail-closed
+ * `missingPrimitive` path and the state holds at `TODOsSynced`, which is not a blocking state) -> `HandedOff`, which
+ * releases the Swarm gate for the uplifted context.
+ *
+ * Every failure is stage-specific, logged, and leaves the pending in `Failed` (non-blocking) with the uplifted
+ * prompt retained — the hook's fail-open rule means the prompt still goes through; there is never an un-uplifted
+ * fallback. With no pending for the session (or a superseded identity) this is a pass-through that touches nothing.
+ * Never throws.
+ */
+export async function completePendingComposition(input: {
+	store: PendingStore;
+	sessionId: string;
+	identity: { invocationId: string; epoch: number };
+	promptText: string;
+	todos: unknown;
+	graphId: string;
+	stateDir: string;
+	injector?: GatedFinalHopInjector;
+	forceStopSeam?: ForceStopSeam;
+	sessionKind?: InjectionSessionKind;
+	now?: number;
+	log?: (message: string) => void;
+	/** Master-switch gate forwarded to `syncValidatedTodos` (default true). */
+	recallOn?: boolean;
+	readRecord?: (stateDir: string, sessionId: string) => InjectionGateRecord;
+}): Promise<PendingCompositionOutcome> {
+	const log = input.log ?? (() => undefined);
+	const now = input.now ?? Date.now();
+	const { store, sessionId, identity } = input;
+	const current = store.get(sessionId);
+	if (
+		!current ||
+		current.invocationId !== identity.invocationId ||
+		current.epoch !== identity.epoch
+	) {
+		return { ok: false, stage: "pass-through", error: "no pending for this invocation" };
+	}
+	const fail = (
+		stage: PendingCompositionOutcome["stage"],
+		error: string,
+	): PendingCompositionOutcome => {
+		try {
+			store.transition(sessionId, "Failed", `${stage} failed: ${error}`, identity, now);
+		} catch {
+			// reason: already resolved; the failure is reported without a state line
+		}
+		log(`pending ${stage} failed: ${error}`);
+		return { ok: false, stage, error };
+	};
+	try {
+		store.setUpliftedPrompt(sessionId, identity, input.promptText);
+		store.setValidatedTodos(sessionId, identity, input.todos);
+	} catch (error) {
+		return fail("validate", causeText(error));
+	}
+	const completion = store.checkCompletion(store.get(sessionId)!);
+	if (!completion.complete)
+		return fail("validate", completion.reasons.join("; ") || "pending incomplete");
+	try {
+		store.transition(sessionId, "PlanReady", "validated prompt and todos bound", identity, now);
+	} catch (error) {
+		return fail("validate", causeText(error));
+	}
+	if (!input.injector) return fail("inject", "gated final-hop injector not wired for this host");
+	try {
+		store.recordInjectionAttempt(sessionId, identity);
+		store.transition(sessionId, "Injecting", "injection started", identity, now);
+	} catch (error) {
+		return fail("inject", causeText(error));
+	}
+	const readRecord = input.readRecord ?? ((dir: string, sid: string) => readSession(dir, sid));
+	let injected: GatedInjectionResult;
+	try {
+		injected = await input.injector.inject({
+			record: readRecord(input.stateDir, sessionId),
+			graphId: input.graphId,
+			sessionId,
+			promptText: input.promptText,
+			replaceKey: identity.invocationId,
+			sessionKind: input.sessionKind ?? "managed",
+		});
+	} catch (error) {
+		return fail("inject", causeText(error));
+	}
+	if (injected.state !== "injected") {
+		return fail("inject", injected.reason ?? `injector ${injected.state}`);
+	}
+	try {
+		store.transition(sessionId, "Injected", "uplifted prompt injected", identity, now);
+	} catch (error) {
+		return fail("inject", causeText(error));
+	}
+	const synced = syncValidatedTodos({
+		store,
+		sessionId,
+		identity,
+		todos: input.todos,
+		stateDir: input.stateDir,
+		now,
+		log,
+		recallOn: input.recallOn,
+	});
+	if (!synced.ok) return fail("todo-sync", synced.error ?? "unknown");
+	const stopped = await forceStopFinishOff(store, sessionId, identity, input.forceStopSeam, now);
+	if (!stopped.ok) {
+		log(
+			stopped.missingPrimitive
+				? `pending force-stop missing primitive: ${stopped.missingPrimitive}; state holds at TODOsSynced`
+				: `pending force-stop failed: ${stopped.error ?? "unknown"}; state holds at TODOsSynced`,
+		);
+		return {
+			ok: false,
+			stage: "force-stop",
+			error: stopped.error,
+			missingPrimitive: stopped.missingPrimitive,
+		};
+	}
+	try {
+		store.transition(
+			sessionId,
+			"HandedOff",
+			"handoff complete; swarm gate released for uplifted context",
+			identity,
+			now,
+		);
+	} catch (error) {
+		return fail("force-stop", causeText(error));
+	}
+	return { ok: true, stage: "force-stop" };
 }
 
 function specFile(stateDir: string, sessionId: string): string {
@@ -1173,6 +1433,18 @@ export async function runPromptSubmit(
 		deps.config.claude.budgetMs > 0
 			? timers.setTimeout(() => budgetController.abort(), deps.config.claude.budgetMs)
 			: undefined;
+	// The gate-arming point (SPE-38126, n5): the pending is armed here, before `runUplift`, so the host spawn entry
+	// gates substantive work from raw input until the composition hands off. Turn sessions hold no pending (they
+	// hold no `syncTodos` marker either). A failure to arm is fail-open: the prompt goes through ungated, as before.
+	let pendingCtx: PendingCompositionContext | undefined;
+	try {
+		pendingCtx = isTurnSessionId(sessionId)
+			? undefined
+			: armPending(deps.pendingStore ?? defaultPendingStore, sessionId, input.prompt ?? "", now());
+	} catch (error) {
+		log(`pending arm failed: ${error instanceof Error ? error.message : String(error)}`);
+		pendingCtx = undefined;
+	}
 	try {
 		const original = decision.text;
 		const skillLine = skill
@@ -1340,6 +1612,7 @@ export async function runPromptSubmit(
 			stage("uplift", "end", false);
 			outcome = "skipped";
 			outcomeDetail = "uplift-failed";
+			if (pendingCtx) failPending(pendingCtx, "uplift", causeText(error), log);
 			return { skipped: "uplift-failed", ...(records.length ? { decisions: records } : {}) };
 		}
 		// A completer that ignored its signal and answered anyway still ends a cancelled flight here.
@@ -2066,6 +2339,43 @@ export async function runPromptSubmit(
 			markStateFailed(cause);
 			stage("state", "end", false, cause);
 		}
+		// Producer-side success root for injection (SPE-37792): the uplifted prompt's wave todos are
+		// issued here, once the record the command emits is on disk. `syncTodos` retries once and only
+		// reports done after the marker lands in the session state file; a failure is a logged line,
+		// never a throw — the prompt already went through.
+		if (plan && statePath && !isTurnSessionId(sessionId)) {
+			const synced = syncTodos(plan, { stateDir: deps.stateDir, sessionId, log, recallOn });
+			if (!synced.ok) log(`syncTodos failed: ${synced.error ?? "unknown"}`);
+			else if (pendingCtx) {
+				await completePendingComposition({
+					store: pendingCtx.store,
+					sessionId,
+					identity: pendingCtx.identity,
+					promptText: result.xml,
+					todos: synced.todos,
+					graphId: plan.graphId,
+					stateDir: deps.stateDir,
+					injector: deps.pendingInjector,
+					forceStopSeam: deps.pendingForceStopSeam,
+					sessionKind: deps.pendingSessionKind,
+					now: now(),
+					log,
+					recallOn,
+				});
+			}
+		}
+		// Anything that left the pending still gated (no plan, a failed producer sync, no state file) fails it
+		// stage-specifically: the prompt still went through, and the gate is never left holding the session.
+		if (pendingCtx) {
+			const current = pendingCtx.store.get(sessionId);
+			if (
+				current &&
+				current.invocationId === pendingCtx.identity.invocationId &&
+				current.state === "SwarmGated"
+			) {
+				failPending(pendingCtx, "sync", "no synced plan for this invocation", log);
+			}
+		}
 		// Opt-in retention (state.retentionDays above 0): at most one bounded sweep a day. It never throws and never waits.
 		pruneSessionsBestEffort({
 			stateDir: deps.stateDir,
@@ -2196,6 +2506,9 @@ export async function runPromptSubmit(
 		if (cancellation.aborted) {
 			outcome = "skipped";
 			outcomeDetail = "aborted";
+			// Cancellation clears the pending (`Cancelled`) and its queued input: the queued injection is dropped,
+			// never delivered after the caller went away.
+			if (pendingCtx) cancelPending(pendingCtx.store, sessionId, "flight cancelled");
 		} else outcomeDetail = error instanceof Error ? error.name : "error";
 		throw error;
 	} finally {

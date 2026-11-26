@@ -126,6 +126,7 @@ import {
 } from "./omp-lanes.ts";
 import { extractPrFromOutput, isPrCreationTool } from "../track/pr-detect.ts";
 import { resolveRepoSlug } from "../track/git.ts";
+import { defaultPendingStore } from "../track/pending.ts";
 import { runControl, type UltrathinkVerb } from "../uplift/commands.ts";
 import {
 	type ModelResolution,
@@ -3177,6 +3178,10 @@ export function createOmpExtension(
 							const preflight = await filterSpawnable(planned, classifierFor(root.root));
 							// Check, spawn and lane.json write are one locked step (spawnGuarded); the classifier await above
 							// stays outside the lock.
+							// Pending gate (SPE-38126, n5): substantive spawn from raw input is refused while a magic-word
+							// pending for this session is armed; read-only prep above (classifier, cap check) stays untouched.
+							const gateCheck = defaultPendingStore.gateFor(sessionId, "substantive");
+							if (!gateCheck.allowed) return sendSessionText(sessionId, ctx, gateCheck.reason);
 							const guarded = spawnGuarded(preflight.spawn, {
 								stateDir: dir,
 								cwd,
@@ -3763,6 +3768,13 @@ export function createOmpExtension(
 				const preflight = await filterSpawnable(planned, classifierFor(swarmRoot));
 				// The classifier ran across an await: a shut-down extension or a switched session spawns nothing.
 				if (shutDown || (ctx?.sessionManager?.getSessionId?.() ?? "") !== sessionId) return false;
+				// Pending gate (SPE-38126, n5): zero substantive work from raw input while a magic-word pending gates
+				// this session; the refusal carries the gate reason, then the turn proceeds to the planner.
+				const gateCheck = defaultPendingStore.gateFor(sessionId, "substantive");
+				if (!gateCheck.allowed) {
+					sendSessionText(sessionId, ctx, gateCheck.reason);
+					return false;
+				}
 				// Check, spawn and lane.json write are one locked step (spawnGuarded); the classifier await stays outside.
 				const { spawn: plan, handles } = spawnGuarded(preflight.spawn, {
 					stateDir: dir,

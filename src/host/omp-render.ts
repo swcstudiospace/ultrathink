@@ -12,7 +12,13 @@ import { type GraphModel, renderGraph } from "./omp-graph.ts";
 import { sanitizeInsightText } from "./omp-insights.ts";
 import { type ActivityNotice, toActivityNotice } from "./activity-notice.ts";
 import { formatElapsed, type Paint, paint, truncateToWidth, visibleWidth } from "./omp-paint.ts";
-import { type PlanView, projectResolution } from "./view.ts";
+import {
+	type ChatSyncView,
+	type DeliveryState,
+	isChatSyncView,
+	type PlanView,
+	projectResolution,
+} from "./view.ts";
 import { isRecord } from "../shared.ts";
 import { renderPanel } from "../recall/panel-render.ts";
 import type { TurnPanels } from "../recall/turn-panels.ts";
@@ -29,12 +35,20 @@ export const SWARM_TYPE = "ultrathink-swarm";
 export const ACTIVITY_TYPE = "ultrathink-activity";
 /** Display-only card of one explicit recall's information panels (`/ultrathink-recall`); details are a TurnPanels object. */
 export const RECALL_TYPE = "ultrathink-recall";
+/** Display-only chat/session sync card (SPE-37787, n4): plugin-visible wave/node rows over the chat-sync view. */
+export const CHAT_SYNC_TYPE = "ultrathink-chat-sync";
 /**
  * Delivery for activity cards. Default delivery steers the running turn while the session streams, which injects the
  * card into the model's context. `triggerTurn: false` alone only stops an idle turn start. `nextTurn` with
  * `triggerTurn: false` neither steers nor starts a turn, and renders at once when idle.
  */
 export const ACTIVITY_DELIVERY = { deliverAs: "nextTurn", triggerTurn: false } as const;
+/**
+ * Delivery for chat/session sync cards. Same shape as `ACTIVITY_DELIVERY`: the card renders through the
+ * chat/session channel (create_chat_tab / steer / resume / injection handoff) without steering a running
+ * turn — never through a NativeDialog select, which forces the selected text to echo as speech into chat.
+ * NativeDialog remains an engineered fallback only (`chatSyncFallbackLine`), for hosts without card renderers.
+ */
 
 /** Graph rows in the collapsed card; the graph degrades its layout to fit. */
 const COLLAPSED_GRAPH_ROWS = 18;
@@ -217,6 +231,11 @@ function planRows(
 		body.push(...promptAccountingRows(view, p));
 		body.push(...stageLineCountRows(view, p));
 		body.push(...dispatchGateRows(view, p));
+		body.push(...forceInjectedPromptRows(view, p));
+		body.push(...deliveryOutcomeRows(view, p));
+		body.push(...forceStopDrainRows(view, p));
+		body.push(...orderGateRows(view, p));
+		body.push(...raceCheckRows(view, p));
 	}
 	// The planning model's safe record (details are untrusted session data, so it is projected again): label, reason and
 	// engine request, e.g. `omp-native:openai-codex/gpt-6.1-sol [detected] · reason live-model · engine auto (config)`.
@@ -1167,6 +1186,41 @@ function activityRows(details: unknown, p: Paint): string[] {
 	return rows;
 }
 
+/** Bound on rendered chat-sync rows; hidden rows are named by their count, never silently dropped. */
+const MAX_CHAT_SYNC_ROWS = 40;
+
+/**
+ * One plain line a host without a card renderer can show; the engineered fallback for hosts with no
+ * custom-message renderer (never a NativeDialog): it states the session kind, the sync verdict and the
+ * wave/node pair a cancel would hand off.
+ */
+export function chatSyncFallbackLine(view: ChatSyncView): string {
+	const first = view.rows[0];
+	const pair = first ? ` · wave ${first.wave_id} · node ${first.node_id}` : "";
+	return `${CHAT_SYNC_TYPE} · ${view.kind} · ${view.syncDone ? "sync complete" : "sync pending"}${pair}`;
+}
+
+/**
+ * Chat/session sync rows: header plus one row per wave/node pair. Expanded and compact render the same rows,
+ * like the activity card. Text (never colour alone) carries the sync verdict; the `syncDone` gate comes from
+ * the injection side (`isSyncTodosDone`), never inferred here.
+ */
+function chatSyncRows(details: unknown, p: Paint): string[] {
+	if (!isChatSyncView(details)) return [p.fg("muted", "Chat sync unavailable.")];
+	const verdict = details.syncDone ? "sync complete" : "sync pending";
+	const glyph = details.syncDone ? p.glyph("success") : p.glyph("running");
+	const label = p.fg("customMessageLabel", p.bold(`${CHAT_SYNC_TYPE} · ${details.kind}`));
+	const rows = [`${p.fg("accent", glyph)} ${label}${p.fg("muted", ` · ${verdict}`)}`];
+	for (const row of details.rows.slice(0, MAX_CHAT_SYNC_ROWS))
+		rows.push(
+			`${p.fg("dim", "wave")} ${p.fg("muted", row.wave_id)} · ${p.fg("dim", "node")} ${p.fg("muted", row.node_id)}${row.title ? p.fg("muted", ` · ${row.title}`) : ""}`,
+		);
+	// The bound above caps these rows, so the hidden total names itself here rather than dropping silently.
+	const hidden = details.rows.length - Math.min(details.rows.length, MAX_CHAT_SYNC_ROWS);
+	if (hidden > 0) rows.push(p.fg("dim", `${hidden} more`));
+	return rows;
+}
+
 /** Header label of each information panel, keyed by the TurnPanels entry it is drawn from. */
 const PANEL_LABELS: Record<keyof TurnPanels, string> = {
 	knowledge: "Greptile knowledge base",
@@ -1293,6 +1347,99 @@ export function dispatchGateRows(view: PlanView, p: Paint): string[] {
 			`${p.fg("dim", "dispatch")} ${p.fg("muted", `${gate.specialistsBeforeFinal} specialists before final prompt · final prompt ${gate.finalPromptLanded ? "landed" : "pending"}`)}`,
 		);
 	return rows;
+}
+
+/** Race order banner (SCR-OrderGate, AC-65/66): uplift → injection confirmed → dispatch. Supersedes the SCR-DispatchGate banner on the race path; plain words, never colour alone. */
+const RACE_ORDER_LINES = [
+	"Order: uplift → injection confirmed → dispatch",
+	"0 dispatch before injection confirmed",
+] as const;
+
+/**
+ * Force-injected prompt evidence rows (SCR-ForceInjectedPrompt, AC-60/61): the landed prompt is rendered by
+ * `fullPromptSectionRows` in the same card; here the char count, the one TODO update and one log line per failed
+ * delivery attempt (0 silent drops). Absent when the view carries no injection evidence.
+ */
+function forceInjectedPromptRows(view: PlanView, p: Paint): string[] {
+	const evidence = view.forceInjected;
+	if (!evidence) return [];
+	const rows = [
+		`${p.fg("dim", "inject")} ${p.fg("success", "[injected]")} ${p.fg("muted", `${evidence.charCount} chars landed · 100%`)}`,
+		`${p.fg("dim", "todo")} ${p.fg("muted", `1 updated · ${evidence.todoEntry}`)}`,
+	];
+	for (const line of evidence.retryLog)
+		rows.push(`${p.fg("dim", "retry")} ${p.fg("warning", `[retrying] ${line}`)}`);
+	return rows;
+}
+
+/**
+ * Delivery outcome rows (SCR-DeliveryOutcome, AC-62/69): exactly 1 named state of the closed set
+ * {injected, retrying, drained, timed-out, dropped-with-reason}; the reason is named in words when the outcome carries one.
+ */
+function deliveryOutcomeRows(view: PlanView, p: Paint): string[] {
+	const outcome = view.deliveryOutcome;
+	if (!outcome) return [];
+	const stateColor: Record<DeliveryState, string> = {
+		injected: "success",
+		retrying: "warning",
+		drained: "success",
+		"timed-out": "warning",
+		"dropped-with-reason": "error",
+	};
+	const reason = outcome.reason ? ` · reason: ${outcome.reason}` : "";
+	return [
+		`${p.fg("dim", "delivery")} ${p.fg(stateColor[outcome.state], `[${outcome.state}]`)}${p.fg("muted", reason)}`,
+	];
+}
+
+/**
+ * Force-stop drain rows (SCR-ForceStopDrain, AC-63/64): `[drained]` within the 30s bound or `[timed-out]` when the
+ * bound elapsed, with elapsed seconds in words; `[manual-override]` only ever renders with its one logged reason.
+ */
+function forceStopDrainRows(view: PlanView, p: Paint): string[] {
+	const drain = view.forceStop;
+	if (!drain) return [];
+	const color = drain.state === "drained" ? "success" : "warning";
+	const suffix =
+		drain.state === "manual-override"
+			? ` · reason: ${drain.reason ?? ""}`
+			: ` · elapsed:${drain.elapsedS}s within 30s bound`;
+	return [`${p.fg("dim", "drain")} ${p.fg(color, `[${drain.state}]`)}${p.fg("muted", suffix)}`];
+}
+
+/**
+ * Order-gate rows (SCR-OrderGate, AC-65/66): the race order banner, 1 held reason per refused attempt, and the
+ * confirmation timestamp at or before lane start.
+ */
+function orderGateRows(view: PlanView, p: Paint): string[] {
+	const gate = view.orderGate;
+	if (!gate) return [];
+	const rows: string[] = RACE_ORDER_LINES.map(
+		(line) => `${p.fg("dim", "[info]")} ${p.fg("muted", line)}`,
+	);
+	rows.push(
+		`${p.fg("dim", "gate")} ${p.fg("muted", `dispatch ${gate.allowed ? "allowed" : "held"} before injection confirmed`)}`,
+	);
+	for (const reason of gate.heldReasons)
+		rows.push(`${p.fg("dim", "held")} ${p.fg("warning", `[held] ${reason}`)}`);
+	if (gate.confirmedAt)
+		rows.push(
+			`${p.fg("dim", "confirmed")} ${p.fg("success", `[injected]`)} ${p.fg("muted", `at ${gate.confirmedAt} · at or before lane start`)}`,
+		);
+	return rows;
+}
+
+/**
+ * Race-check rows (SCR-RaceChecks, AC-67/68): mid-flight completion — 1 injected prompt, 0 lost plans; new prompt
+ * during uplift — 1 drained orchestration, 1 landed prompt, 0 drops. Both scenario lines render as words.
+ */
+function raceCheckRows(view: PlanView, p: Paint): string[] {
+	const checks = view.raceChecks;
+	if (!checks) return [];
+	return [
+		`${p.fg("dim", "race-mid-flight")} ${p.fg("muted", `${checks.midFlight.injectedPrompts} injected · ${checks.midFlight.lostPlans} lost`)}`,
+		`${p.fg("dim", "race-new-prompt")} ${p.fg("muted", `${checks.newPrompt.drainedOrchestrations} drained · ${checks.newPrompt.landedPrompts} landed · ${checks.newPrompt.drops} drops`)}`,
+	];
 }
 /**
  * The information panels of a plan, drawn under the plan rows. `details` is untrusted session data: an entry without a
@@ -1446,6 +1593,17 @@ export function registerUltrathinkRenderers(pi: {
 				border: "borderMuted",
 				padY: 0,
 			});
+		} catch {
+			return undefined;
+		}
+	});
+	pi.registerMessageRenderer(CHAT_SYNC_TYPE, (message, _options, theme) => {
+		// details are untrusted persisted data: anything that is not a chat-sync view falls back to Omp's
+		// default card. No NativeDialog is involved: the card renders through the chat/session channel alone.
+		if (!isChatSyncView(message.details)) return undefined;
+		try {
+			const p = paint(theme);
+			return card(() => chatSyncRows(message.details, p), p, { border: "borderMuted", padY: 0 });
 		} catch {
 			return undefined;
 		}

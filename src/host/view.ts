@@ -18,6 +18,25 @@ import type { ModelResolution } from "./engine.ts";
 import { isRecord } from "../shared.ts";
 import type { TurnPanels } from "../recall/turn-panels.ts";
 
+/** Closed set of delivery outcomes (SCR-DeliveryOutcome, contract `GET /delivery-status`): no silent loss, every outcome is one of these 5 named states. */
+export type DeliveryState =
+	| "injected"
+	| "retrying"
+	| "drained"
+	| "timed-out"
+	| "dropped-with-reason";
+
+const DELIVERY_STATES: Record<DeliveryState, true> = {
+	injected: true,
+	retrying: true,
+	drained: true,
+	"timed-out": true,
+	"dropped-with-reason": true,
+};
+
+const isNonNegativeInt = (value: unknown): value is number =>
+	typeof value === "number" && Number.isInteger(value) && value >= 0;
+
 export interface PlanView {
 	root: string;
 	source: "llm" | "fallback";
@@ -68,6 +87,23 @@ export interface PlanView {
 	promptAccounting?: string;
 	/** Dispatch gate state (contract `DispatchGate`), projected from the record when recorded; derived from the final prompt otherwise. */
 	dispatchGate?: { specialistsBeforeFinal: number; finalPromptLanded: boolean };
+	/** Force-injected prompt evidence (SCR-ForceInjectedPrompt), projected from the record when recorded; absent on older records. The landed prompt text itself renders via `fullPromptXml`. */
+	forceInjected?: { charCount: number; todoEntry: string; retryLog: string[] };
+	/** Closed-set delivery outcome (SCR-DeliveryOutcome, contract `GET /delivery-status`), projected from the record when recorded. */
+	deliveryOutcome?: { state: DeliveryState; reason?: string };
+	/** Force-stop drain outcome (SCR-ForceStopDrain, contract `POST /drain`), projected from the record when recorded; `manual-override` only ever carries its logged reason. */
+	forceStop?: {
+		state: "drained" | "timed-out" | "manual-override";
+		elapsedS: number;
+		reason?: string;
+	};
+	/** Order gate state (SCR-OrderGate, contract `POST /order-gate`), projected from the record when recorded. */
+	orderGate?: { allowed: boolean; heldReasons: string[]; confirmedAt?: string };
+	/** Race-check scenario results (SCR-RaceChecks), projected from the record when recorded. */
+	raceChecks?: {
+		midFlight: { injectedPrompts: number; lostPlans: number };
+		newPrompt: { drainedOrchestrations: number; landedPrompts: number; drops: number };
+	};
 }
 
 /**
@@ -109,6 +145,88 @@ function projectDispatchGate(record: unknown): PlanView["dispatchGate"] {
 	return {
 		specialistsBeforeFinal: value.specialistsBeforeFinal,
 		finalPromptLanded: value.finalPromptLanded,
+	};
+}
+
+/** Project `record.forceInjected` (contract `POST /force-inject` evidence) defensively; absent when the record carries none. `charCount` is the landed prompt's character count, `todoEntry` the one TODO update, `retryLog` one line per failed attempt — 0 silent drops. */
+function projectForceInjected(record: unknown): PlanView["forceInjected"] {
+	if (!isRecord(record)) return undefined;
+	const value = record.forceInjected;
+	if (!isRecord(value) || !isNonNegativeInt(value.charCount)) return undefined;
+	if (typeof value.todoEntry !== "string" || value.todoEntry === "") return undefined;
+	const retryLog = Array.isArray(value.retryLog)
+		? value.retryLog.filter((line): line is string => typeof line === "string" && line !== "")
+		: [];
+	return { charCount: value.charCount, todoEntry: value.todoEntry, retryLog };
+}
+
+/** Project `record.deliveryOutcome` (contract `GET /delivery-status`) defensively: only the 5 closed-set states; `dropped-with-reason` always carries its reason. */
+function projectDeliveryOutcome(record: unknown): PlanView["deliveryOutcome"] {
+	if (!isRecord(record)) return undefined;
+	const value = record.deliveryOutcome;
+	if (!isRecord(value) || typeof value.state !== "string") return undefined;
+	if (!Object.hasOwn(DELIVERY_STATES, value.state)) return undefined;
+	const state = value.state as DeliveryState;
+	const reason = typeof value.reason === "string" && value.reason !== "" ? value.reason : undefined;
+	if (state === "dropped-with-reason" && reason === undefined) return undefined;
+	return { state, ...(reason !== undefined ? { reason } : {}) };
+}
+
+/** Project `record.forceStop` (contract `POST /drain`) defensively: 30s bound; `manual-override` (the kill-switch bypass) only ever projects with its one logged reason. */
+function projectForceStop(record: unknown): PlanView["forceStop"] {
+	if (!isRecord(record)) return undefined;
+	const value = record.forceStop;
+	if (!isRecord(value) || typeof value.state !== "string") return undefined;
+	if (value.state !== "drained" && value.state !== "timed-out" && value.state !== "manual-override")
+		return undefined;
+	const elapsedS =
+		typeof value.elapsedS === "number" && Number.isFinite(value.elapsedS) && value.elapsedS >= 0
+			? value.elapsedS
+			: 0;
+	const reason = typeof value.reason === "string" && value.reason !== "" ? value.reason : undefined;
+	if (value.state === "manual-override" && reason === undefined) return undefined;
+	return { state: value.state, elapsedS, ...(reason !== undefined ? { reason } : {}) };
+}
+
+/** Project `record.orderGate` (contract `POST /order-gate`) defensively: 1 held reason per refused attempt, confirmation timestamp. */
+function projectOrderGate(record: unknown): PlanView["orderGate"] {
+	if (!isRecord(record)) return undefined;
+	const value = record.orderGate;
+	if (!isRecord(value) || typeof value.allowed !== "boolean") return undefined;
+	const heldReasons = Array.isArray(value.heldReasons)
+		? value.heldReasons.filter((line): line is string => typeof line === "string" && line !== "")
+		: [];
+	return {
+		allowed: value.allowed,
+		heldReasons,
+		...(typeof value.confirmedAt === "string" && value.confirmedAt !== ""
+			? { confirmedAt: value.confirmedAt }
+			: {}),
+	};
+}
+
+/** Project `record.raceChecks` defensively; absent unless both scenario counts are complete and non-negative. */
+function projectRaceChecks(record: unknown): PlanView["raceChecks"] {
+	if (!isRecord(record)) return undefined;
+	const value = record.raceChecks;
+	if (!isRecord(value) || !isRecord(value.midFlight) || !isRecord(value.newPrompt))
+		return undefined;
+	const mid = value.midFlight;
+	const fresh = value.newPrompt;
+	if (!isNonNegativeInt(mid.injectedPrompts) || !isNonNegativeInt(mid.lostPlans)) return undefined;
+	if (
+		!isNonNegativeInt(fresh.drainedOrchestrations) ||
+		!isNonNegativeInt(fresh.landedPrompts) ||
+		!isNonNegativeInt(fresh.drops)
+	)
+		return undefined;
+	return {
+		midFlight: { injectedPrompts: mid.injectedPrompts, lostPlans: mid.lostPlans },
+		newPrompt: {
+			drainedOrchestrations: fresh.drainedOrchestrations,
+			landedPrompts: fresh.landedPrompts,
+			drops: fresh.drops,
+		},
 	};
 }
 
@@ -244,5 +362,79 @@ export function buildPlanView(record: SessionRecord, elapsedMs: number): PlanVie
 			: record.result.xml
 				? { dispatchGate: { specialistsBeforeFinal: 0, finalPromptLanded: true } }
 				: {}),
+		...(projectForceInjected(record) ? { forceInjected: projectForceInjected(record) } : {}),
+		...(projectDeliveryOutcome(record) ? { deliveryOutcome: projectDeliveryOutcome(record) } : {}),
+		...(projectForceStop(record) ? { forceStop: projectForceStop(record) } : {}),
+		...(projectOrderGate(record) ? { orderGate: projectOrderGate(record) } : {}),
+		...(projectRaceChecks(record) ? { raceChecks: projectRaceChecks(record) } : {}),
 	};
+}
+
+/**
+ * Chat/session sync view (SPE-37787, n4): the plugin-visible dual of the plan card. It travels as a custom
+ * message through the chat/session channel (create_chat_tab / steer / resume / injection handoff), never
+ * through a NativeDialog select — a native select forces the selected text to echo as speech into chat.
+ * Every row carries both the `wave_id` and the `node_id` the cancel path hands off.
+ */
+interface ChatSyncRow {
+	wave_id: string;
+	node_id: string;
+	title?: string;
+}
+
+/**
+ * Display-only chat/session sync view; `syncDone` is the injection gate's verdict (`isSyncTodosDone` in
+ * `src/track/sync-todos.ts`): the caller passes the record check, this projection only carries it.
+ */
+export interface ChatSyncView {
+	graphId?: string;
+	sessionId: string;
+	/** Session kind: `direct` (create_chat_tab) or `managed` (steer / resume / injection handoff). */
+	kind: "direct" | "managed";
+	syncDone: boolean;
+	rows: ChatSyncRow[];
+}
+
+/** Project a plan view into chat-visible wave/node rows. Nodes are never invented or dropped: every entry of
+ * `view.waves` becomes one row, with its title when the plan carries one. */
+export function buildChatSyncView(
+	view: PlanView,
+	options: { sessionId: string; kind: "direct" | "managed"; syncDone: boolean },
+): ChatSyncView {
+	const titleById = new Map(view.nodes.map((node) => [node.id, node.title]));
+	const rows = view.waves.flatMap((wave, index) =>
+		wave.map((nodeId) => {
+			const title = titleById.get(nodeId);
+			return {
+				wave_id: `w${index + 1}`,
+				node_id: nodeId,
+				...(title ? { title } : {}),
+			};
+		}),
+	);
+	return {
+		...(view.graphId ? { graphId: view.graphId } : {}),
+		sessionId: options.sessionId,
+		kind: options.kind,
+		syncDone: options.syncDone,
+		rows,
+	};
+}
+
+/** Chat-sync view guard; message details are untrusted persisted data, so anything else is not a view. */
+export function isChatSyncView(value: unknown): value is ChatSyncView {
+	if (!isRecord(value)) return false;
+	if (!Array.isArray(value.rows)) return false;
+	if (typeof value.sessionId !== "string" || value.sessionId === "") return false;
+	if (value.kind !== "direct" && value.kind !== "managed") return false;
+	if (typeof value.syncDone !== "boolean") return false;
+	if (value.graphId !== undefined && typeof value.graphId !== "string") return false;
+	return value.rows.every(
+		(row) =>
+			isRecord(row) &&
+			typeof row.wave_id === "string" &&
+			row.wave_id !== "" &&
+			typeof row.node_id === "string" &&
+			row.node_id !== "",
+	);
 }
