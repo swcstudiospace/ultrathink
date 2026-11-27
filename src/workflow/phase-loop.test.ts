@@ -822,7 +822,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 	});
 });
 
-describe("FSM lifecycle, status, audit trail and cleanup (harness harness)", () => {
+describe("FSM lifecycle, status, audit trail and cleanup", () => {
 	beforeEach(() => {
 		resetPhaseLoopStateForTests();
 	});
