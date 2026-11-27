@@ -212,12 +212,14 @@ export function checkPlanSet(md: string): PlanCheckResult {
 
 	// Budgets live in frontmatter `estimate:` (gsd-planner 1.18.0 YAML),
 	// not in a `<budget>` block — verified against real plans 2026-11-27.
-	const estimate = frontmatterField(frontmatter(md) ?? "", ["estimate"]);
-	const budget =
-		estimate !== undefined && hasNamedNumber(estimate)
-			? estimate
-			: section(md, "budget", ["budget"]);
-	if (estimate === undefined && (budget === undefined || !hasNamedNumber(budget))) {
+	// (Earlier plans carry budgets only as prose; C-3 rejects those since
+	// min-total unenforceable budgets cannot be machine-checked.)
+	const estimate = frontmatterFieldBlock(frontmatter(md) ?? "", "estimate");
+	const budget = section(md, "budget", ["budget"]);
+	if (
+		(estimate === undefined || !hasNamedNumber(estimate)) &&
+		(budget === undefined || !hasNamedNumber(budget))
+	) {
 		return reject("missing budgets: a budget with named numbers (name: number) is required");
 	}
 
@@ -226,11 +228,14 @@ export function checkPlanSet(md: string): PlanCheckResult {
 		return reject("missing cited context: a context block with at least one citation is required");
 	}
 
-	const acceptance =
-		section(md, "acceptance", ["acceptance"]) ??
-		section(md, "success_criteria", ["success criteria", "acceptance criteria"]) ??
-		section(md, "verification", ["verification"]);
-	if (acceptance === undefined || !hasMachineCheck(acceptance)) {
+	const acceptanceSources = [
+		section(md, "acceptance", ["acceptance"]),
+		section(md, "success_criteria", ["success criteria", "acceptance criteria"]),
+		section(md, "verification", ["verification"]),
+	];
+	// A machine-checkable signal in ANY accepted-criteria source satisfies C-5:
+	// real plans split signals across verification + prose success_criteria.
+	if (!acceptanceSources.some((s) => s !== undefined && hasMachineCheck(s))) {
 		return reject(
 			"missing machine-checkable acceptance: an acceptance/verification block with a command, comparison, or exit code is required",
 		);
