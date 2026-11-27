@@ -122,7 +122,8 @@ describe("checkPlanSet", () => {
 	test("rejects a deliberately truncated fixture", () => {
 		const result = checkPlanSet(TRUNCATED);
 		expect(result.ok).toBe(false);
-		if (!result.ok) expect(result.reason).toMatch(/truncated|missing|no tasks|budget|acceptance|context/i);
+		if (!result.ok)
+			expect(result.reason).toMatch(/truncated|missing|no tasks|budget|acceptance|context/i);
 	});
 
 	test("accepts a 101-106-style full contract including ledger tables", () => {
@@ -137,7 +138,9 @@ describe("checkPlanSet", () => {
 	});
 
 	test("rejects a plan with no frontmatter", () => {
-		const result = checkPlanSet("# no frontmatter\n\n<acceptance>\n`bun test && echo ok`\n</acceptance>\n");
+		const result = checkPlanSet(
+			"# no frontmatter\n\n<acceptance>\n`bun test && echo ok`\n</acceptance>\n",
+		);
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.reason).toContain("frontmatter");
 	});
