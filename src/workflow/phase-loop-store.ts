@@ -127,6 +127,20 @@ function isRuntimeRepair(value: unknown): value is RuntimeRepair {
 	return typeof repair.reason === "string" && typeof repair.at === "string";
 }
 
+function isTransition(value: unknown): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	const row = value as Record<string, unknown>;
+	return (
+		typeof row.at === "string" &&
+		typeof row.from === "string" &&
+		typeof row.event === "string" &&
+		typeof row.to === "string" &&
+		typeof row.accepted === "boolean" &&
+		Array.isArray(row.refusals) &&
+		row.refusals.every((item) => typeof item === "string")
+	);
+}
+
 function isPhaseLoopRecord(value: unknown): value is StoredRecord {
 	if (typeof value !== "object" || value === null) return false;
 	const row = value as Record<string, unknown>;
@@ -145,7 +159,12 @@ function isPhaseLoopRecord(value: unknown): value is StoredRecord {
 		(row.overrides === undefined ||
 			(Array.isArray(row.overrides) && row.overrides.every(isOverrideDecision))) &&
 		(row.runtimeSessionId === undefined || typeof row.runtimeSessionId === "string") &&
-		(row.runtimeRepair === undefined || isRuntimeRepair(row.runtimeRepair))
+		(row.runtimeRepair === undefined || isRuntimeRepair(row.runtimeRepair)) &&
+		(row.schemaVersion === undefined || typeof row.schemaVersion === "number") &&
+		(row.transitions === undefined ||
+			(Array.isArray(row.transitions) && row.transitions.every(isTransition))) &&
+		(row.cleanedUpAt === undefined || typeof row.cleanedUpAt === "string") &&
+		(row.cleanedUpBy === undefined || typeof row.cleanedUpBy === "string")
 	);
 }
 

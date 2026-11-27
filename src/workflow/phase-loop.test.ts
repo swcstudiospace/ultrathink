@@ -10,11 +10,17 @@ import {
 	attemptPhase,
 	type AuditRecord,
 	checkpointPhaseLoop,
+	cleanupPhaseLoop,
 	confirmShip,
+	deriveLifecycle,
+	FsmError,
+	FSM_SCHEMA_VERSION,
+	nextEvents,
 	open,
 	type OverrideDecision,
 	PhaseLoopCorruptError,
 	type PhaseName,
+	phaseLoopStatus,
 	recordAudit,
 	type RuntimeConnectedCheck,
 	resetPhaseLoopStateForTests,
@@ -813,5 +819,160 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 			recordId: "audit-1",
 			recordedAt: AT,
 		});
+	});
+});
+
+describe("FSM lifecycle, status, audit trail and cleanup (harness harness)", () => {
+	beforeEach(() => {
+		resetPhaseLoopStateForTests();
+	});
+
+	function localRecord(stateDir: string, runtimeId: string): PhaseLoopRecord | undefined {
+		const outcome = fileStore(stateDir).load(runtimeId);
+		return outcome.status === "found" ? outcome.record : undefined;
+	}
+
+	test("T2 full lifecycle drives ready->discussing->planning->executing->verifying->completed in order", () => {
+		const id = "claude";
+		expect(
+			phaseLoopStatus(attemptPhase(id, { phase: "Discuss", ...READY }, CONNECTED).state).lifecycle,
+		).toBe("discussing");
+		through(id, "Plan");
+		through(id, "Execute");
+		through(id, "Verify");
+		recordPassing(id);
+		confirmShip(id, passing(), CONNECTED);
+		const state = attemptPhase(id, { phase: "Discuss", ...READY }, CONNECTED).state;
+		expect(state.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify", "Ship"]);
+		expect(deriveLifecycle(state)).toBe("completed");
+	});
+
+	test("T3 illegal transition names state, event and legal events and leaves state unchanged", () => {
+		const id = "claude";
+		const before = attemptPhase(id, { phase: "Discuss", ...READY }, CONNECTED).state;
+		const refused = attemptPhase(id, { phase: "Execute", ...READY }, CONNECTED);
+		expect(refused.accepted).toBe(false);
+		expect(refused.refusals.length).toBeGreaterThan(0);
+		expect(refused.state.phaseOrder).toEqual(before.phaseOrder);
+		expect(nextEvents(deriveLifecycle(before))).toEqual(["attempt(Plan)"]);
+	});
+
+	test("T4 awaiting-decision blocks close until HTIL resolves; status names blocker and next events", () => {
+		const id = "claude";
+		through(id, "Discuss");
+		through(id, "Plan");
+		open(id, { id: "h1", owner: "alice" });
+		const waiting = attemptPhase(id, { phase: "Execute", ...READY }, CONNECTED).state;
+		const status = phaseLoopStatus(waiting);
+		expect(status.lifecycle).toBe("awaiting-decision");
+		expect(status.blocker).toEqual({ id: "h1", owner: "alice" });
+		expect(status.nextEvents).toEqual(["resolve(HTIL)"]);
+		resolve(id, "h1", { state: "done", evidenceId: "e1" });
+		const after = attemptPhase(id, { phase: "Execute", ...READY }, CONNECTED).state;
+		expect(deriveLifecycle(after)).toBe("executing");
+	});
+
+	test("T4 paused is derived from the stored checkpoint and resumes via restore", () => {
+		const root = mkdtempSync(join(tmpdir(), "phase-loop-paused-"));
+		try {
+			const dir = join(root, "state");
+			const store = fileStore(dir);
+			attemptPhase("claude", { phase: "Discuss", ...READY }, CONNECTED, store);
+			checkpointPhaseLoop(store, "claude", "pause", AT);
+			const restored = restorePhaseLoop(store, "claude");
+			expect(phaseLoopStatus(restored.state, restored.checkpoint).lifecycle).toBe("paused");
+			expect(restored.restored).toBe(true);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("T5 schema version migrates on first accepted transition; legacy record loads unchanged", () => {
+		const id = "claude";
+		expect(attemptPhase(id, { phase: "Discuss", ...READY }, CONNECTED).state.schemaVersion).toBe(
+			FSM_SCHEMA_VERSION,
+		);
+		const root = mkdtempSync(join(tmpdir(), "phase-loop-legacy-"));
+		try {
+			const dir = join(root, "state");
+			const store = fileStore(dir);
+			attemptPhase("claude", { phase: "Discuss", ...READY }, CONNECTED, store);
+			const record = localRecord(dir, "claude");
+			expect(record?.schemaVersion).toBe(FSM_SCHEMA_VERSION);
+			// A legacy record without schemaVersion parses and migrates on next accepted transition.
+			const legacy: PhaseLoopRecord = {
+				runtimeId: "legacy",
+				phaseOrder: ["Discuss"],
+				executeStarts: 0,
+				shipStarts: 0,
+				operatorConfirmations: 0,
+				humanItems: [],
+			};
+			store.save("legacy", legacy);
+			expect(restorePhaseLoop(store, "legacy").restored).toBe(true);
+			expect(
+				attemptPhase("legacy", { phase: "Plan", ...READY }, CONNECTED, store).state.schemaVersion,
+			).toBe(FSM_SCHEMA_VERSION);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("T6 accepted attempts with a timestamp append a bounded transition audit trail; refusals record nothing", () => {
+		const id = "claude";
+		attemptPhase(id, { phase: "Discuss", ...READY }, CONNECTED, undefined, { at: AT });
+		const refused = attemptPhase(id, { phase: "Execute", ...READY }, CONNECTED, undefined, {
+			at: AT,
+		});
+		expect(refused.accepted).toBe(false);
+		const state = attemptPhase(id, { phase: "Plan", ...READY }, CONNECTED, undefined, {
+			at: AT,
+		}).state;
+		expect(state.transitions?.map((item) => item.event)).toEqual([
+			"attempt(Discuss)",
+			"attempt(Plan)",
+		]);
+		expect(state.transitions?.[0]).toMatchObject({
+			at: AT,
+			from: "ready",
+			to: "discussing",
+			accepted: true,
+		});
+	});
+
+	test("terminal completed accepts no phase events; cleanup requires completed+audited and is itself terminal", () => {
+		const root = mkdtempSync(join(tmpdir(), "phase-loop-cleanup-"));
+		try {
+			const dir = join(root, "state");
+			const store = fileStore(dir);
+			for (const phase of ["Discuss", "Plan", "Execute", "Verify"] as const) {
+				attemptPhase("claude", { phase, ...READY }, CONNECTED, store);
+			}
+			// Guard: not completed yet.
+			const early = (() => {
+				try {
+					cleanupPhaseLoop(store, "claude", "alice", AT);
+				} catch (error) {
+					return error;
+				}
+				return undefined;
+			})();
+			expect(early).toBeInstanceOf(FsmError);
+			expect((early as FsmError).kind).toBe("guard");
+			recordPassing("claude", store);
+			confirmShip("claude", passing(), CONNECTED, store);
+			cleanupPhaseLoop(store, "claude", "alice", AT);
+			const cleaned = localRecord(dir, "claude");
+			expect(cleaned?.cleanedUpBy).toBe("alice");
+			expect(deriveLifecycle(cleaned as never)).toBe("cleaned-up");
+			expect(nextEvents("cleaned-up")).toEqual([]);
+			// Second cleanup is a rejection; no phase events accepted after cleanup.
+			expect(
+				attemptPhase("claude", { phase: "Discuss", ...READY }, CONNECTED, store).accepted,
+			).toBe(false);
+			expect(recordAudit("claude", PASSING_AUDIT, store).accepted).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

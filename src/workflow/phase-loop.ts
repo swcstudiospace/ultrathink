@@ -102,6 +102,81 @@ export interface PhaseLoopState {
 	runtimeSessionId?: string;
 	/** The owner's repair that set runtimeSessionId on a record written before the marker: its reason and time. Absent unless a repair ran. */
 	runtimeRepair?: RuntimeRepair;
+	/** Persisted-schema version. Absent on records written before the version field existed; set to `FSM_SCHEMA_VERSION` by the first accepted transition. */
+	schemaVersion?: number;
+	/** Structured history of transition attempts (bounded). Absent until a caller passes a timestamp to a transition. */
+	transitions?: TransitionRecord[];
+	/** When the loop was cleaned up, and by whom. Only set after a closed, audited Ship. */
+	cleanedUpAt?: string;
+	cleanedUpBy?: string;
+}
+
+/** Current persisted-schema version. Records without it are legacy and migrate to this on first accepted transition. */
+export const FSM_SCHEMA_VERSION = 1;
+
+/** Harness lifecycle state derived from a recorded loop. `paused` needs the stored checkpoint; `failed` is never derived from state alone — it is the quarantined/corrupt path (`PhaseLoopCorruptError` / restore). */
+export type PhaseLifecycle =
+	| "ready"
+	| "discussing"
+	| "planning"
+	| "executing"
+	| "verifying"
+	| "awaiting-decision"
+	| "blocked"
+	| "paused"
+	| "failed"
+	| "completed"
+	| "cleaned-up";
+
+/** One transition attempt as recorded for audit. Timestamps are caller-supplied, so the pure decision stays I/O- and clock-free. */
+export interface TransitionRecord {
+	/** Caller-supplied ISO 8601 timestamp of the attempt. */
+	at: string;
+	from: PhaseLifecycle;
+	event: string;
+	to: PhaseLifecycle;
+	accepted: boolean;
+	refusals: readonly string[];
+}
+
+/** Error kinds that new, throwing APIs distinguish. Existing gated APIs keep returning `GateOutcome` for compatibility. */
+export type FsmErrorKind = "rejection" | "guard" | "transient" | "unrecoverable";
+
+/** Structured FSM error naming the lifecycle state, the attempted event and the legal events for that state. */
+export class FsmError extends Error {
+	readonly kind: FsmErrorKind;
+	readonly state: PhaseLifecycle;
+	readonly event: string;
+	readonly legalEvents: readonly string[];
+
+	constructor(
+		kind: FsmErrorKind,
+		state: PhaseLifecycle,
+		event: string,
+		legalEvents: readonly string[],
+		message: string,
+	) {
+		super(message);
+		this.name = "FsmError";
+		this.kind = kind;
+		this.state = state;
+		this.event = event;
+		this.legalEvents = legalEvents;
+	}
+}
+
+/** Operator status of a loop: current state, completed stages, active blocker, attempts and next legal events. */
+export interface PhaseLoopStatus {
+	lifecycle: PhaseLifecycle;
+	completedStages: readonly PhaseName[];
+	blocker: { id: string; owner: string } | undefined;
+	attempts: { execute: number; ship: number; operatorConfirmations: number };
+	nextEvents: readonly string[];
+}
+
+/** Options for transition calls that should record a transition. `at` is the caller-supplied timestamp; without it nothing is recorded. */
+export interface TransitionOptions {
+	at?: string;
 }
 
 /** Result of a resume (LIFE-04): what was restored, and whether an unreadable record was set aside. */
@@ -177,7 +252,88 @@ function snapshot(row: PhaseLoopState): PhaseLoopState {
 			: { overrides: row.overrides.map((item) => ({ ...item })) }),
 		...(row.runtimeSessionId === undefined ? {} : { runtimeSessionId: row.runtimeSessionId }),
 		...(row.runtimeRepair === undefined ? {} : { runtimeRepair: { ...row.runtimeRepair } }),
+		...(row.schemaVersion === undefined ? {} : { schemaVersion: row.schemaVersion }),
+		...(row.transitions === undefined
+			? {}
+			: { transitions: row.transitions.map((item) => ({ ...item })) }),
+		...(row.cleanedUpAt === undefined ? {} : { cleanedUpAt: row.cleanedUpAt }),
+		...(row.cleanedUpBy === undefined ? {} : { cleanedUpBy: row.cleanedUpBy }),
 	};
+}
+
+/** Derives the harness lifecycle state from a recorded loop. `checkpoint` (from the stored record) yields `paused`; `failed` is never derived here — it is the quarantined/corrupt path (`PhaseLoopCorruptError` / restore). */
+export function deriveLifecycle(row: PhaseLoopState, checkpoint?: Checkpoint): PhaseLifecycle {
+	if (row.cleanedUpAt !== undefined) return "cleaned-up";
+	if (isClosed(row)) return "completed";
+	if (checkpoint !== undefined) return "paused";
+	if (row.humanItems.some((item) => item.state === "open")) return "awaiting-decision";
+	const last = row.phaseOrder[row.phaseOrder.length - 1];
+	if (last === undefined) return "ready";
+	if (last === "Discuss") return "discussing";
+	if (last === "Plan") return "planning";
+	if (last === "Execute") return "executing";
+	if (last === "Verify") {
+		const audits = row.audits ?? [];
+		if (
+			audits.some((audit) => audit.result === "fail") &&
+			!audits.some((audit) => audit.result === "pass")
+		) {
+			return "blocked";
+		}
+		return "verifying";
+	}
+	return "blocked";
+}
+
+/** Legal FSM events for a lifecycle state. Terminal states accept none. */
+export function nextEvents(lifecycle: PhaseLifecycle): readonly string[] {
+	switch (lifecycle) {
+		case "ready":
+			return ["attempt(Discuss)"];
+		case "discussing":
+			return ["attempt(Plan)"];
+		case "planning":
+			return ["attempt(Execute)"];
+		case "executing":
+			return ["attempt(Verify)"];
+		case "verifying":
+		case "blocked":
+			return ["confirmShip", "recordAudit", "open(HTIL)"];
+		case "awaiting-decision":
+			return ["resolve(HTIL)"];
+		case "paused":
+			return ["restore"];
+		case "completed":
+			return ["cleanup"];
+		case "failed":
+		case "cleaned-up":
+			return [];
+	}
+}
+
+/** Operator status of a loop: current state, completed stages, active blocker, attempt counts and next legal events. */
+export function phaseLoopStatus(row: PhaseLoopState, checkpoint?: Checkpoint): PhaseLoopStatus {
+	const lifecycle = deriveLifecycle(row, checkpoint);
+	const open = row.humanItems.find((item) => item.state === "open");
+	return {
+		lifecycle,
+		completedStages: [...row.phaseOrder],
+		blocker: open === undefined ? undefined : { id: open.id, owner: open.owner },
+		attempts: {
+			execute: row.executeStarts,
+			ship: row.shipStarts,
+			operatorConfirmations: row.operatorConfirmations,
+		},
+		nextEvents: nextEvents(lifecycle),
+	};
+}
+
+/** Max transition records kept: the oldest are dropped, so the log stays bounded. */
+const MAX_TRANSITIONS = 50;
+
+/** Appends one transition record, keeping the last MAX_TRANSITIONS. */
+function appendTransition(row: PhaseLoopState, record: TransitionRecord): void {
+	row.transitions = [...(row.transitions ?? []).slice(-(MAX_TRANSITIONS - 1)), record];
 }
 
 /** Applies one attempt to row in place. Returns the refusal reasons; none means it was applied. */
@@ -308,20 +464,38 @@ function transition(
 	runtimeId: string,
 	store: PhaseLoopStore | undefined,
 	apply: (row: PhaseLoopState) => readonly string[],
+	log?: { event: string; at?: string },
 ): GateOutcome {
-	if (!store) {
-		const row = rowFor(runtimeId);
+	const run = (row: PhaseLoopState): GateOutcome => {
+		const from = deriveLifecycle(row);
 		const refusals = apply(row);
-		return { accepted: refusals.length === 0, state: snapshot(row), refusals };
+		const accepted = refusals.length === 0;
+		if (accepted) {
+			if (log?.at !== undefined) {
+				appendTransition(row, {
+					at: log.at,
+					from,
+					event: log.event,
+					to: deriveLifecycle(row),
+					accepted,
+					refusals,
+				});
+			}
+			if (row.schemaVersion === undefined) row.schemaVersion = FSM_SCHEMA_VERSION;
+		}
+		return { accepted, state: snapshot(row), refusals };
+	};
+	if (!store) {
+		return run(rowFor(runtimeId));
 	}
 	const outcome = store.load(runtimeId);
 	if (outcome.status === "quarantined") {
 		throw new PhaseLoopCorruptError(runtimeId, outcome.quarantinedAs);
 	}
 	const row = outcome.status === "found" ? snapshot(outcome.record) : emptyState(runtimeId);
-	const refusals = apply(row);
-	if (refusals.length === 0) store.save(runtimeId, row);
-	return { accepted: refusals.length === 0, state: snapshot(row), refusals };
+	const result = run(row);
+	if (result.accepted) store.save(runtimeId, row);
+	return result;
 }
 
 /**
@@ -342,8 +516,12 @@ export function attemptPhase(
 	input: PhaseAttemptInput,
 	isConnected: RuntimeConnectedCheck,
 	store?: PhaseLoopStore,
+	opts?: TransitionOptions,
 ): GateOutcome {
-	return transition(runtimeId, store, (row) => applyAttempt(runtimeId, row, input, isConnected));
+	return transition(runtimeId, store, (row) => applyAttempt(runtimeId, row, input, isConnected), {
+		event: `attempt(${input.phase})`,
+		at: opts?.at,
+	});
 }
 
 /**
@@ -363,9 +541,13 @@ export function confirmShip(
 	input: ShipConfirmationInput,
 	isConnected: RuntimeConnectedCheck,
 	store?: PhaseLoopStore,
+	opts?: TransitionOptions,
 ): ShipConfirmation {
-	return transition(runtimeId, store, (row) =>
-		applyShipConfirmation(runtimeId, row, input, isConnected),
+	return transition(
+		runtimeId,
+		store,
+		(row) => applyShipConfirmation(runtimeId, row, input, isConnected),
+		{ event: "confirmShip", at: opts?.at },
 	);
 }
 
@@ -384,22 +566,28 @@ export function open(
 	entry: Pick<HtilEntry, "id" | "owner">,
 	store?: PhaseLoopStore,
 	options: OpenHtilOptions = {},
+	opts?: TransitionOptions,
 ): GateOutcome {
-	return transition(runtimeId, store, (row) => {
-		if (isClosed(row) && options.afterShip !== true)
-			return [`loop is closed by Ship; HTIL entry ${entry.id} is not recorded`];
-		const refusals: string[] = [];
-		if (isBlank(entry.id)) refusals.push("HTIL entry needs an id");
-		if (isBlank(entry.owner)) refusals.push(`HTIL entry ${entry.id} needs an owner`);
-		if (row.humanItems.some((item) => item.id === entry.id)) {
-			refusals.push(`HTIL entry ${entry.id} already exists`);
-		}
-		if (refusals.length > 0) return refusals;
-		// Ship-closed here only through the reconcile (afterShip), so this origin marks exactly those entries.
-		const origin: Pick<HtilEntry, "afterShip"> = isClosed(row) ? { afterShip: true } : {};
-		row.humanItems.push({ id: entry.id, owner: entry.owner, state: "open", ...origin });
-		return [];
-	});
+	return transition(
+		runtimeId,
+		store,
+		(row) => {
+			if (isClosed(row) && options.afterShip !== true)
+				return [`loop is closed by Ship; HTIL entry ${entry.id} is not recorded`];
+			const refusals: string[] = [];
+			if (isBlank(entry.id)) refusals.push("HTIL entry needs an id");
+			if (isBlank(entry.owner)) refusals.push(`HTIL entry ${entry.id} needs an owner`);
+			if (row.humanItems.some((item) => item.id === entry.id)) {
+				refusals.push(`HTIL entry ${entry.id} already exists`);
+			}
+			if (refusals.length > 0) return refusals;
+			// Ship-closed here only through the reconcile (afterShip), so this origin marks exactly those entries.
+			const origin: Pick<HtilEntry, "afterShip"> = isClosed(row) ? { afterShip: true } : {};
+			row.humanItems.push({ id: entry.id, owner: entry.owner, state: "open", ...origin });
+			return [];
+		},
+		{ event: `open(HTIL ${entry.id})`, at: opts?.at },
+	);
 }
 
 /**
@@ -412,29 +600,36 @@ export function resolve(
 	entryId: string,
 	resolution: HtilResolution,
 	store?: PhaseLoopStore,
+	opts?: TransitionOptions,
 ): GateOutcome {
-	return transition(runtimeId, store, (row) => {
-		const entry = row.humanItems.find((item) => item.id === entryId);
-		if (isClosed(row) && entry?.afterShip !== true)
-			return [`loop is closed by Ship; HTIL entry ${entryId} is not resolved`];
-		if (entry === undefined) return [`HTIL entry ${entryId} does not exist`];
-		if (entry.state !== "open") return [`HTIL entry ${entryId} is already ${entry.state}`];
-		if (resolution.state === "done") {
-			if (isBlank(resolution.evidenceId)) return [`done HTIL entry ${entryId} needs evidenceId`];
-			if (resolution.resolvedBy !== undefined && isBlank(resolution.resolvedBy)) {
-				return [`done HTIL entry ${entryId} needs resolvedBy`];
+	return transition(
+		runtimeId,
+		store,
+		(row) => {
+			const entry = row.humanItems.find((item) => item.id === entryId);
+			if (isClosed(row) && entry?.afterShip !== true)
+				return [`loop is closed by Ship; HTIL entry ${entryId} is not resolved`];
+			if (entry === undefined) return [`HTIL entry ${entryId} does not exist`];
+			if (entry.state !== "open") return [`HTIL entry ${entryId} is already ${entry.state}`];
+			if (resolution.state === "done") {
+				if (isBlank(resolution.evidenceId)) return [`done HTIL entry ${entryId} needs evidenceId`];
+				if (resolution.resolvedBy !== undefined && isBlank(resolution.resolvedBy)) {
+					return [`done HTIL entry ${entryId} needs resolvedBy`];
+				}
+				entry.state = "done";
+				entry.evidenceId = resolution.evidenceId;
+				if (resolution.resolvedBy !== undefined) entry.resolvedBy = resolution.resolvedBy;
+				if (resolution.resolvedAt !== undefined) entry.resolvedAt = resolution.resolvedAt;
+				return [];
 			}
-			entry.state = "done";
-			entry.evidenceId = resolution.evidenceId;
-			if (resolution.resolvedBy !== undefined) entry.resolvedBy = resolution.resolvedBy;
-			if (resolution.resolvedAt !== undefined) entry.resolvedAt = resolution.resolvedAt;
+			if (isBlank(resolution.decisionId))
+				return [`deferred HTIL entry ${entryId} needs decisionId`];
+			entry.state = "deferred";
+			entry.decisionId = resolution.decisionId;
 			return [];
-		}
-		if (isBlank(resolution.decisionId)) return [`deferred HTIL entry ${entryId} needs decisionId`];
-		entry.state = "deferred";
-		entry.decisionId = resolution.decisionId;
-		return [];
-	});
+		},
+		{ event: `resolve(HTIL ${entryId})`, at: opts?.at },
+	);
 }
 
 /**
@@ -445,13 +640,87 @@ export function recordAudit(
 	runtimeId: string,
 	audit: AuditRecord,
 	store?: PhaseLoopStore,
+	opts?: TransitionOptions,
 ): GateOutcome {
-	return transition(runtimeId, store, (row) => {
-		if (isClosed(row)) return [`loop is closed by Ship; audit ${audit.id} is not recorded`];
-		if (isBlank(audit.id)) return ["audit record needs an id"];
-		row.audits = [...(row.audits ?? []).filter((item) => item.id !== audit.id), { ...audit }];
-		return [];
+	return transition(
+		runtimeId,
+		store,
+		(row) => {
+			if (isClosed(row)) return [`loop is closed by Ship; audit ${audit.id} is not recorded`];
+			if (isBlank(audit.id)) return ["audit record needs an id"];
+			row.audits = [...(row.audits ?? []).filter((item) => item.id !== audit.id), { ...audit }];
+			return [];
+		},
+		{ event: `recordAudit(${audit.id})`, at: opts?.at },
+	);
+}
+
+/**
+ * Durably clean up historical artifacts for a loop. Guard: the loop is completed (Ship
+ * recorded) with a recorded close (`closedBy`). Marks the loop `cleaned-up`, which is
+ * terminal: no phase events are accepted afterwards. Throws `FsmError` (kind `guard`)
+ * when the guard fails, and `PhaseLoopCorruptError` when the stored record is quarantined.
+ */
+export function cleanupPhaseLoop(
+	store: PhaseLoopStore,
+	runtimeId: string,
+	cleanedBy: string,
+	now: string,
+): void {
+	const outcome = store.load(runtimeId);
+	if (outcome.status === "quarantined") {
+		throw new PhaseLoopCorruptError(runtimeId, outcome.quarantinedAs);
+	}
+	const row = outcome.status === "found" ? snapshot(outcome.record) : emptyState(runtimeId);
+	const lifecycle = deriveLifecycle(row);
+	if (!isClosed(row)) {
+		throw new FsmError(
+			"guard",
+			lifecycle,
+			"cleanup",
+			nextEvents(lifecycle),
+			`cleanup requires a completed loop; loop is ${lifecycle}`,
+		);
+	}
+	if (row.closedBy === undefined) {
+		throw new FsmError(
+			"guard",
+			lifecycle,
+			"cleanup",
+			nextEvents(lifecycle),
+			"cleanup requires a recorded close (closedBy)",
+		);
+	}
+	if (row.cleanedUpAt !== undefined) {
+		throw new FsmError(
+			"rejection",
+			lifecycle,
+			"cleanup",
+			nextEvents(lifecycle),
+			"loop is already cleaned-up",
+		);
+	}
+	if (isBlank(cleanedBy)) {
+		throw new FsmError(
+			"guard",
+			lifecycle,
+			"cleanup",
+			nextEvents(lifecycle),
+			"cleanup needs a cleanedBy owner",
+		);
+	}
+	appendTransition(row, {
+		at: now,
+		from: lifecycle,
+		event: "cleanup",
+		to: "cleaned-up",
+		accepted: true,
+		refusals: [],
 	});
+	row.cleanedUpAt = now;
+	row.cleanedUpBy = cleanedBy;
+	if (row.schemaVersion === undefined) row.schemaVersion = FSM_SCHEMA_VERSION;
+	store.save(runtimeId, row);
 }
 
 /**
