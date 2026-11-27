@@ -674,7 +674,7 @@ describe("emitEvent", () => {
 		await emitEvent(
 			{
 				kind: "note",
-				summary: "ultrathink planned graph ut-1 (5 nodes)",
+				summary: "ultrathink planned graph ut-1 (6 nodes)",
 				surface: "hermes",
 				sessionId: "s1",
 				graphId: "ut-1",
@@ -694,7 +694,7 @@ describe("emitEvent", () => {
 		});
 		expect(JSON.parse(String(init.body))).toEqual({
 			kind: "note",
-			summary: "ultrathink planned graph ut-1 (5 nodes)",
+			summary: "ultrathink planned graph ut-1 (6 nodes)",
 			surface: "hermes",
 			session_id: "s1",
 			graph_id: "ut-1",

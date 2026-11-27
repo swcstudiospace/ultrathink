@@ -43,7 +43,7 @@ Every root has these children. A root that holds only `<ORIGINAL>` is not a spec
 
 ## Graph of Thought
 
-Build 5 to 8 nodes. The first is kind `understand` and depends on nothing. The last is kind `synthesize`. Include one `critique` node whose question names what is still unknown. Ids are `n1`, `n2`, `n3`, and so on. A dependency may name only an earlier id, and only when this node needs that conclusion. Leave independent nodes independent.
+Build 6 to 8 nodes. The first is kind `understand` and depends on nothing. The last is kind `synthesize`. Include one `critique` node whose question names what is still unknown. Ids are `n1`, `n2`, `n3`, and so on. A dependency may name only an earlier id, and only when this node needs that conclusion. Leave independent nodes independent.
 
 For each node, write a rationale of 4 to 8 numbered steps and a conclusion. The synthesize conclusion contains the execution plan as plain lines, one unit per line, and ends with exactly one `Verify:` line naming the commands that prove the whole task:
 

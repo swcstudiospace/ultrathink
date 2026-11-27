@@ -16,7 +16,7 @@ Step-by-step setup lives in the task guides: [Set up Notion](how-to/set-up-notio
 
 ## What gets created
 
-A plan has one Graph of Thought with 5 to 8 nodes by default. Each node normally has 4 to 8 numbered rationale steps; a node whose fill failed gets one step. For each plan:
+A plan has one Graph of Thought with 6 to 8 nodes by default. Each node normally has 4 to 8 numbered rationale steps; a node whose fill failed gets one step. For each plan:
 
 **Linear** (when `linear.team` is set), in that team:
 

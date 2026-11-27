@@ -9,7 +9,7 @@ This guide connects a chat client to the hosted ultrathink server, or to the sam
 `/ultrathink` runs the planning part of the ultrathink plugin and hands the result back to the chat model. The pipeline has four steps:
 
 1. **Uplift.** The request is rewritten as a structured specification.
-2. **Graph of Thought.** The specification is split into 5 to 8 nodes, each a question to settle, in dependency order.
+2. **Graph of Thought.** The specification is split into 6 to 8 nodes, each a question to settle, in dependency order.
 3. **Chain of Thought.** Each node gets numbered reasoning steps and a conclusion. Nodes run level by level, three at a time.
 4. **Clarifying questions.** The pipeline lists what it could not settle, each with a default answer.
 

@@ -6,7 +6,7 @@ Terms used on this page:
 
 - **Host**: the coding agent ultrathink runs inside: Claude Code, Grok Build, Hermes Agent, Muse Code, Omp, Prime Agent or Cursor.
 - **Engine**: the model that writes the plan. On Omp with `think.engine: "auto"` it is the session's own live model, called inside Omp. Everywhere else, and on Omp with a named engine, it is Claude, Grok or Muse on its CLI route (Grok also over HTTP).
-- **Graph of Thought**: the 5 to 8 reasoning nodes the engine builds for each prompt. Each node is filled with numbered rationale steps.
+- **Graph of Thought**: the 6 to 8 reasoning nodes the engine builds for each prompt. Each node is filled with numbered rationale steps.
 - **HITL** (human in the loop): the clarifying questions the plan asks before work starts.
 - **Tracker**: Notion and/or Linear, where the plan becomes rows and issues.
 - **Ship**: the optional flow that opens a pull request, has Greptile review it and can merge it. See [Ship](ship.md).
@@ -71,7 +71,7 @@ Types: "integer" means a whole JSON number; "number" allows fractions. Ranges ar
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | boolean | `true` | Build the Graph of Thought. `bin/ultrathink think on\|off` overrides this per host. |
-| `minNodes` | integer, >= 1 | `5` | Fewest graph nodes. Clamped to `maxNodes`. |
+| `minNodes` | integer, >= 1 | `6` | Fewest graph nodes. Clamped to `maxNodes`. |
 | `maxNodes` | integer, >= `minNodes` | `8` | Most graph nodes. Values above 8 are capped at 8. |
 | `engine` | `"auto"`, `"claude"`, `"grok"` or `"muse"` | `"auto"` | Engine for the uplift, the graph, the per-node fills, the HITL questions and the ship judge. `"auto"` uses each host's own engine (see the matrix below). A named engine plans on every host. `bin/ultrathink grok engine auto\|claude\|grok\|muse` overrides this per host. |
 | `fillRetries` | integer, >= 1 | `2` | Extra attempts for a node fill that is not a real fill (a refusal, error text, truncated markup, fewer than 5 or more than 8 steps), so such a fill is tried `1 + fillRetries` times (3 by default). A provider failure that the completer already retried (3 attempts with `Retry-After`) is not retried again here: the repair pass gives that node one more go after the other fills. A fill counts only when it has a closed rationale of 5 to 8 numbered steps and a closed conclusion; a provider error, a refusal, error text, truncated markup or a reply cut off at the token limit is a failed attempt. Waits between attempts use jittered backoff from 500 ms, capped at 8 s, and honour `Retry-After`. Any other value keeps the default. |

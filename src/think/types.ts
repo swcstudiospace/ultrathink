@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
-export const MIN_NODES = 5;
+export const MIN_NODES = 6;
 export const MAX_NODES = 8;
 
 /** Numbered rationale steps the CoT fill must produce per node; each step becomes one Sub-Issue. */
@@ -108,10 +108,18 @@ export const FALLBACK_GRAPH: ThoughtGraph = {
 		},
 		{
 			id: "n5",
+			title: "Tradeoffs",
+			kind: "aggregate",
+			question:
+				"Which approaches survive the risks, and what tradeoffs does the chosen approach carry?",
+			dependsOn: ["n4"],
+		},
+		{
+			id: "n6",
 			title: "Plan",
 			kind: "synthesize",
 			question: "What is the concrete execution plan for the coding agent, in order?",
-			dependsOn: ["n4"],
+			dependsOn: ["n5"],
 		},
 	],
 };

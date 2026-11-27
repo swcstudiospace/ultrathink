@@ -94,7 +94,7 @@ We shipped the plan. It went fine. Notes:
 
 const TRUNCATED = CONTRACT.slice(0, CONTRACT.indexOf("</tasks>"));
 
-const ledgerRows = Array.from({ length: 340 }, (_, i) => `| entry-${i} | item | done |`).join("\n");
+const ledgerRows = Array.from({ length: 460 }, (_, i) => `| entry-${i} | item | done |`).join("\n");
 const WITH_LEDGER = `${CONTRACT}
 ## Ledger
 
@@ -105,7 +105,7 @@ ${ledgerRows}
 
 const BLOAT = `${CONTRACT}
 
-${Array.from({ length: 320 }, (_, i) => `Filler paragraph ${i}: prose that is not a ledger table and inflates the plan.`).join("\n\n")}
+${Array.from({ length: 500 }, (_, i) => `Filler paragraph ${i}: prose that is not a ledger table and inflates the plan.`).join("\n\n")}
 `;
 
 describe("checkPlanSet", () => {

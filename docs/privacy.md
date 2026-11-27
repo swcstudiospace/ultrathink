@@ -61,7 +61,7 @@ On a fresh install, only your host's engine rows apply, and Teachable Moments is
 
 ### Notion and Linear
 
-- A plan whose spec is the fallback (the spec call failed) is never tracked. If only the graph call fails, a generic 5-node fallback graph is used and is tracked like any other plan.
+- A plan whose spec is the fallback (the spec call failed) is never tracked. If only the graph call fails, a generic 6-node fallback graph is used and is tracked like any other plan.
 - A provider that is not configured is never contacted, and a configured provider without a stored credential is skipped (`src/track/gateway.ts`).
 - When `ultrathink-mcp track complete` runs for a session that already has tracker rows recorded, it looks them up by Graph ID before creating anything, so it sends a search query too. The planner itself doesn't search.
 - `ULTRATHINK_TRACK=0` and `track.enabled: false` stop only the planner's own row creation. `ultrathink-kickoff` can still create the rows when it runs `ultrathink-mcp track complete`. To stop all rows, use `/ultrathink-track off`.

@@ -15,10 +15,10 @@ Planning makes several model calls before your agent starts, and the agent waits
 |---|---|---|
 | Spec (the "uplift" that rewrites your prompt into a structured spec) | 1 | planning off |
 | Graph of Thought: the graph | 1 | `think.enabled: false` or `bin/ultrathink think off` |
-| Graph of Thought: one detail call per node | N, between `think.minNodes` (5) and `think.maxNodes` (8) | same |
+| Graph of Thought: one detail call per node | N, between `think.minNodes` (6) and `think.maxNodes` (8) | same |
 | Clarifying questions (HITL, "human in the loop") | 1 | `hitl.enabled: false` or `bin/ultrathink hitl off` |
 
-With the defaults, one planned prompt makes **8 to 11** engine calls. With the Graph of Thought off it makes 2, and with both the graph and the questions off it makes 1.
+With the defaults, one planned prompt makes **9 to 11** engine calls. With the Graph of Thought off it makes 2, and with both the graph and the questions off it makes 1.
 
 Other costs:
 
@@ -51,8 +51,8 @@ Predecessor conclusions are not clipped: a node carries the full conclusion of e
 
 | Key | Default | Effect |
 |---|---|---|
-| `think.maxNodes` | `8` | Upper bound on graph nodes, so on node detail calls. It cannot go above 8, and a value below `think.minNodes` is ignored: to go under 5, lower `minNodes` too. |
-| `think.minNodes` | `5` | Lower bound. A graph from the engine with fewer nodes is replaced by a built-in five-node graph. |
+| `think.maxNodes` | `8` | Upper bound on graph nodes, so on node detail calls. It cannot go above 8, and a value below `think.minNodes` is ignored: to go under 6, lower `minNodes` too. |
+| `think.minNodes` | `6` | Lower bound. A graph from the engine with fewer nodes is replaced by a built-in six-node graph. |
 | `think.enabled` | `true` | `false` skips the graph and every node call. The plan is then the spec plus the clarifying questions. |
 | `hitl.enabled` | `true` | `false` skips the clarifying-questions call. |
 | `hitl.maxQuestions` | `4` | Most questions one plan may contain (1 to 4). It does not change the number of calls. |

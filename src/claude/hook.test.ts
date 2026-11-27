@@ -92,7 +92,7 @@ function smartComplete(): (system: string, user: string) => Promise<string> {
 			const steps = Array.from({ length: 5 }, (_, i) => `${i + 1}. ${id} step ${i + 1}`).join(" ");
 			return `<node><rationale>${steps}</rationale><conclusion>c ${id}</conclusion></node>`;
 		}
-		return graphJson(5);
+		return graphJson(6);
 	};
 }
 
@@ -327,8 +327,8 @@ describe("runPromptSubmit", () => {
 			expect(result.record?.engineError).toBeUndefined();
 			expect(result.record?.degraded?.[0]).toBe("uplift");
 			expect(result.record?.degraded).toContain("graph");
-			// Uplift, graph, five fills, and the clarify step: an engine that answers nothing answers the clarifier nothing too.
-			expect(result.record?.degraded).toHaveLength(8);
+			// Uplift, graph, six fills, and the clarify step: an engine that answers nothing answers the clarifier nothing too.
+			expect(result.record?.degraded).toHaveLength(9);
 			expect(result.record?.degraded?.at(-1)).toBe("clarify");
 			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
 			expect(ctx).toContain("## Planning degraded");
@@ -351,11 +351,11 @@ describe("runPromptSubmit", () => {
 			const plan = result.record?.plan;
 			expect(plan?.task.repo).toBe("acme/widgets");
 			expect(plan?.task.branch).toBe("feat/widget");
-			expect(plan?.issues).toHaveLength(5);
-			// 5 nodes × 5 rationale steps: one Sub-Issue (and Linear sub-issue) per step, not per node.
-			expect(plan?.subIssues).toHaveLength(25);
-			expect(plan?.linearSubIssues).toHaveLength(25);
-			for (const id of ["n1", "n2", "n3", "n4", "n5"]) {
+			expect(plan?.issues).toHaveLength(6);
+			// 6 nodes × 5 rationale steps: one Sub-Issue (and Linear sub-issue) per step, not per node.
+			expect(plan?.subIssues).toHaveLength(30);
+			expect(plan?.linearSubIssues).toHaveLength(30);
+			for (const id of ["n1", "n2", "n3", "n4", "n5", "n6"]) {
 				expect(plan?.subIssues.filter((row) => row.nodeId === id).map((row) => row.step)).toEqual([
 					1, 2, 3, 4, 5,
 				]);
@@ -578,7 +578,7 @@ describe("runPromptSubmit", () => {
 			const result = await runPromptSubmit(input, deps);
 			expect(result.record?.plan?.task.repo).toBeUndefined();
 			expect(result.record?.plan?.task.branch).toBeUndefined();
-			expect(result.record?.plan?.issues).toHaveLength(5);
+			expect(result.record?.plan?.issues).toHaveLength(6);
 		} finally {
 			cleanup();
 		}
@@ -748,7 +748,7 @@ describe("gateway tracking", () => {
 			expect(ctx).toContain(TRACKING_OFF_NOTE);
 			expect(result.output?.systemMessage).toContain("Tracking · off");
 			expect(result.output?.systemMessage).not.toContain("kickoff");
-			expect(result.record?.plan?.issues).toHaveLength(5);
+			expect(result.record?.plan?.issues).toHaveLength(6);
 			expect(readSession(deps.stateDir, "s1")?.plan?.graphId).toBe(result.record?.plan?.graphId);
 		} finally {
 			cleanup();
@@ -776,8 +776,8 @@ describe("gateway tracking", () => {
 		});
 		try {
 			const result = await runPromptSubmit(input, deps);
-			// 5 nodes, 25 steps: 4 node issues + 25 sub-issues missing in Linear; Notion is not configured.
-			expect(result.output?.systemMessage).toContain("Tracking · partial (29 missing)");
+			// 6 nodes, 30 steps: 5 node issues + 30 sub-issues missing in Linear; Notion is not configured.
+			expect(result.output?.systemMessage).toContain("Tracking · partial (35 missing)");
 			const ctx = result.output?.hookSpecificOutput.additionalContext ?? "";
 			expect(ctx).toContain(
 				"Tracker rows created before this turn: 1 Linear issues, 0 sub-issues (graph",
@@ -1321,13 +1321,13 @@ describe("substrate plan event", () => {
 			expect(sent).toEqual([
 				{
 					kind: "note",
-					summary: `ultrathink planned graph ${graphId} (5 nodes)`,
+					summary: `ultrathink planned graph ${graphId} (6 nodes)`,
 					surface: "claude-code",
 					sessionId: `s1:${graphId}`,
 					graphId,
 					repo: "acme/widgets",
 					branch: "feat/widget",
-					payload: { ultrathink: "plan", nodes: 5, host: "claude-code" },
+					payload: { ultrathink: "plan", nodes: 6, host: "claude-code" },
 				},
 			]);
 			expect(onDisk).toEqual([graphId]);
@@ -1407,7 +1407,7 @@ describe("substrate plan event", () => {
 			expect(sent).toHaveLength(1);
 			expect(sent[0]).toMatchObject({
 				surface: "hermes",
-				payload: { ultrathink: "plan", nodes: 5, host: "hermes", skill: "gsd-quick" },
+				payload: { ultrathink: "plan", nodes: 6, host: "hermes", skill: "gsd-quick" },
 			});
 			const wire = JSON.stringify(sent);
 			expect(wire).toContain(result.record?.plan?.graphId ?? "missing graph id");
@@ -1711,13 +1711,13 @@ describe("substrate plan event", () => {
 			expect(call?.headers.authorization).toBe("Bearer tok-secret-1234");
 			expect(call?.body).toEqual({
 				kind: "note",
-				summary: `ultrathink planned graph ${graphId} (5 nodes)`,
+				summary: `ultrathink planned graph ${graphId} (6 nodes)`,
 				surface: "claude-code",
 				session_id: `s1:${graphId}`,
 				graph_id: graphId,
 				repo: "acme/widgets",
 				branch: "feat/widget",
-				payload: { ultrathink: "plan", nodes: 5, host: "claude-code" },
+				payload: { ultrathink: "plan", nodes: 6, host: "claude-code" },
 			});
 			// The prompt, the spec and the plan stay local; the token is only ever the Authorization header.
 			const wire = JSON.stringify(call?.body);
@@ -1766,11 +1766,11 @@ describe("progress events", () => {
 			expect(positions.every((p) => p >= 0)).toBe(true);
 			expect([...positions].sort((a, b) => a - b)).toEqual(positions);
 			expect(labels).not.toContain("track:start");
-			expect(labels.filter((l) => l === "node:done")).toHaveLength(5);
-			expect(events.find((e) => e.type === "graph")).toMatchObject({ total: 5 });
+			expect(labels.filter((l) => l === "node:done")).toHaveLength(6);
+			expect(events.find((e) => e.type === "graph")).toMatchObject({ total: 6 });
 			expect(
 				events.find((e) => e.type === "stage" && e.stage === "think" && e.phase === "end"),
-			).toMatchObject({ ok: true, detail: "5 nodes" });
+			).toMatchObject({ ok: true, detail: "6 nodes" });
 		} finally {
 			cleanup();
 		}
@@ -3702,6 +3702,7 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 				"fill",
 				"fill",
 				"fill",
+				"fill",
 				"clarify",
 			];
 			expect(run.phases).toEqual(phases.slice(0, phases.indexOf(at) + 1));
@@ -3814,10 +3815,10 @@ describe("caller cancellation and the resolution record (D-12)", () => {
 					if (phase === "graph") {
 						return JSON.stringify({
 							goal: "Ship it",
-							nodes: Array.from({ length: 5 }, (_, i) => ({
+							nodes: Array.from({ length: 6 }, (_, i) => ({
 								id: `n${i + 1}`,
 								title: `T${i + 1}`,
-								kind: i === 0 ? "understand" : i === 4 ? "synthesize" : "generate",
+								kind: i === 0 ? "understand" : i === 5 ? "synthesize" : "generate",
 								question: `Q${i + 1}`,
 								depends_on: i < 3 ? [] : i === 3 ? ["n1", "n2", "n3"] : ["n4"],
 							})),

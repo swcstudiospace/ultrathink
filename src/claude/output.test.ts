@@ -498,7 +498,7 @@ describe("truncateXml", () => {
 describe("formatSummary", () => {
 	test("reports root, source, nodes, tracking pending, and elapsed time", () => {
 		expect(formatSummary({ result, graph: FALLBACK_GRAPH, tracked: true, elapsedMs: 12_345 })).toBe(
-			"Prompt Uplift · BUILD_PROMPT · llm · Graph of Thought · 5 nodes · Tracking · ultrathink-kickoff pending · 12.3s",
+			"Prompt Uplift · BUILD_PROMPT · llm · Graph of Thought · 6 nodes · Tracking · ultrathink-kickoff pending · 12.3s",
 		);
 		expect(formatSummary({ result })).toBe("Prompt Uplift · BUILD_PROMPT · llm");
 	});
@@ -512,7 +512,7 @@ describe("formatSummary", () => {
 				degraded: ["graph", "fill:n2"],
 			}),
 		).toBe(
-			"Prompt Uplift · BUILD_PROMPT · llm · claude:x · Graph of Thought · 5 nodes · Degraded · graph, fill:n2",
+			"Prompt Uplift · BUILD_PROMPT · llm · claude:x · Graph of Thought · 6 nodes · Degraded · graph, fill:n2",
 		);
 		expect(formatSummary({ result, engine: "claude:x", degraded: [] })).toBe(
 			formatSummary({ result, engine: "claude:x" }),
@@ -586,7 +586,7 @@ describe("formatSummary", () => {
 				elapsedMs: 1_000,
 			}),
 		).toBe(
-			"Prompt Uplift · BUILD_PROMPT · llm · claude:sonnet · Graph of Thought · 5 nodes · HITL · 1 question(s) · Engine error · claude timed out after 5ms · 1.0s",
+			"Prompt Uplift · BUILD_PROMPT · llm · claude:sonnet · Graph of Thought · 6 nodes · HITL · 1 question(s) · Engine error · claude timed out after 5ms · 1.0s",
 		);
 		expect(formatSummary({ result, clarifications: [] })).toBe(
 			"Prompt Uplift · BUILD_PROMPT · llm",

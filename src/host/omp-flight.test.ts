@@ -803,7 +803,7 @@ describe("flight lifecycle (D-12)", () => {
 	test("unbounded omitted outer survives fired 600001ms with one real plan aside", async () => {
 		expect(await runChildLifetimeScenario({ cancelHung: false })).toEqual({
 			planAsides: 1,
-			nativeCalls: 9,
+			nativeCalls: 10,
 		});
 	}, 120_000);
 	const OUTER_CASES: Array<{ name: string; extra: { maxRunMs?: number } }> = [
@@ -1738,14 +1738,14 @@ describe("flight lifecycle (D-12)", () => {
 	test("explicit zero mirrors omitted beyond cutoff", async () => {
 		expect(await runChildLifetimeScenario({ maxRunMs: 0, cancelHung: false })).toEqual({
 			planAsides: 1,
-			nativeCalls: 9,
+			nativeCalls: 10,
 		});
 	}, 120_000);
 
 	test("local native lifetime smoke", async () => {
 		expect(await runChildLifetimeScenario({ cancelHung: false })).toEqual({
 			planAsides: 1,
-			nativeCalls: 9,
+			nativeCalls: 10,
 		});
 		expect(await runChildLifetimeScenario({ cancelHung: true })).toEqual({
 			planAsides: 0,

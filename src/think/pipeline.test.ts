@@ -73,20 +73,20 @@ describe("runThink", () => {
 			uplift,
 			complete: async (system, user) => {
 				calls.push({ system, user });
-				if (calls.length === 1) return graphJson(5);
+				if (calls.length === 1) return graphJson(6);
 				return fillXml(`done ${nodeId(user)}`);
 			},
 		});
 
-		expect(calls).toHaveLength(1 + 5);
+		expect(calls).toHaveLength(1 + 6);
 		expect(calls[0]?.system).toBe(GRAPH_SYSTEM_PROMPT);
 		expect(calls[0]?.user).toContain("add list");
 		expect(calls[0]?.user).toContain("<BUILD_PROMPT>");
 		expect(calls.slice(1).every((call) => call.system === COT_SYSTEM_PROMPT)).toBe(true);
 		expect(calls[2]?.user).toContain("done n1");
-		expect(result.graph.nodes.map((node) => node.id)).toEqual(["n1", "n2", "n3", "n4", "n5"]);
+		expect(result.graph.nodes.map((node) => node.id)).toEqual(["n1", "n2", "n3", "n4", "n5", "n6"]);
 		expect(result.graph.nodes[0]?.conclusion).toBe("done n1");
-		expect(result.graph.nodes[4]?.kind).toBe("synthesize");
+		expect(result.graph.nodes[5]?.kind).toBe("synthesize");
 		expect(result.source).toBe("llm");
 		expect(result.partial).toBe(false);
 		expect(result.xml).toContain("<BUILD_PROMPT>");
@@ -100,7 +100,7 @@ describe("runThink", () => {
 		);
 	});
 
-	test("graph throw uses FALLBACK_GRAPH still fills 5 CoTs", async () => {
+	test("graph throw uses FALLBACK_GRAPH still fills 6 CoTs", async () => {
 		let n = 0;
 		const result = await runThink({
 			uplift,
@@ -112,7 +112,7 @@ describe("runThink", () => {
 			},
 		});
 		expect(n).toBe(1 + FALLBACK_GRAPH.nodes.length);
-		expect(result.graph.nodes).toHaveLength(5);
+		expect(result.graph.nodes).toHaveLength(6);
 		expect(result.graph.nodes.map((node) => node.id)).toEqual(
 			FALLBACK_GRAPH.nodes.map((node) => node.id),
 		);
@@ -149,7 +149,7 @@ describe("runThink", () => {
 			...seams,
 			complete: async (_system, user) => {
 				if (user.includes('current_node id="n2"')) throw new Error("node boom");
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				return fillXml(`c ${nodeId(user)}`);
 			},
 		});
@@ -172,7 +172,7 @@ describe("runThink", () => {
 			complete: async (system, user) => {
 				if (system !== GRAPH_SYSTEM_PROMPT) return fillXml(nodeId(user));
 				graphUsers.push(user);
-				return graphJson(5);
+				return graphJson(6);
 			},
 		});
 		const payload = graphUsers[0] ?? "";
@@ -220,7 +220,7 @@ describe("runThink", () => {
 			uplift,
 			...seams,
 			complete: async (system, user) =>
-				system === GRAPH_SYSTEM_PROMPT ? graphJson(5) : fillXml(nodeId(user)),
+				system === GRAPH_SYSTEM_PROMPT ? graphJson(6) : fillXml(nodeId(user)),
 		});
 		expect(result.degraded.graph).toBe(false);
 		expect(result.degraded.graphCause).toBeUndefined();
@@ -239,7 +239,7 @@ describe("runThink resilience", () => {
 				delays.push(ms);
 			},
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				const id = nodeId(user);
 				const count = (attempts.get(id) ?? 0) + 1;
 				attempts.set(id, count);
@@ -264,14 +264,14 @@ describe("runThink resilience", () => {
 			uplift,
 			...seams,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				calls.set(nodeId(user), (calls.get(nodeId(user)) ?? 0) + 1);
 				throw new Error("provider down");
 			},
 		});
 		expect(result.partial).toBe(true);
 		expect(result.degraded.graph).toBe(false);
-		expect(result.degraded.fills).toEqual(["n1", "n2", "n3", "n4", "n5"]);
+		expect(result.degraded.fills).toEqual(["n1", "n2", "n3", "n4", "n5", "n6"]);
 		expect(result.degraded.causes?.n1).toContain("provider down");
 		for (const node of result.graph.nodes) {
 			expect(node.thinking).toBe("");
@@ -279,8 +279,8 @@ describe("runThink resilience", () => {
 			expect(node.degraded).toBe(true);
 		}
 		// 1 attempt plus 2 retries; no fill succeeded, so the provider is down and the repair pass is skipped.
-		expect([...calls.values()]).toEqual([3, 3, 3, 3, 3]);
-		expect(result.xml.match(/degraded="true"/g)).toHaveLength(5);
+		expect([...calls.values()]).toEqual([3, 3, 3, 3, 3, 3]);
+		expect(result.xml.match(/degraded="true"/g)).toHaveLength(6);
 	});
 
 	test("a refusal is a failed attempt with a single-line cause of at most 200 chars", async () => {
@@ -290,15 +290,15 @@ describe("runThink resilience", () => {
 			complete: async (_system, user) =>
 				user.includes("current_node")
 					? "I cannot help with that.\nSorry.".repeat(40)
-					: graphJson(5),
+					: graphJson(6),
 		});
-		expect(result.degraded.fills).toHaveLength(5);
+		expect(result.degraded.fills).toHaveLength(6);
 		for (const cause of Object.values(result.degraded.causes ?? {})) {
 			expect(cause).not.toMatch(/[\r\n]/);
 			expect(cause.length).toBeGreaterThan(0);
 			expect(cause.length).toBeLessThanOrEqual(200);
 		}
-		expect(Object.keys(result.degraded.causes ?? {})).toHaveLength(5);
+		expect(Object.keys(result.degraded.causes ?? {})).toHaveLength(6);
 	});
 
 	test("a permanent provider error is attempted once per node; with nothing filled there is no repair", async () => {
@@ -307,20 +307,20 @@ describe("runThink resilience", () => {
 			uplift,
 			...seams,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				calls.set(nodeId(user), (calls.get(nodeId(user)) ?? 0) + 1);
 				throw Object.assign(new Error("forbidden"), { status: 403 });
 			},
 		});
-		expect([...calls.values()]).toEqual([1, 1, 1, 1, 1]);
-		expect(result.degraded.fills).toHaveLength(5);
+		expect([...calls.values()]).toEqual([1, 1, 1, 1, 1, 1]);
+		expect(result.degraded.fills).toHaveLength(6);
 	});
 
 	test("a provider error the completer already retried (report attempts 3) is attempted once per layer: one fill, one repair (retry amplification)", async () => {
 		const calls = new Map<string, number>();
 		const delays: number[] = [];
 		const complete = async (_system: string, user: string): Promise<string> => {
-			if (!user.includes("current_node")) return graphJson(5);
+			if (!user.includes("current_node")) return graphJson(6);
 			const id = nodeId(user);
 			calls.set(id, (calls.get(id) ?? 0) + 1);
 			if (id === "n1") return fillXml("done n1");
@@ -333,25 +333,25 @@ describe("runThink resilience", () => {
 		};
 		const result = await runThink({ uplift, random: () => 0.5, sleep, complete });
 		// The completer's three tries are its own: the fill layer neither multiplies nor sleeps them again.
-		expect([...calls.values()]).toEqual([1, 2, 2, 2, 2]);
+		expect([...calls.values()]).toEqual([1, 2, 2, 2, 2, 2]);
 		expect(delays).toEqual([]);
-		expect(result.degraded.fills).toEqual(["n2", "n3", "n4", "n5"]);
+		expect(result.degraded.fills).toEqual(["n2", "n3", "n4", "n5", "n6"]);
 		calls.clear();
 		await runThink({ uplift, random: () => 0.5, sleep, complete, repair: false });
-		expect([...calls.values()]).toEqual([1, 1, 1, 1, 1]);
+		expect([...calls.values()]).toEqual([1, 1, 1, 1, 1, 1]);
 	});
 
 	test("a failure whose report sits on its cause (PlanCompleterError, FailoverError shape) is attempted once at the fill layer", async () => {
 		const calls = new Map<string, number>();
 		const complete = async (_system: string, user: string): Promise<string> => {
-			if (!user.includes("current_node")) return graphJson(5);
+			if (!user.includes("current_node")) return graphJson(6);
 			calls.set(nodeId(user), (calls.get(nodeId(user)) ?? 0) + 1);
 			const root = transient("slow down");
 			attachReport(root, { attempts: 3, httpStatus: 429 });
 			throw new Error("completer failed", { cause: new Error("wrapper", { cause: root }) });
 		};
 		await runThink({ uplift, ...seams, complete, repair: false });
-		expect([...calls.values()]).toEqual([1, 1, 1, 1, 1]);
+		expect([...calls.values()]).toEqual([1, 1, 1, 1, 1, 1]);
 	});
 
 	test("a failover chain whose every candidate failed is walked once per fill, not once per fill-layer attempt", async () => {
@@ -360,7 +360,7 @@ describe("runThink resilience", () => {
 			id,
 			label: id,
 			complete: async (_system: string, user: string): Promise<string> => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				const key = `${id}:${nodeId(user)}`;
 				calls.set(key, (calls.get(key) ?? 0) + 1);
 				throw Object.assign(new Error("upstream unavailable"), { status: 503 });
@@ -368,7 +368,7 @@ describe("runThink resilience", () => {
 		});
 		const chain = createFailoverCompleter([candidate("a"), candidate("b")]);
 		const result = await runThink({ uplift, ...seams, complete: chain.complete, repair: false });
-		expect(result.degraded.fills).toHaveLength(5);
+		expect(result.degraded.fills).toHaveLength(6);
 		// The first walk tries both candidates; the rest find both cooling and call nothing. Without the chain's report
 		// the fill layer would have walked it again and again.
 		expect([...calls.values()].reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(2);
@@ -380,7 +380,7 @@ describe("runThink resilience", () => {
 		const complete = async (_system: string, user: string): Promise<string> => {
 			if (!user.includes("current_node")) {
 				graphCalls++;
-				return graphJson(5);
+				return graphJson(6);
 			}
 			const id = nodeId(user);
 			calls.set(id, (calls.get(id) ?? 0) + 1);
@@ -390,9 +390,9 @@ describe("runThink resilience", () => {
 			throw error;
 		};
 		await runThink({ uplift, ...seams, complete });
-		// graph 1 + n1 once + n2..n5 once each + one repair attempt each = 10 (the per-node 3x retry gave 18).
-		expect(graphCalls + [...calls.values()].reduce((a, b) => a + b, 0)).toBe(10);
-		expect([...calls.values()]).toEqual([1, 2, 2, 2, 2]);
+		// graph 1 + n1 once + n2..n6 once each + one repair attempt each = 12 (the per-node 3x retry gave 18).
+		expect(graphCalls + [...calls.values()].reduce((a, b) => a + b, 0)).toBe(12);
+		expect([...calls.values()]).toEqual([1, 2, 2, 2, 2, 2]);
 	});
 
 	test("a provider that fails every call costs graph 1 + one fill per node and no repair pass, and the result says so", async () => {
@@ -402,14 +402,14 @@ describe("runThink resilience", () => {
 			...seams,
 			complete: async (_system, user) => {
 				total++;
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				const error = Object.assign(new Error("bad request"), { apiErrorStatus: 400 });
 				attachReport(error, { attempts: 1, httpStatus: 400 });
 				throw error;
 			},
 		});
-		expect(total).toBe(1 + 5);
-		expect(result.degraded.fills).toEqual(["n1", "n2", "n3", "n4", "n5"]);
+		expect(total).toBe(1 + 6);
+		expect(result.degraded.fills).toEqual(["n1", "n2", "n3", "n4", "n5", "n6"]);
 		expect(result.degraded.repaired).toBeUndefined();
 		for (const cause of Object.values(result.degraded.causes ?? {})) {
 			expect(cause).toContain("bad request");
@@ -423,9 +423,9 @@ describe("runThink resilience", () => {
 			uplift,
 			...seams,
 			complete: async (_system, user) =>
-				user.includes("current_node") ? "I cannot help with that." : graphJson(5),
+				user.includes("current_node") ? "I cannot help with that." : graphJson(6),
 		});
-		expect(content.degraded.fills).toHaveLength(5);
+		expect(content.degraded.fills).toHaveLength(6);
 		for (const cause of Object.values(content.degraded.causes ?? {})) {
 			expect(cause).toContain("repair skipped: no fill succeeded");
 			expect(cause).not.toContain("provider unavailable");
@@ -435,7 +435,7 @@ describe("runThink resilience", () => {
 			uplift,
 			...seams,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				const error = new Error("bad request");
 				attachReport(error, { attempts: 1, httpStatus: 400 });
 				throw error;
@@ -487,7 +487,7 @@ describe("runThink resilience", () => {
 		});
 		expect(fillRequests).toBe(0);
 		expect(result.degraded.graphFailure).toContain("rate limited");
-		expect(result.degraded.fills).toHaveLength(5);
+		expect(result.degraded.fills).toHaveLength(6);
 		for (const cause of Object.values(result.degraded.causes ?? {})) {
 			expect(cause).toContain("graph call failed");
 			expect(cause.length).toBeLessThanOrEqual(200);
@@ -497,15 +497,15 @@ describe("runThink resilience", () => {
 	test("a rejected fill (refusal, truncated or malformed) is retried up to 1 + fillRetries at the fill layer", async () => {
 		const calls = new Map<string, number>();
 		const complete = async (_system: string, user: string): Promise<string> => {
-			if (!user.includes("current_node")) return graphJson(5);
+			if (!user.includes("current_node")) return graphJson(6);
 			calls.set(nodeId(user), (calls.get(nodeId(user)) ?? 0) + 1);
 			return "<node><rationale>1. a\n2. b";
 		};
 		await runThink({ uplift, ...seams, complete, fillRetries: 2, repair: false });
-		expect([...calls.values()]).toEqual([3, 3, 3, 3, 3]);
+		expect([...calls.values()]).toEqual([3, 3, 3, 3, 3, 3]);
 		calls.clear();
 		await runThink({ uplift, ...seams, complete, fillRetries: 1, repair: false });
-		expect([...calls.values()]).toEqual([2, 2, 2, 2, 2]);
+		expect([...calls.values()]).toEqual([2, 2, 2, 2, 2, 2]);
 	});
 
 	test("a report-less provider error the kernel calls transient (HTTP 503) is retried at the fill layer", async () => {
@@ -514,7 +514,7 @@ describe("runThink resilience", () => {
 			uplift,
 			...seams,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				const id = nodeId(user);
 				const count = (calls.get(id) ?? 0) + 1;
 				calls.set(id, count);
@@ -536,7 +536,7 @@ describe("runThink resilience", () => {
 			...seams,
 			concurrency: 2,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				const id = nodeId(user);
 				const count = (calls.get(id) ?? 0) + 1;
 				calls.set(id, count);
@@ -556,15 +556,15 @@ describe("runThink resilience", () => {
 	test("fillRetries and repair are honoured", async () => {
 		const calls = new Map<string, number>();
 		const complete = async (_system: string, user: string): Promise<string> => {
-			if (!user.includes("current_node")) return graphJson(5);
+			if (!user.includes("current_node")) return graphJson(6);
 			calls.set(nodeId(user), (calls.get(nodeId(user)) ?? 0) + 1);
 			throw new Error("down");
 		};
 		await runThink({ uplift, ...seams, complete, fillRetries: 0, repair: false });
-		expect([...calls.values()]).toEqual([1, 1, 1, 1, 1]);
+		expect([...calls.values()]).toEqual([1, 1, 1, 1, 1, 1]);
 		calls.clear();
 		await runThink({ uplift, ...seams, complete, fillRetries: 1, repair: false });
-		expect([...calls.values()]).toEqual([2, 2, 2, 2, 2]);
+		expect([...calls.values()]).toEqual([2, 2, 2, 2, 2, 2]);
 	});
 
 	test("abort between fills stops scheduling and rethrows the AbortError (GOT-07)", async () => {
@@ -575,7 +575,7 @@ describe("runThink resilience", () => {
 			...seams,
 			signal: controller.signal,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				fills++;
 				if (fills === 2) controller.abort();
 				return fillXml("x");
@@ -593,7 +593,7 @@ describe("runThink resilience", () => {
 			...seams,
 			signal: controller.signal,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				fills++;
 				if (fills === 2) controller.abort();
 				return fillXml(`done ${nodeId(user)}`);
@@ -603,7 +603,7 @@ describe("runThink resilience", () => {
 		expect(error).toBeInstanceOf(Error);
 		expect(error instanceof Error && error.name).toBe("AbortError");
 		const nodes = carriedNodes(error);
-		expect(nodes.map((node) => node.id)).toEqual(["n1", "n2", "n3", "n4", "n5"]);
+		expect(nodes.map((node) => node.id)).toEqual(["n1", "n2", "n3", "n4", "n5", "n6"]);
 		expect(nodes[0]?.conclusion).toBe("done n1");
 		expect(nodes[0]?.degraded).toBeUndefined();
 		for (const node of nodes.slice(1)) {
@@ -636,7 +636,7 @@ describe("runThink resilience", () => {
 			...seams,
 			signal: controller.signal,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				fills++;
 				controller.abort();
 				throw transient();
@@ -651,7 +651,7 @@ describe("runThink resilience", () => {
 			uplift,
 			...seams,
 			complete: async (_system, user) =>
-				user.includes("current_node") ? fillXml(`done ${nodeId(user)}`) : graphJson(5),
+				user.includes("current_node") ? fillXml(`done ${nodeId(user)}`) : graphJson(6),
 			onProgress: () => {
 				throw new Error("progress sink broke");
 			},
@@ -666,6 +666,7 @@ describe("runThink resilience", () => {
 			"done n3",
 			"done n4",
 			"done n5",
+			"done n6",
 		]);
 	});
 
@@ -676,7 +677,7 @@ describe("runThink resilience", () => {
 			...seams,
 			fillRetries: 0,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				const id = nodeId(user);
 				const seen = prompts.get(id) ?? [];
 				seen.push(user);
@@ -686,9 +687,9 @@ describe("runThink resilience", () => {
 			},
 		});
 		expect(result.degraded.fills).toEqual([]);
-		expect(result.degraded.repaired).toEqual(["n2", "n3", "n4", "n5"]);
+		expect(result.degraded.repaired).toEqual(["n2", "n3", "n4", "n5", "n6"]);
 		expect(result.partial).toBe(false);
-		expect([...prompts.values()].map((seen) => seen.length)).toEqual([1, 2, 2, 2, 2]);
+		expect([...prompts.values()].map((seen) => seen.length)).toEqual([1, 2, 2, 2, 2, 2]);
 		expect(prompts.get("n3")?.[0]).toContain("(predecessor unavailable)");
 		expect(prompts.get("n3")?.[0]).not.toContain("Q2");
 		expect(prompts.get("n3")?.[1]).toContain("done n2 #2");
@@ -704,7 +705,7 @@ describe("runThink resilience", () => {
 			...seams,
 			fillRetries: 0,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				const id = nodeId(user);
 				calls.set(id, (calls.get(id) ?? 0) + 1);
 				if (id === "n2") throw new Error("still down");
@@ -795,7 +796,7 @@ describe("runThink resilience", () => {
 			uplift,
 			...seams,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				users.push(user);
 				// The chain n1..n5: n4 is the long synthesize-style answer that n5 reads as its predecessor.
 				return fillXml(nodeId(user) === "n4" ? conclusion : "ok");
@@ -827,7 +828,7 @@ describe("runThink resilience", () => {
 			...seams,
 			throttle,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				if (nodeId(user) === "n2" && first) {
 					first = false;
 					throw transient("slow down", { retryAfterMs: 1500 });
@@ -836,10 +837,10 @@ describe("runThink resilience", () => {
 			},
 		});
 		expect(result.degraded.fills).toEqual([]);
-		expect(acquire).toHaveBeenCalledTimes(6);
+		expect(acquire).toHaveBeenCalledTimes(7);
 		expect(failure).toHaveBeenCalledTimes(1);
 		expect(failure).toHaveBeenCalledWith({ retryAfterMs: 1500 });
-		expect(success).toHaveBeenCalledTimes(5);
+		expect(success).toHaveBeenCalledTimes(6);
 	});
 
 	test("predecessor text and payload values are escaped and excerpted, never echoed raw (GOT-04, GOT-10)", async () => {
@@ -854,7 +855,8 @@ describe("runThink resilience", () => {
 				{ id: "n2", title: "B", question: "q2", kind: "generate", depends_on: ["n1"] },
 				{ id: "n3", title: "C", question: "q3", kind: "generate", depends_on: ["n2"] },
 				{ id: "n4", title: "D", question: "q4", kind: "generate", depends_on: ["n3"] },
-				{ id: "n5", title: "E", question: "q5", kind: "synthesize", depends_on: ["n4"] },
+				{ id: "n5", title: "E", question: "q5", kind: "aggregate", depends_on: ["n4"] },
+				{ id: "n6", title: "F", question: "q6", kind: "synthesize", depends_on: ["n5"] },
 			],
 		});
 		const users: string[] = [];
@@ -929,7 +931,7 @@ describe("runThink concurrency", () => {
 
 describe("runThink onEvent", () => {
 	const fillFor = async (_system: string, user: string): Promise<string> => {
-		if (!user.includes("current_node")) return graphJson(5);
+		if (!user.includes("current_node")) return graphJson(6);
 		if (user.includes('current_node id="n3"')) throw new Error("node boom");
 		return fillXml("c");
 	};
@@ -943,18 +945,18 @@ describe("runThink onEvent", () => {
 				complete: fillFor,
 				onEvent: (event) => events.push(event),
 			});
-			expect(events[0]).toMatchObject({ type: "graph", total: 5 });
-			expect(events[0]?.nodes).toHaveLength(5);
+			expect(events[0]).toMatchObject({ type: "graph", total: 6 });
+			expect(events[0]?.nodes).toHaveLength(6);
 			expect(events.filter((event) => event.type === "graph")).toHaveLength(1);
 			const nodes = events.slice(1);
-			expect(nodes).toHaveLength(10);
-			for (let index = 0; index < 5; index++) {
+			expect(nodes).toHaveLength(12);
+			for (let index = 0; index < 6; index++) {
 				const id = `n${index + 1}`;
 				const start = nodes.findIndex((event) => event.id === id && event.phase === "start");
 				const done = nodes.findIndex((event) => event.id === id && event.phase === "done");
 				expect(start).toBeGreaterThanOrEqual(0);
 				expect(done).toBeGreaterThan(start);
-				expect(nodes[start]).toMatchObject({ type: "node", index, total: 5 });
+				expect(nodes[start]).toMatchObject({ type: "node", index, total: 6 });
 				expect(nodes[done]?.fallback).toBe(id === "n3" ? true : undefined);
 			}
 		});
@@ -963,7 +965,7 @@ describe("runThink onEvent", () => {
 	test("graph nodes carry dependsOn; every done event carries the node's step titles, fallback included", async () => {
 		const events: Array<Record<string, unknown>> = [];
 		const complete = async (_system: string, user: string): Promise<string> => {
-			if (!user.includes("current_node")) return graphJson(5);
+			if (!user.includes("current_node")) return graphJson(6);
 			if (user.includes('current_node id="n2"')) throw new Error("node boom");
 			return "<node><rationale>1. read it 2. write it 3. check it 4. fix it 5. ship it</rationale><conclusion>c</conclusion></node>";
 		};
@@ -978,10 +980,11 @@ describe("runThink onEvent", () => {
 			{ id: "n2", title: "T2", kind: "generate", dependsOn: ["n1"] },
 			{ id: "n3", title: "T3", kind: "generate", dependsOn: ["n2"] },
 			{ id: "n4", title: "T4", kind: "generate", dependsOn: ["n3"] },
-			{ id: "n5", title: "T5", kind: "synthesize", dependsOn: ["n4"] },
+			{ id: "n5", title: "T5", kind: "generate", dependsOn: ["n4"] },
+			{ id: "n6", title: "T6", kind: "synthesize", dependsOn: ["n5"] },
 		]);
 		const done = events.filter((event) => event.phase === "done");
-		expect(done).toHaveLength(5);
+		expect(done).toHaveLength(6);
 		for (const event of done) {
 			const node = result.graph.nodes.find((candidate) => candidate.id === event.id)!;
 			expect(event.steps).toEqual(nodeStepTitles(node));
@@ -1006,7 +1009,7 @@ describe("runThink onEvent", () => {
 		const healthy = await runThink({
 			uplift,
 			complete: async (_system, user) =>
-				user.includes("current_node") ? fillXml("c") : graphJson(5),
+				user.includes("current_node") ? fillXml("c") : graphJson(6),
 		});
 		expect(healthy.degraded).toEqual({ graph: false, fills: [] });
 
@@ -1016,14 +1019,14 @@ describe("runThink onEvent", () => {
 			complete: async (_system, user) =>
 				user.includes("current_node") ? fillXml("c") : "not json at all",
 		});
-		expect(badGraph.graph.nodes).toHaveLength(5);
+		expect(badGraph.graph.nodes).toHaveLength(6);
 		expect(badGraph.degraded.graph).toBe(true);
 
 		const badFill = await runThink({
 			uplift,
 			...seams,
 			complete: async (_system, user) => {
-				if (!user.includes("current_node")) return graphJson(5);
+				if (!user.includes("current_node")) return graphJson(6);
 				if (user.includes('current_node id="n2"')) throw new Error("node boom");
 				if (user.includes('current_node id="n4"')) return "";
 				return fillXml("c");

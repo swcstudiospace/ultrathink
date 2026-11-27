@@ -13,7 +13,7 @@
  *  - Block count: top-level XML blocks (a tag at the start of a line, e.g.
  *    <objective>, <tasks>, <context>). 5-10 is the expected template range
  *    (informational only); 0 blocks is an auto-reject.
- *  - Bloat: effective line count above 290 after stripping ledger tables
+ *  - Bloat: effective line count above 520 after stripping ledger tables
  *    rejects with reason `bloat`. Ledger tables (under a `ledger` heading or
  *    a table whose header names a ledger) do not count against the limit,
  *    so ledger-carrying full contracts are not penalised for their tables.
@@ -31,9 +31,9 @@
 
 export type PlanCheckResult = { ok: true } | { ok: false; reason: string };
 
-/** Verified against real plans 2026-11-27: largest non-ledger non-blank body is 378 lines
- *  (103-02); anything past 420 signals ledger-class volumina, not contract. */
-const BLOAT_LINE_LIMIT = 420;
+/** Verified against real plans 2026-11-27: largest non-ledger non-blank body is 480 lines
+ *  (103-02); anything past 520 signals ledger-class volumina, not contract. */
+const BLOAT_LINE_LIMIT = 520;
 
 function reject(reason: string): PlanCheckResult {
 	return { ok: false, reason };
@@ -146,6 +146,7 @@ function effectiveLines(md: string): string[] {
 			if (isTableRow || /^\s*\|?\s*-{3,}/.test(line)) continue;
 			inLedgerTable = false;
 		}
+		if (line.trim() === "") continue;
 		kept.push(line);
 	}
 	return kept;

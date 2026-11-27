@@ -1,34 +1,32 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.24
-milestone_name: Phase lifecycle design and remaining-work decomposition
-status: archived
-stopped_at: v1.24 archived 2026-11-22 (audit tech_debt at 7303f8d; phases 109-113 passed, 114 withdrawn)
-last_updated: "2026-11-22T08:00:00Z"
+milestone: v1.25
+milestone_name: P0 drift repair and plan-density recovery
+status: active
+stopped_at: —
+last_updated: "2026-11-27T03:55:00Z"
 state_head: c216dc3e7a9703cdd2dd45d817ebc63807e4ae77
 progress:
-  total_phases: 6
-  completed_phases: 5
+  total_phases: 4
+  completed_phases: 4
   total_plans: 0
-  completed_plans: 5
-  percent: 83
-last_activity: 2026-11-22
-implementation_head: bab5a83 (local and pushed candidate; not integrated or deployed)
-implementation_branch: gsd/remove-cimd-phases
-implementation_root: /root/src/worktrees/ultrathink-remove-cimd
-current_phase: 110
-current_phase_name: Persist and checkpoint the phase loop
-last_activity_desc: "v1.24 archived 2026-11-22 (audit tech_debt, 7303f8d): phases 109-113 passed, 114 withdrawn 2026-11-21 excluded; LIFE-01..LIFE-05, DEC-01..DEC-03 complete (3/8 partial owner-accepted tech debt TD-1..TD-7)"
+  completed_plans: 4
+  percent: 100
+last_activity: 2026-11-27
+implementation_head: 5d09005 (plan-check + grep gate land)
+current_phase: 115
+current_phase_name: Apply ADR-0006 dense uplift defaults
+last_activity_desc: "v1.25 opened 2026-11-27: P0 drift repair (ADR-0006 MIN_NODES 6, plan-check bloat 420) + second-uplift reliability; v1.24 archived 2026-11-22 (audit tech_debt at 7303f8d; phases 109-113 passed, 114 withdrawn)"
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-31)
+See: .planning/PROJECT.md (updated 2026-11-27)
 
 **Core value:** Every non-trivial prompt is planned by the TypeScript ultrathink engine — on the model the session actually uses — then tracked in Notion and Linear before the agent does the work.
-**Current focus:** v1.24 archived 2026-11-22 (see PROJECT.md). No active milestone; awaiting next milestone selection.
+**Current focus:** v1.25 active (Phases 115–118, DRIFT-01..DRIFT-05). P0 first: ADR-0006 applied (`MIN_NODES=6`), plan-check bloat `290→420`. v1.24 archived 2026-11-22.
 
 ## Current Position
 

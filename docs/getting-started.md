@@ -7,7 +7,7 @@ A few terms used throughout:
 - **Host**: the coding agent you type into (Claude Code, Grok Build, Hermes Agent, Muse Code, Omp, Prime Agent or Cursor). ultrathink plugs into its prompt hook (or kernel skill on Prime Agent).
 - **Engine**: the model that writes the plan. On Claude Code, which this tutorial uses, it runs as separate headless calls through the `claude` CLI, independent of the host, and the default engine is Claude. On Omp it is the session's own model, called through Omp's own login (see [Choose the engine](how-to/choose-engine.md#omp-the-sessions-own-model)).
 - **Spec**: your message rewritten as structured XML. Your own words stay verbatim inside it.
-- **Graph of Thought**: the plan itself, 5 to 8 nodes by default with dependencies between them. It ends in a WORKFLOW: waves of work whose units can run in parallel.
+- **Graph of Thought**: the plan itself, 6 to 8 nodes by default with dependencies between them. It ends in a WORKFLOW: waves of work whose units can run in parallel.
 - **HITL questions** (human in the loop): up to 4 clarifying questions whose answers would change the work. Blocking ones are asked once, before any code is written.
 - **Tracker**: Notion or Linear. Tracking is off until you configure one.
 - **MCP gateway**: `bin/ultrathink-mcp`, a small local relay to the hosted Notion, Linear and Greptile MCP servers that keeps their credentials in one store.

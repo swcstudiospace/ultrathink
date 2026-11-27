@@ -145,10 +145,17 @@ const GRAPH = JSON.stringify({
 		},
 		{
 			id: "n5",
+			title: "Tradeoffs",
+			kind: "aggregate",
+			question: "Which approach survives the gaps and risks?",
+			depends_on: ["n4"],
+		},
+		{
+			id: "n6",
 			title: "Execution plan",
 			kind: "synthesize",
 			question: "What is the ordered wave plan?",
-			depends_on: ["n4"],
+			depends_on: ["n5"],
 		},
 	],
 });
@@ -252,8 +259,8 @@ describe("grok-bot journal driver", () => {
 		expect(passes[1]).toEqual([{ stage: "graph", nodeId: undefined }]);
 		expect(passes[2]).toEqual([{ stage: "cot", nodeId: "n1" }]);
 		expect(passes[3]?.map((p) => p.nodeId).sort()).toEqual(["n2", "n3"]);
-		expect(result.check?.nodes).toBe(5);
-		expect(result.check?.totalSteps).toBe(40);
+		expect(result.check?.nodes).toBe(6);
+		expect(result.check?.totalSteps).toBe(48);
 		expect(result.check?.belowBand).toBe(false);
 		expect(result.check?.degraded).toEqual([]);
 		const record = JSON.parse(
@@ -300,9 +307,9 @@ describe("grok-bot journal driver", () => {
 		const stateDir = join(root, "state");
 		const { result } = await drive(stateDir, root, hostModel(5));
 		expect(result.status).toBe("planned");
-		expect(result.check?.totalSteps).toBe(25);
+		expect(result.check?.totalSteps).toBe(30);
 		expect(result.check?.belowBand).toBe(true);
-		expect(deepenTargets(result.check!)).toHaveLength(5);
+		expect(deepenTargets(result.check!)).toHaveLength(4);
 		const cached = await runGrokbotPlan({
 			sessionId: "s1",
 			prompt: PROMPT,
@@ -483,7 +490,7 @@ describe("grok-bot validators", () => {
 		).toMatch(/OUT_OF_SCOPE/);
 		expect(validateUplift("plain prose", PROMPT).ok).toBe(false);
 	});
-	test("graph needs 5-8 nodes, understand first, synthesize last and a critique", () => {
+	test("graph needs 6-8 nodes, understand first, synthesize last and a critique", () => {
 		expect(validateGraph(GRAPH, PROMPT).ok).toBe(true);
 		const four = JSON.parse(GRAPH);
 		four.nodes.splice(2, 1);
@@ -634,11 +641,11 @@ describe("grok-bot track bridge", () => {
 			.flatMap((c) => c.args.pages as Array<{ properties: Record<string, unknown> }>);
 		expect(pages.every((page) => page.properties.Agent === "grok-bot")).toBe(true);
 		expect(payloads.counts).toEqual({
-			linearIssues: 5,
-			linearSubIssues: 40,
+			linearIssues: 6,
+			linearSubIssues: 48,
 			notionTask: 1,
-			notionIssues: 5,
-			notionSubIssues: 40,
+			notionIssues: 6,
+			notionSubIssues: 48,
 		});
 		const saves = payloads.calls.filter((c) => c.tool === "save_issue");
 		expect(saves.every((c) => c.args.project === "Kanban" && c.args.team === "Team")).toBe(true);
@@ -1207,7 +1214,7 @@ describe("grok-bot prompts build after kickoff", () => {
 		expect(unitSubissueCount(post)).toBe(7);
 		expect(validateCloudPrompt(post, dispatch, PROMPT).errors).toEqual([]);
 		// Regression: with the tracked spec embedded (the old builder), a whole-document count saw the spec's
-		// <ISSUES> block too (5 nodes x 7 steps on top of the unit's 7) and rejected the prompt; the unit-scoped count does not.
+		// <ISSUES> block too (7 nodes x 7 steps on top of the unit's 7) and rejected the prompt; the unit-scoped count does not.
 		const tracked = post.replace(untrackedSpec(after.result.xml), after.result.xml);
 		expect((tracked.match(/<SUBISSUE /g) ?? []).length).toBeGreaterThan(MAX_STEPS);
 		expect(validateCloudPrompt(tracked, dispatch, PROMPT).errors).toEqual([]);
@@ -2063,8 +2070,8 @@ describe("grok-bot graph_register payload", () => {
 		expect(bare.steps).toBeUndefined();
 		expect(bare.edges).toBeUndefined();
 		const full = graphRegisterPayload(after, { withNodes: true }) as unknown as Registered;
-		expect(full.nodes).toHaveLength(5);
-		expect(full.steps).toHaveLength(25);
+		expect(full.nodes).toHaveLength(6);
+		expect(full.steps).toHaveLength(30);
 	});
 
 	test("sends only the fields the Substrate schema accepts; dropped fields never appear", async () => {
@@ -2123,6 +2130,7 @@ describe("grok-bot graph_register payload", () => {
 			{ from_node: "n4", to_node: "n2", kind: "requires" },
 			{ from_node: "n4", to_node: "n3", kind: "requires" },
 			{ from_node: "n5", to_node: "n4", kind: "requires" },
+			{ from_node: "n6", to_node: "n5", kind: "requires" },
 		]);
 	});
 

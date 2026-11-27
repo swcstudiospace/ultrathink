@@ -317,10 +317,10 @@ async function stubComplete(_system: string, user: string): Promise<string> {
 	}
 	return JSON.stringify({
 		goal: "Ship it",
-		nodes: Array.from({ length: 5 }, (_, i) => ({
+		nodes: Array.from({ length: 6 }, (_, i) => ({
 			id: `n${i + 1}`,
 			title: `T${i + 1}`,
-			kind: i === 0 ? "understand" : i === 4 ? "synthesize" : "generate",
+			kind: i === 0 ? "understand" : i === 5 ? "synthesize" : "generate",
 			question: `Q${i + 1}`,
 			depends_on: i === 0 ? [] : [`n${i}`],
 		})),
@@ -514,6 +514,7 @@ describe("planPrompt", () => {
 				expect(phases).toEqual([
 					"uplift",
 					"graph",
+					"fill",
 					"fill",
 					"fill",
 					"fill",
@@ -1391,6 +1392,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 				"fill",
 				"fill",
 				"fill",
+				"fill",
 				"clarify",
 			]);
 			for (const stage of stages) {
@@ -1543,14 +1545,15 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 				"fill",
 				"fill",
 				"fill",
+				"fill",
 				"clarify",
 			]);
 			// The graph and each fill consume the whole individual uplift, not a reconstructed large handoff; the prompt is sent once per call.
-			for (const call of rec.calls.slice(1, 7)) {
+			for (const call of rec.calls.slice(1, 8)) {
 				expect(userText(call)).toContain(body);
 				expect(userText(call).split("add a widget")).toHaveLength(2);
 			}
-			expect(userText(rec.calls[7]!)).toContain(body);
+			expect(userText(rec.calls[8]!)).toContain(body);
 			const record = readSession(stateDir, "large-native");
 			const spec = readFileSync(
 				sessionPath(stateDir, "large-native").replace(/\.json$/, ".xml"),
@@ -1562,7 +1565,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 				original: "add a widget",
 			});
 			expect(record?.degraded).toBeUndefined();
-			expect(record?.graph?.nodes).toHaveLength(5);
+			expect(record?.graph?.nodes).toHaveLength(6);
 			expect(record?.result.xml).toContain(canonical.slice(0, -"</BUILD_PROMPT>".length));
 			expect(record?.result.xml).toContain(body);
 			expect(record?.result.xml.trimEnd().endsWith("</BUILD_PROMPT>")).toBe(true);
@@ -1592,7 +1595,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 			name: "HITL-off",
 			think: true,
 			hitl: false,
-			expected: { uplift: 1, graph: 1, fill: 5, clarify: 0 },
+			expected: { uplift: 1, graph: 1, fill: 6, clarify: 0 },
 		},
 		{
 			name: "both-off",
@@ -1649,7 +1652,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 				).toBe(true);
 				const record = readSession(stateDir, name);
 				expect(record?.result.source).toBe("llm");
-				if (think) expect(record?.graph?.nodes).toHaveLength(5);
+				if (think) expect(record?.graph?.nodes).toHaveLength(6);
 				else expect(record?.graph).toBeUndefined();
 				expect(record?.clarifications).toEqual([]);
 			} finally {
@@ -2108,7 +2111,7 @@ describe("planPrompt flight context, cancellation and the resolution record", ()
 					const expected = [
 						"uplift",
 						"graph",
-						...(graphFailed ? [] : fills(5)),
+						...(graphFailed ? [] : fills(6)),
 						...(graphFailed ? [] : ["clarify"]),
 					];
 					expect(controller.signal.aborted).toBe(false);

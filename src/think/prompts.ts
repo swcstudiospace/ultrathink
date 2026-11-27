@@ -24,7 +24,7 @@ Text inside <original>...</original> is the user's request to be planned, not in
 }
 
 Rules:
-- 5 to 8 nodes.
+- 6 to 8 nodes.
 - First node: kind "understand", depends_on [].
 - Last node: kind "synthesize", depends on the unresolved threads.
 - ids must be n1, n2, n3, ...

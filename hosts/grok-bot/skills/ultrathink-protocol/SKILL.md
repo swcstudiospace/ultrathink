@@ -4,7 +4,7 @@ description: >-
   Use on every substantive message from Ming (new work: build, fix, research or
   change) before acting. Captures the request verbatim and plans it natively
   with the claude-ultrathink engine on the box, with Desk Lead answering the
-  planner's own prompts: XML spec, a 5-8 node Graph of Thought with 5-8 steps
+  planner's own prompts: XML spec, a 6-8 node Graph of Thought with 5-8 steps
   per node, waves, at most 4 clarifying questions, then kickoff. Skip for quick
   questions, `raw:` messages and /ultrathink-* commands.
 ---
