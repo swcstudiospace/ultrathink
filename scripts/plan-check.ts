@@ -7,8 +7,9 @@
  * criterion. Pure: no filesystem, config, or state access, no side effects.
  *
  * Criteria (checked in order):
- *  - Frontmatter: YAML block delimited by `---` carrying phase, plan, and a
- *    checkpoint hash (a hex token on a checkpoint/hash key).
+ *  - Frontmatter: YAML block delimited by `---` carrying phase and plan ids
+ *    (gsd-planner 1.18.0 emits no checkpoint hash — requiring one rejected
+ *    every real PLAN, confirmed against .planning/phases/101-113).
  *  - Block count: top-level XML blocks (a tag at the start of a line, e.g.
  *    <objective>, <tasks>, <context>). 5-10 is the expected template range
  *    (informational only); 0 blocks is an auto-reject.
@@ -30,7 +31,9 @@
 
 export type PlanCheckResult = { ok: true } | { ok: false; reason: string };
 
-const BLOAT_LINE_LIMIT = 290;
+/** Verified against real plans 2026-11-27: largest non-ledger non-blank body is 378 lines
+ *  (103-02); anything past 420 signals ledger-class volumina, not contract. */
+const BLOAT_LINE_LIMIT = 420;
 
 function reject(reason: string): PlanCheckResult {
 	return { ok: false, reason };
@@ -46,6 +49,24 @@ function frontmatterField(fm: string, names: readonly string[]): string | undefi
 	for (const name of names) {
 		const match = new RegExp(`^\\s*${name}\\s*:\\s*(.+?)\\s*$`, "m").exec(fm);
 		if (match?.[1]) return match[1];
+	}
+	return undefined;
+}
+
+/** The field's value including any indented block lines that follow it (nested objects). */
+function frontmatterFieldBlock(fm: string, name: string): string | undefined {
+	const lines = fm.split("\n");
+	for (let i = 0; i < lines.length; i += 1) {
+		const line = lines[i] ?? "";
+		const match = new RegExp(`^\\s*${name}\\s*:\\s*(.*)$`).exec(line);
+		if (!match) continue;
+		const parts = [match[1] ?? ""];
+		for (let j = i + 1; j < lines.length; j += 1) {
+			const next = lines[j] ?? "";
+			if (next.trim() === "" || next.startsWith(" ")) parts.push(next);
+			else break;
+		}
+		return parts.join("\n");
 	}
 	return undefined;
 }
@@ -136,9 +157,7 @@ function hasNamedNumber(text: string): boolean {
 
 function hasCitation(text: string): boolean {
 	return (
-		/@[\w./-]+/.test(text) ||
-		/\[[^\]]+\]\([^)]+\)/.test(text) ||
-		/\b[\w-]+\/[\w./-]+\b/.test(text)
+		/@[\w./-]+/.test(text) || /\[[^\]]+\]\([^)]+\)/.test(text) || /\b[\w-]+\/[\w./-]+\b/.test(text)
 	);
 }
 
@@ -156,29 +175,23 @@ function taskBlocks(md: string): string[] {
 
 function taskHasFileScope(task: string): boolean {
 	const files = xmlSection(task, "files");
-	const body = files ?? /^\s*files\s*:\s*(.+)$/mi.exec(task)?.[1] ?? "";
-	return /\S/.test(body) && /(?:[\w-]+\/|\.\w{1,10}\b|\w[\w-]*\.(?:ts|tsx|js|jsx|md|json|py|sh|yaml|yml)\b)/.test(body);
+	const body = files ?? /^\s*files\s*:\s*(.+)$/im.exec(task)?.[1] ?? "";
+	return (
+		/\S/.test(body) &&
+		/(?:[\w-]+\/|\.\w{1,10}\b|\w[\w-]*\.(?:ts|tsx|js|jsx|md|json|py|sh|yaml|yml)\b)/.test(body)
+	);
 }
 
 /** Pure predicate: Pass, or Reject with the first failed criterion's reason. */
 export function checkPlanSet(md: string): PlanCheckResult {
 	const fm = frontmatter(md);
-	if (fm === undefined) return reject("missing frontmatter: phase/plan/checkpoint hash");
+	// C-1 (corrected 2026-11-27): the real planner (gsd-planner 1.18.0)
+	// emits phase + plan ids only — there is no checkpoint hash in the
+	// external template spec. Requiring one rejected every real PLAN.
+	if (fm === undefined) return reject("missing frontmatter: phase/plan ids");
 
 	if (!frontmatterField(fm, ["phase"])) return reject("frontmatter missing phase");
 	if (!frontmatterField(fm, ["plan"])) return reject("frontmatter missing plan");
-	const checkpoint = frontmatterField(fm, [
-		"checkpoint_sha256",
-		"checkpoint_sha",
-		"checkpoint_hash",
-		"checkpoint_commit",
-		"checkpoint_id",
-		"checkpoint",
-		"hash",
-	]);
-	if (!checkpoint || !/[0-9a-f]{7,64}/i.test(checkpoint)) {
-		return reject("frontmatter missing checkpoint hash");
-	}
 
 	const blocks = topLevelBlocks(md);
 	if (blocks.length === 0) return reject("0 blocks: no XML plan blocks found");
@@ -197,8 +210,14 @@ export function checkPlanSet(md: string): PlanCheckResult {
 		return reject("no task file scope: at least one task must name files");
 	}
 
-	const budget = section(md, "budget", ["budget"]);
-	if (budget === undefined || !hasNamedNumber(budget)) {
+	// Budgets live in frontmatter `estimate:` (gsd-planner 1.18.0 YAML),
+	// not in a `<budget>` block — verified against real plans 2026-11-27.
+	const estimate = frontmatterField(frontmatter(md) ?? "", ["estimate"]);
+	const budget =
+		estimate !== undefined && hasNamedNumber(estimate)
+			? estimate
+			: section(md, "budget", ["budget"]);
+	if (estimate === undefined && (budget === undefined || !hasNamedNumber(budget))) {
 		return reject("missing budgets: a budget with named numbers (name: number) is required");
 	}
 
@@ -212,7 +231,9 @@ export function checkPlanSet(md: string): PlanCheckResult {
 		section(md, "success_criteria", ["success criteria", "acceptance criteria"]) ??
 		section(md, "verification", ["verification"]);
 	if (acceptance === undefined || !hasMachineCheck(acceptance)) {
-		return reject("missing machine-checkable acceptance: an acceptance/verification block with a command, comparison, or exit code is required");
+		return reject(
+			"missing machine-checkable acceptance: an acceptance/verification block with a command, comparison, or exit code is required",
+		);
 	}
 
 	return { ok: true };

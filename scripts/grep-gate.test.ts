@@ -3,7 +3,8 @@
 import { describe, expect, test } from "bun:test";
 import { checkForForbiddenWrites } from "./grep-gate.ts";
 
-const GUARDED = "// src/workflow/guarded-write.ts content (fake)\n// writeGuarded writes STATE.md through the CAS lock\n";
+const GUARDED =
+	"// src/workflow/guarded-write.ts content (fake)\n// writeGuarded writes STATE.md through the CAS lock\n";
 
 describe("checkForForbiddenWrites", () => {
 	test("a violating fixture is rejected and named", () => {
@@ -28,7 +29,9 @@ describe("checkForForbiddenWrites", () => {
 	});
 
 	test("the guarded module itself is allowed", () => {
-		const result = checkForForbiddenWrites([{ path: "src/workflow/guarded-write.ts", content: GUARDED }]);
+		const result = checkForForbiddenWrites([
+			{ path: "src/workflow/guarded-write.ts", content: GUARDED },
+		]);
 		expect(result).toEqual({ ok: true });
 	});
 

@@ -65,6 +65,8 @@ if (import.meta.main) {
 		"ROADMAP\\.md",
 		"--",
 		"*.ts",
+		":!*.test.ts",
+		":!scripts/grep-gate.ts",
 	]);
 	if (proc.success) {
 		const paths = new TextDecoder().decode(proc.stdout).trim().split("\n").filter(Boolean);
