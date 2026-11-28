@@ -2,21 +2,21 @@
 gsd_state_version: "1.0"
 milestone: v1.25
 milestone_name: P0 drift repair and plan-density recovery
-status: active
-stopped_at: —
-last_updated: "2026-11-27T03:55:00Z"
-state_head: c216dc3e7a9703cdd2dd45d817ebc63807e4ae77
+status: completed
+stopped_at: 2026-11-28
+last_updated: "2026-11-28T18:00:00Z"
+state_head: 8e9322c940c3f36e640ad9d90d7091e684e79944
 progress:
   total_phases: 4
   completed_phases: 4
-  total_plans: 0
+  total_plans: 4
   completed_plans: 4
   percent: 100
-last_activity: 2026-11-27
-implementation_head: 5d09005 (plan-check + grep gate land)
-current_phase: 115
-current_phase_name: Apply ADR-0006 dense uplift defaults
-last_activity_desc: "v1.25 opened 2026-11-27: P0 drift repair (ADR-0006 MIN_NODES 6, plan-check bloat 420) + second-uplift reliability; v1.24 archived 2026-11-22 (audit tech_debt at 7303f8d; phases 109-113 passed, 114 withdrawn)"
+last_activity: 2026-11-28
+implementation_head: 8e9322c (PR #271 slice-1 merged; v1.25 code legs at 5d09005)
+current_phase: —
+current_phase_name: —
+last_activity_desc: "v1.25 closed 2026-11-28 (manual closeout, owner-approved): audit tech_debt at milestones/v1.25-MILESTONE-AUDIT.md; phases 115-116 passed, 117-118 honest-deferral; queue PQ01-PQ20 preserved at queue/ut-48903afc72-program-queue.json; v1.15 stays open (external evidence pending)"
 ---
 
 # Project State
