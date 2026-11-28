@@ -20,7 +20,7 @@ import type { McpClient } from "../mcp/client.ts";
 import { storePath } from "../mcp/store.ts";
 import { sleep } from "../resilience/sleep.ts";
 import type { ToolCaller } from "../track/create.ts";
-import { fileStore } from "../workflow/phase-loop-store.ts";
+import { fileStore, type PhaseLoopStore } from "../workflow/phase-loop-store.ts";
 import {
 	cleanupPhaseLoop,
 	confirmShip,
@@ -77,6 +77,8 @@ export interface ShipDeps {
 	decisions?: (record: SessionRecord) => Decisions | undefined;
 	/** Directory of the phase loop records; the merge is confirmed against the session's record in it. */
 	phaseLoopDir: string;
+	/** Test seam for the phase loop store; defaults to `fileStore(phaseLoopDir)`. */
+	phaseLoopStore?: PhaseLoopStore;
 }
 
 type Output = Record<string, unknown>;
@@ -735,43 +737,23 @@ function storedReviewRefusal(
 const reviewRecordId = (headSha: string): string => `review:${headSha}`;
 
 /**
- * Runs `fn` under the phase-record lock. Undefined, with `fn` not run, when the lock is not taken: the caller refuses, so
- * nothing is written unlocked.
- */
-function underPhaseRecordLock<T>(dir: string, fn: () => T): { value: T } | undefined {
-	let notTaken = false;
-	return withFileLock(dir, () => (notTaken ? undefined : { value: fn() }), {
-		...HOOK_LOCK,
-		onTimeout: "throw",
-		// acquire reports through `log` only when it runs the callback unlocked, and it does so before the callback.
-		log: () => {
-			notTaken = true;
-		},
-	});
-}
-
-/**
  * After a merge, cleans up a completed, audited phase record. A record without a close, or one already
  * cleaned up, is skipped: a PR merged outside this flow does not make `cleanupPhaseLoop` a failure.
  */
 function cleanupPhaseRecord(deps: ShipDeps, statePath: string, now: number): Output {
 	const sessionId = readRecord(statePath)?.sessionId ?? "";
 	if (!sessionId) return { phaseCleanup: "skipped" };
-	const store = fileStore(deps.phaseLoopDir);
+	const store = deps.phaseLoopStore ?? fileStore(deps.phaseLoopDir);
 	try {
 		const loaded = store.load(sessionId);
 		if (loaded.status !== "found") return { phaseCleanup: "skipped" };
 		if (loaded.record.closedBy === undefined || loaded.record.cleanedUpAt !== undefined)
 			return { phaseCleanup: "skipped" };
-		const locked = underPhaseRecordLock(deps.phaseLoopDir, () =>
-			cleanupPhaseLoop(store, sessionId, "ship", new Date(now).toISOString(), {
-				actor: "ship",
-				reason: "merge completed",
-				allowedActors: ["ship"],
-			}),
-		);
-		if (locked === undefined)
-			return { phaseCleanupError: "phase record lock not taken; cleanup not recorded" };
+		cleanupPhaseLoop(store, sessionId, "ship", new Date(now).toISOString(), {
+			actor: "ship",
+			reason: "merge completed",
+			allowedActors: ["ship"],
+		});
 		return {
 			phaseCleanup: "completed",
 			phaseCleanupBy: "ship",
@@ -796,26 +778,23 @@ function recordReviewAudit(
 ): string | undefined {
 	if (!sessionId) return "session id missing from the state file";
 	try {
-		const locked = underPhaseRecordLock(dir, () =>
-			recordAudit(
-				sessionId,
-				{
-					id: reviewRecordId(headSha),
-					kind: "validation",
-					result: passed ? "pass" : "fail",
-					recordedAt: new Date(at).toISOString(),
-				},
-				fileStore(dir),
-				{
-					at: new Date(at).toISOString(),
-					source: "ship",
-					traceId: `${sessionId}:recordAudit(${reviewRecordId(headSha)})`,
-					recordRefusals: true,
-				},
-			),
+		const outcome = recordAudit(
+			sessionId,
+			{
+				id: reviewRecordId(headSha),
+				kind: "validation",
+				result: passed ? "pass" : "fail",
+				recordedAt: new Date(at).toISOString(),
+			},
+			fileStore(dir),
+			{
+				at: new Date(at).toISOString(),
+				source: "ship",
+				traceId: `${sessionId}:recordAudit(${reviewRecordId(headSha)})`,
+				recordRefusals: true,
+			},
 		);
-		if (locked === undefined) return "phase record lock not taken; nothing recorded";
-		return locked.value.accepted ? undefined : locked.value.refusals.join("; ");
+		return outcome.accepted ? undefined : outcome.refusals.join("; ");
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
 		return `phase record unavailable: ${detail}`;
@@ -830,6 +809,7 @@ interface PhaseMergeInput {
 	headSha: string;
 	now: number;
 	override: ShipOverride | undefined;
+	store?: PhaseLoopStore;
 }
 
 /**
@@ -850,96 +830,98 @@ function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
 	if (!sessionId) return blocked("session id missing from the state file");
 	const recordId = reviewRecordId(headSha);
 	const decisionId = `override:${headSha}`;
-	const store = fileStore(dir);
+	const store = input.store ?? fileStore(dir);
 	try {
-		const locked = underPhaseRecordLock(dir, (): MergeStep | undefined => {
-			const stored = store.load(sessionId);
-			if (stored.status === "quarantined")
-				return blocked(`phase record is corrupt; set aside at ${stored.quarantinedAs}`);
-			// LIFE-05: a human_needed phase whose verification was written after its settle-time record is opened here,
-			// before the same-head check below, so a re-merge of a confirmed head sees the entries too. This reconcile is the
-			// only caller that records on a Ship-closed loop.
-			openHtilEntries(
-				cwd,
-				sessionId,
-				store,
-				{ afterShip: true, severity: "high" },
-				{
-					at: new Date(now).toISOString(),
-					source: "ship",
-					traceId: `${sessionId}:open(HTIL)`,
-					recordRefusals: true,
-				},
-			);
-			const reconciled = store.load(sessionId);
-			const record = reconciled.status === "found" ? reconciled.record : undefined;
-			const closedBy = record?.closedBy;
-			if (closedBy !== undefined) {
-				if (closedBy.recordId === recordId || closedBy.recordId === decisionId) {
-					const open = (record?.humanItems ?? []).filter((item) => item.state === "open");
-					if (open.length === 0) return undefined;
-					const reason = open.map((item) => `open HTIL entry ${item.id}`).join("; ");
-					return {
-						kind: "needs-agent",
-						reason,
-						next: `${reason}; resolve it in the phase record, then run merge again`,
-						headSha,
-					};
-				}
-				return blocked(
-					`phase was confirmed for ${closedBy.recordId}; the head moved, so a human must confirm ${recordId}`,
-				);
-			}
-
-			const afterVerify = record?.phaseOrder.at(-1) === "Verify";
-			let closing: ShipConfirmationInput;
-			if (override !== undefined) {
-				closing = {
-					afterVerify,
-					override: {
-						decisionId,
-						owner: override.owner,
-						decidedAt: new Date(now).toISOString(),
-						reason: override.reason,
-					},
+		const stored = store.load(sessionId);
+		if (stored.status === "quarantined")
+			return blocked(`phase record is corrupt; set aside at ${stored.quarantinedAs}`);
+		// LIFE-05: a human_needed phase whose verification was written after its settle-time record is opened here,
+		// before the same-head check below, so a re-merge of a confirmed head sees the entries too. This reconcile is the
+		// only caller that records on a Ship-closed loop.
+		openHtilEntries(
+			cwd,
+			sessionId,
+			store,
+			{ afterShip: true, severity: "high" },
+			{
+				at: new Date(now).toISOString(),
+				source: "ship",
+				traceId: `${sessionId}:open(HTIL)`,
+				recordRefusals: true,
+			},
+		);
+		const reconciled = store.load(sessionId);
+		const record = reconciled.status === "found" ? reconciled.record : undefined;
+		const closedBy = record?.closedBy;
+		if (closedBy !== undefined) {
+			if (closedBy.recordId === recordId || closedBy.recordId === decisionId) {
+				const open = (record?.humanItems ?? []).filter((item) => item.state === "open");
+				if (open.length === 0) return undefined;
+				const reason = open.map((item) => `open HTIL entry ${item.id}`).join("; ");
+				return {
+					kind: "needs-agent",
+					reason,
+					next: `${reason}; resolve it in the phase record, then run merge again`,
+					headSha,
 				};
-			} else {
-				const audit = record?.audits?.find((item) => item.id === recordId);
-				if (audit === undefined || audit.result !== "pass") {
-					const reason =
-						audit === undefined
-							? `no recorded audit for ${recordId}`
-							: `audit ${recordId} did not pass`;
-					return { kind: "needs-agent", reason, next: `${reason}; run review again`, headSha };
-				}
-				closing = { afterVerify, audit, auditId: recordId };
 			}
-			// The close is connected only when this session's record carries the runtime marker an accepted attempt wrote.
-			const outcome = confirmShip(
-				sessionId,
-				closing,
-				() => record?.runtimeSessionId === sessionId,
-				store,
-				{
-					at: new Date(now).toISOString(),
-					source: "ship",
-					traceId: `${sessionId}:confirmShip`,
-					recordRefusals: true,
-				},
+			return blocked(
+				`phase was confirmed for ${closedBy.recordId}; the head moved, so a human must confirm ${recordId}`,
 			);
-			if (outcome.accepted) return undefined;
-			const reason = outcome.refusals.join("; ");
-			return {
-				kind: "needs-agent",
-				reason,
-				next: `${reason}; resolve it in the phase record, then run merge again`,
-				headSha,
+		}
+		const afterVerify = record?.phaseOrder.at(-1) === "Verify";
+		let closing: ShipConfirmationInput;
+		if (override !== undefined) {
+			closing = {
+				afterVerify,
+				override: {
+					decisionId,
+					owner: override.owner,
+					decidedAt: new Date(now).toISOString(),
+					reason: override.reason,
+				},
 			};
-		});
-		if (locked === undefined) return blocked("phase record lock not taken; nothing merged");
-		return locked.value;
+		} else {
+			const audit = record?.audits?.find((item) => item.id === recordId);
+			if (audit === undefined || audit.result !== "pass") {
+				const reason =
+					audit === undefined
+						? `no recorded audit for ${recordId}`
+						: `audit ${recordId} did not pass`;
+				return { kind: "needs-agent", reason, next: `${reason}; run review again`, headSha };
+			}
+			closing = { afterVerify, audit, auditId: recordId };
+		}
+		// The close is connected only when this session's record carries the runtime marker an accepted attempt wrote.
+		const outcome = confirmShip(
+			sessionId,
+			closing,
+			() => record?.runtimeSessionId === sessionId,
+			store,
+			{
+				at: new Date(now).toISOString(),
+				source: "ship",
+				traceId: `${sessionId}:confirmShip`,
+				recordRefusals: true,
+			},
+		);
+		if (outcome.accepted) return undefined;
+		const reason = outcome.refusals.join("; ");
+		return {
+			kind: "needs-agent",
+			reason,
+			next: `${reason}; resolve it in the phase record, then run merge again`,
+			headSha,
+		};
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
+		if (error instanceof FsmError && error.kind === "transient")
+			return {
+				kind: "transient",
+				reason: `phase record unavailable: ${detail}`,
+				headSha,
+				retry: true,
+			};
 		return blocked(`phase record unavailable: ${detail}`);
 	}
 }
@@ -1174,6 +1156,7 @@ async function stepMerge(
 			headSha,
 			now: deps.now(),
 			override: ctx.override,
+			store: deps.phaseLoopStore,
 		});
 	let waiting = ship.waiting;
 	let delay = config.pollMs;
@@ -1274,7 +1257,7 @@ function ownerRefusal(owners: readonly string[], owner: string): string | undefi
 
 /**
  * Resolves the phase's open HTIL entry `verification:<phase directory>` (LIFE-05) with the owner's evidence and the
- * time, under the phase-record lock. An entry that is not open is refused and nothing is written.
+ * time. An entry that is not open is refused and nothing is written.
  */
 function stepResolve(ctx: Ctx, resolution: Resolution | undefined): Output {
 	const { deps, statePath } = ctx;
@@ -1289,23 +1272,18 @@ function stepResolve(ctx: Ctx, resolution: Resolution | undefined): Output {
 	const entryId = verificationEntryId(directory);
 	const resolvedAt = new Date(deps.now()).toISOString();
 	try {
-		const locked = underPhaseRecordLock(deps.phaseLoopDir, () =>
-			resolveHumanItem(
-				sessionId,
-				entryId,
-				{ state: "done", evidenceId: evidence, resolvedBy: owner, resolvedAt },
-				fileStore(deps.phaseLoopDir),
-				{
-					at: resolvedAt,
-					source: "ship",
-					traceId: `${sessionId}:resolve(HTIL ${entryId})`,
-					recordRefusals: true,
-				},
-			),
+		const outcome = resolveHumanItem(
+			sessionId,
+			entryId,
+			{ state: "done", evidenceId: evidence, resolvedBy: owner, resolvedAt },
+			deps.phaseLoopStore ?? fileStore(deps.phaseLoopDir),
+			{
+				at: resolvedAt,
+				source: "ship",
+				traceId: `${sessionId}:resolve(HTIL ${entryId})`,
+				recordRefusals: true,
+			},
 		);
-		if (locked === undefined)
-			return { ok: false, entryId, error: "phase record lock not taken; nothing resolved" };
-		const outcome = locked.value;
 		if (!outcome.accepted) return { ok: false, entryId, error: outcome.refusals.join("; ") };
 		return { ok: true, entryId, resolvedBy: owner, resolvedAt, next: "run merge" };
 	} catch (error) {
@@ -1324,7 +1302,7 @@ interface RepairInput {
 }
 
 /**
- * The owner's repair (F5) of a phase record written before the runtime marker. Under the phase-record lock, sets
+ * The owner's repair (F5) of a phase record written before the runtime marker. Sets
  * runtimeSessionId to the session and keeps the owner's reason and time as runtimeRepair. Refused, and nothing written,
  * unless the record exists, has no marker yet, is at Verify, and names --phase when it names a phase. A record names
  * its phases through its verification entries (verificationEntryId).
@@ -1332,48 +1310,41 @@ interface RepairInput {
 function stepRepairRuntime(input: RepairInput): Output {
 	const { deps, cwd, phase, sessionId, reason } = input;
 	const dir = deps.phaseLoopDir;
-	const store = fileStore(dir);
+	const store = deps.phaseLoopStore ?? fileStore(dir);
 	const refuse = (error: string): Output => ({ ok: false, error: `${error}; nothing repaired` });
 	try {
-		const locked = underPhaseRecordLock(dir, (): Output => {
-			const outcome = store.load(sessionId);
-			if (outcome.status === "absent") return refuse(`no phase record for session ${sessionId}`);
-			if (outcome.status === "quarantined")
-				return refuse(`phase record is corrupt; set aside at ${outcome.quarantinedAs}`);
-			const { record } = outcome;
-			if (record.runtimeSessionId !== undefined)
-				return refuse(`phase record already has the runtime marker ${record.runtimeSessionId}`);
-			const last = record.phaseOrder.at(-1);
-			if (last !== "Verify")
-				return refuse(`the record is not at Verify: last recorded phase is ${last ?? "none"}`);
-			const named = record.humanItems.filter((item) => item.id.startsWith("verification:"));
-			if (named.length > 0) {
-				const directory = findPhaseDirectory(phase, join(cwd, ".planning", "phases"));
-				if (directory === null)
-					return refuse(`no phase directory matches ${phase} under .planning/phases`);
-				if (!named.some((item) => item.id === verificationEntryId(directory)))
-					return refuse(
-						`the record names ${named.map((item) => item.id).join(", ")}, not ${phase}`,
-					);
-			}
-			const repairedAt = new Date(deps.now()).toISOString();
-			const repairOutcome = repairRuntimeMarker(
-				store,
-				sessionId,
-				{ reason, at: repairedAt },
-				{
-					at: repairedAt,
-					source: "ship",
-					traceId: `${sessionId}:repairRuntime`,
-					recordRefusals: true,
-				},
-			);
-			if (!repairOutcome.accepted) return refuse(repairOutcome.refusals.join("; "));
-			return { ok: true, sessionId, phase, repairedAt, next: "run merge" };
-		});
-		if (locked === undefined)
-			return { ok: false, error: "phase record lock not taken; nothing repaired" };
-		return locked.value;
+		const outcome = store.load(sessionId);
+		if (outcome.status === "absent") return refuse(`no phase record for session ${sessionId}`);
+		if (outcome.status === "quarantined")
+			return refuse(`phase record is corrupt; set aside at ${outcome.quarantinedAs}`);
+		const { record } = outcome;
+		if (record.runtimeSessionId !== undefined)
+			return refuse(`phase record already has the runtime marker ${record.runtimeSessionId}`);
+		const last = record.phaseOrder.at(-1);
+		if (last !== "Verify")
+			return refuse(`the record is not at Verify: last recorded phase is ${last ?? "none"}`);
+		const named = record.humanItems.filter((item) => item.id.startsWith("verification:"));
+		if (named.length > 0) {
+			const directory = findPhaseDirectory(phase, join(cwd, ".planning", "phases"));
+			if (directory === null)
+				return refuse(`no phase directory matches ${phase} under .planning/phases`);
+			if (!named.some((item) => item.id === verificationEntryId(directory)))
+				return refuse(`the record names ${named.map((item) => item.id).join(", ")}, not ${phase}`);
+		}
+		const repairedAt = new Date(deps.now()).toISOString();
+		const repairOutcome = repairRuntimeMarker(
+			store,
+			sessionId,
+			{ reason, at: repairedAt },
+			{
+				at: repairedAt,
+				source: "ship",
+				traceId: `${sessionId}:repairRuntime`,
+				recordRefusals: true,
+			},
+		);
+		if (!repairOutcome.accepted) return refuse(repairOutcome.refusals.join("; "));
+		return { ok: true, sessionId, phase, repairedAt, next: "run merge" };
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
 		return { ok: false, error: `phase record unavailable: ${detail}` };

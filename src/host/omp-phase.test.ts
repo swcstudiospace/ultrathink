@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { UPLIFT } from "../test.helpers.ts";
+import { processIdentity } from "../swarm/lane.ts";
 import { TEST_STATE_DIR_PREFIX } from "../test.state-dir.ts";
 import { attemptPhase, open } from "../workflow/phase-loop.ts";
 import { fileStore } from "../workflow/phase-loop-store.ts";
@@ -265,6 +266,42 @@ describe("omp phase record", () => {
 		await flush();
 		expect(notices).toHaveLength(1);
 		expect(notices[0]).toContain("phase record");
+	});
+
+	test("a live directory-lock holder does not block Execute: the attempt is still recorded", async () => {
+		const root = newRoot();
+		const notices: string[] = [];
+		const { run, sent } = setup(
+			planner(),
+			1_000,
+			{ stateDir: root },
+			{
+				ui: { notify: (text: string) => void notices.push(text) },
+			},
+		);
+		await discussAndPlan(run);
+		// A LIVE holder on the phase-loop directory lock: the old directory-wide lock would wait
+		// 2 s, then yield LOCK_NOTICE with nothing recorded. The store writes per record instead.
+		const sleeper = Bun.spawn(["sleep", "300"], { stdout: "ignore", stderr: "ignore" });
+		try {
+			const startTime = processIdentity(sleeper.pid);
+			expect(startTime).toBeDefined();
+			writeFileSync(
+				join(root, "phase-loop.lock"),
+				JSON.stringify({ pid: sleeper.pid, startTime, token: "live-holder" }),
+			);
+			expect(textOf(await run(EXECUTE))).toBe(UPLIFT(EXECUTE));
+			await flush();
+			const record = readRecord(root);
+			expect(record.phaseOrder).toEqual(["Discuss", "Plan", "Execute"]);
+			expect(record.executeStarts).toBe(1);
+			const lockText = "could not take the phase record lock";
+			expect(notices.join("\n")).not.toContain(lockText);
+			expect(sent.map((entry) => contentOf(entry.message)).join("\n")).not.toContain(lockText);
+		} finally {
+			sleeper.kill();
+			await sleeper.exited;
+		}
 	});
 
 	test("a superseded flight records nothing and only the current flight does", async () => {
