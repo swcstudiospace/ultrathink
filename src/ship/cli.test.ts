@@ -2061,6 +2061,8 @@ describe("merge phase gate", () => {
 				event: "recordAudit(review:abc)",
 				at: CLOCK_AT,
 				accepted: true,
+				source: "ship",
+				traceId: "s:recordAudit(review:abc)",
 			}),
 		);
 		const out = await ship("merge", deps());
@@ -2681,11 +2683,24 @@ describe("phase repair-runtime", () => {
 			phase: "01-core",
 			repairedAt: CLOCK_AT,
 		});
-		expect(phaseRecord()).toEqual({
-			...before,
+		// Repair adds the marker/reason plus the transition log (schema/stats); the domain fields still match the pre-repair record.
+		expect(phaseRecord()).toMatchObject({
 			runtimeSessionId: "s",
 			runtimeRepair: { reason: REASON, at: CLOCK_AT },
 		});
+		expect(phaseRecord()?.phaseOrder).toEqual(before.phaseOrder);
+		expect(phaseRecord()?.humanItems).toEqual(before.humanItems);
+		expect(phaseRecord()?.audits).toBe(before.audits);
+		expect(phaseRecord()?.closedBy).toBe(before.closedBy);
+		expect(phaseRecord()?.transitions).toContainEqual(
+			expect.objectContaining({
+				event: "repairRuntime",
+				at: CLOCK_AT,
+				accepted: true,
+				source: "ship",
+				traceId: "s:repairRuntime",
+			}),
+		);
 	});
 
 	test("a record that names a different phase is refused and keeps no marker", async () => {

@@ -365,4 +365,138 @@ describe("file phase loop store", () => {
 			expect(store.load("claude").status).toBe("quarantined");
 		}
 	});
+
+	test("P3 transition counters and transition provenance round trip", () => {
+		const at = "2026-11-17T10:00:00.000Z";
+		const record = {
+			...STATE,
+			transitionSeq: 3,
+			transitionStats: { attempts: 3, accepted: 2, refused: 1 },
+			transitions: [
+				{
+					at,
+					from: "ready",
+					event: "attempt(Discuss)",
+					to: "discussing",
+					accepted: true,
+					refusals: [],
+					seq: 1,
+					source: "omp",
+					traceId: "trace-1",
+					refusalCodes: [],
+				},
+				{
+					at,
+					from: "discussing",
+					event: "attempt(Plan)",
+					to: "planning",
+					accepted: true,
+					refusals: [],
+					seq: 2,
+					source: "direct",
+				},
+				{
+					at,
+					from: "planning",
+					event: "attempt(Execute)",
+					to: "planning",
+					accepted: false,
+					refusals: ["not connected"],
+					seq: 3,
+					source: "ship",
+					traceId: "trace-3",
+					refusalCodes: ["not-connected"],
+				},
+			],
+			cleanedUpReason: "done",
+		} as PhaseLoopRecord;
+		fileStore(stateDir).save("claude", record);
+		expect(fileStore(stateDir).load("claude")).toEqual({ status: "found", record });
+	});
+
+	test("legacy transitions without P3 fields load unchanged", () => {
+		const at = "2026-11-17T10:00:00.000Z";
+		const legacy: PhaseLoopRecord = {
+			...STATE,
+			schemaVersion: 1,
+			transitions: [
+				{
+					at,
+					from: "ready",
+					event: "attempt(Discuss)",
+					to: "discussing",
+					accepted: true,
+					refusals: [],
+				},
+			],
+		};
+		fileStore(stateDir).save("claude", STATE);
+		writeFileSync(join(stateDir, nth(recordFiles(), 0)), JSON.stringify(legacy));
+		expect(fileStore(stateDir).load("claude")).toEqual({ status: "found", record: legacy });
+	});
+
+	test("partial P3 fields round trip", () => {
+		const at = "2026-11-17T10:00:00.000Z";
+		const base = {
+			at,
+			from: "ready",
+			event: "attempt(Discuss)",
+			to: "discussing",
+			accepted: true,
+			refusals: [] as string[],
+		};
+		const cases: Record<string, unknown>[] = [
+			{ transitionSeq: 0 },
+			{ transitionStats: { attempts: 0, accepted: 0, refused: 0 } },
+			{ transitions: [{ ...base, seq: 0, source: "omp", traceId: "t", refusalCodes: ["a"] }] },
+			{ transitionSeq: 2, transitionStats: { attempts: 2, accepted: 1, refused: 1 } },
+		];
+		for (const fields of cases) {
+			const record = { ...STATE, ...fields } as PhaseLoopRecord;
+			fileStore(stateDir).save("claude", record);
+			expect(fileStore(stateDir).load("claude")).toEqual({ status: "found", record });
+		}
+	});
+
+	test("malformed P3 fields quarantine the record", () => {
+		const store = fileStore(stateDir);
+		const at = "2026-11-17T10:00:00.000Z";
+		const base = {
+			at,
+			from: "ready",
+			event: "attempt(Discuss)",
+			to: "discussing",
+			accepted: true,
+			refusals: [] as string[],
+		};
+		const malformed: Record<string, unknown>[] = [
+			{ futureField: true, transitionSeq: 1 },
+			{ transitionSeq: -1 },
+			{ transitionSeq: 1.5 },
+			{ transitionSeq: "3" },
+			{ transitionStats: null },
+			{ transitionStats: { attempts: -1, accepted: 0, refused: 0 } },
+			{ transitionStats: { attempts: 2, accepted: 1, refused: 0 } },
+			{ transitionStats: { attempts: 1, accepted: 1 } },
+			{ transitionStats: { attempts: 3, accepted: 2, refused: 1 }, transitionSeq: 2 },
+			{
+				transitionStats: { attempts: 1, accepted: 1, refused: 0 },
+				transitions: [base, { ...base, seq: 2 }],
+			},
+			{ transitions: [{ ...base, seq: -1 }] },
+			{ transitions: [{ ...base, seq: 0.5 }] },
+			{ transitions: [{ ...base, source: "cli" }] },
+			{ transitions: [{ ...base, traceId: "" }] },
+			{ transitions: [{ ...base, traceId: "   " }] },
+			{ transitions: [{ ...base, refusalCodes: "x" }] },
+			{ transitions: [{ ...base, refusalCodes: [7] }] },
+			{ transitions: [{ ...base, refusalCodes: [""] }] },
+			{ transitions: [{ ...base, seq: 5 }], transitionSeq: 3 },
+		];
+		for (const fields of malformed) {
+			store.save("claude", STATE);
+			writeFileSync(join(stateDir, nth(recordFiles(), 0)), JSON.stringify({ ...STATE, ...fields }));
+			expect(store.load("claude").status).toBe("quarantined");
+		}
+	});
 });

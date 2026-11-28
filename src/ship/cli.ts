@@ -27,6 +27,7 @@ import {
 	FsmError,
 	phaseLoopStatus,
 	recordAudit,
+	repairRuntimeMarker,
 	resolve as resolveHumanItem,
 	restorePhaseLoop,
 	type ShipConfirmationInput,
@@ -805,7 +806,12 @@ function recordReviewAudit(
 					recordedAt: new Date(at).toISOString(),
 				},
 				fileStore(dir),
-				{ at: new Date(at).toISOString() },
+				{
+					at: new Date(at).toISOString(),
+					source: "ship",
+					traceId: `${sessionId}:recordAudit(${reviewRecordId(headSha)})`,
+					recordRefusals: true,
+				},
 			),
 		);
 		if (locked === undefined) return "phase record lock not taken; nothing recorded";
@@ -909,7 +915,12 @@ function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
 				closing,
 				() => record?.runtimeSessionId === sessionId,
 				store,
-				{ at: new Date(now).toISOString() },
+				{
+					at: new Date(now).toISOString(),
+					source: "ship",
+					traceId: `${sessionId}:confirmShip`,
+					recordRefusals: true,
+				},
 			);
 			if (outcome.accepted) return undefined;
 			const reason = outcome.refusals.join("; ");
@@ -1279,7 +1290,12 @@ function stepResolve(ctx: Ctx, resolution: Resolution | undefined): Output {
 				entryId,
 				{ state: "done", evidenceId: evidence, resolvedBy: owner, resolvedAt },
 				fileStore(deps.phaseLoopDir),
-				{ at: resolvedAt },
+				{
+					at: resolvedAt,
+					source: "ship",
+					traceId: `${sessionId}:resolve(HTIL ${entryId})`,
+					recordRefusals: true,
+				},
 			),
 		);
 		if (locked === undefined)
@@ -1336,11 +1352,18 @@ function stepRepairRuntime(input: RepairInput): Output {
 					);
 			}
 			const repairedAt = new Date(deps.now()).toISOString();
-			store.save(sessionId, {
-				...record,
-				runtimeSessionId: sessionId,
-				runtimeRepair: { reason, at: repairedAt },
-			});
+			const repairOutcome = repairRuntimeMarker(
+				store,
+				sessionId,
+				{ reason, at: repairedAt },
+				{
+					at: repairedAt,
+					source: "ship",
+					traceId: `${sessionId}:repairRuntime`,
+					recordRefusals: true,
+				},
+			);
+			if (!repairOutcome.accepted) return refuse(repairOutcome.refusals.join("; "));
 			return { ok: true, sessionId, phase, repairedAt, next: "run merge" };
 		});
 		if (locked === undefined)

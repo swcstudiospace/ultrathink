@@ -57,7 +57,13 @@ interface StoredRecord {
 		to: string;
 		accepted: boolean;
 		refusals: string[];
+		seq?: number;
+		source?: string;
+		traceId?: string;
+		refusalCodes?: string[];
 	}[];
+	transitionSeq?: number;
+	transitionStats?: { attempts: number; accepted: number; refused: number };
 }
 const readRecord = (root: string): StoredRecord =>
 	JSON.parse(readFileSync(recordPath(root), "utf8")) as StoredRecord;
@@ -143,7 +149,10 @@ describe("omp phase record", () => {
 			from: "ready",
 			to: "discussing",
 			accepted: true,
+			source: "omp",
+			traceId: `${SESSION}:attempt(Discuss)`,
 		});
+		expect(typeof record.transitions?.[0]?.seq).toBe("number");
 		expect(typeof record.transitions?.[0]?.at).toBe("string");
 		expect(advisories(sent, "Execute gates are unmet")).toHaveLength(0);
 	});
@@ -158,6 +167,15 @@ describe("omp phase record", () => {
 		expect(readRecord(root).phaseOrder).toEqual(["Discuss", "Plan"]);
 		expect(readRecord(root).executeStarts).toBe(0);
 		expect(advisories(sent, "Execute gates are unmet")).toHaveLength(1);
+		// A refused attempt persists as a refused transition (recordRefusals), domain state unchanged.
+		const refused = readRecord(root).transitions?.at(-1);
+		expect(refused).toMatchObject({
+			event: "attempt(Execute)",
+			accepted: false,
+			source: "omp",
+			traceId: `${SESSION}:attempt(Execute)`,
+			refusals: ["Execute gates are unmet"],
+		});
 	});
 
 	test("an accepted host attempt records the session as the connected runtime", async () => {
@@ -290,8 +308,8 @@ describe("omp phase record", () => {
 
 		const second = setup(planner(), 1_000, { stateDir: root });
 		second.emit("session_start");
-		// The restored loop's next phase is Verify: a repeated Execute is refused without a write,
-		// and the Verify prompt records Verify on the same stored record.
+		// The restored loop's next phase is Verify: a repeated Execute is refused (its refusal is
+		// recorded, the phase order is unchanged), and the Verify prompt records Verify on the same record.
 		await second.run(EXECUTE);
 		await flush();
 		expect(readRecord(root).phaseOrder).toEqual(["Discuss", "Plan", "Execute"]);

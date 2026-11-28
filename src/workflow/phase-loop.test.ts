@@ -23,9 +23,10 @@ import {
 	type PhaseName,
 	phaseLoopStatus,
 	recordAudit,
+	resolve,
 	type RuntimeConnectedCheck,
 	resetPhaseLoopStateForTests,
-	resolve,
+	repairRuntimeMarker,
 	restorePhaseLoop,
 	type ShipConfirmationInput,
 } from "./phase-loop.ts";

@@ -97,6 +97,8 @@ const RECORD_KEYS: Record<string, true> = {
 	runtimeRepair: true,
 	schemaVersion: true,
 	transitions: true,
+	transitionSeq: true,
+	transitionStats: true,
 	cleanedUpAt: true,
 	cleanedUpBy: true,
 	cleanedUpReason: true,
@@ -176,7 +178,21 @@ function isRuntimeRepair(value: unknown): value is RuntimeRepair {
 function isTransition(value: unknown): boolean {
 	if (typeof value !== "object" || value === null) return false;
 	const row = value as Record<string, unknown>;
+	const keys = Object.keys(row);
 	return (
+		keys.every(
+			(key) =>
+				key === "at" ||
+				key === "from" ||
+				key === "event" ||
+				key === "to" ||
+				key === "accepted" ||
+				key === "refusals" ||
+				key === "seq" ||
+				key === "source" ||
+				key === "traceId" ||
+				key === "refusalCodes",
+		) &&
 		typeof row.at === "string" &&
 		row.at !== "" &&
 		typeof row.from === "string" &&
@@ -214,9 +230,12 @@ function isPhaseLoopRecord(value: unknown): value is StoredRecord {
 		(row.schemaVersion === undefined || row.schemaVersion === 1) &&
 		(row.transitions === undefined ||
 			(Array.isArray(row.transitions) && row.transitions.every(isTransition))) &&
+		(row.transitionSeq === undefined || isCount(row.transitionSeq)) &&
+		(row.transitionStats === undefined || isTransitionStats(row.transitionStats)) &&
 		(row.cleanedUpAt === undefined || typeof row.cleanedUpAt === "string") &&
 		(row.cleanedUpBy === undefined || typeof row.cleanedUpBy === "string") &&
-		(row.cleanedUpReason === undefined || typeof row.cleanedUpReason === "string")
+		(row.cleanedUpReason === undefined || typeof row.cleanedUpReason === "string") &&
+		isTransitionConsistency(row)
 	);
 }
 

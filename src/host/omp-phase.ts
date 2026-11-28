@@ -245,7 +245,12 @@ export function recordGsdPhase(options: {
 			attemptInputOf(phase, options.plan),
 			(runtimeId) => runtimeId === options.sessionId,
 			store,
-			{ at },
+			{
+				at,
+				source: "omp",
+				traceId: `${options.sessionId}:attempt(${phase})`,
+				recordRefusals: true,
+			},
 		);
 		const status = phaseLoopStatus(outcome.state, undefined, at);
 		if (outcome.accepted) return { kind: "none", status };

@@ -112,6 +112,10 @@ export interface PhaseLoopState {
 	schemaVersion?: number;
 	/** Structured history of transition attempts (bounded). Absent until a caller passes a timestamp to a transition. */
 	transitions?: TransitionRecord[];
+	/** Monotonic sequence of the last recorded transition. Absent on legacy records; derived from the transition ring when first needed. */
+	transitionSeq?: number;
+	/** Cumulative attempt counts across the whole loop, including attempts whose records aged out of the bounded ring. Absent on legacy records; derived from the transition ring when first needed. */
+	transitionStats?: TransitionMetrics;
 	/** When the loop was cleaned up, and by whom. Only set after a closed, audited Ship. */
 	cleanedUpAt?: string;
 	cleanedUpBy?: string;
@@ -136,6 +140,9 @@ export type PhaseLifecycle =
 	| "completed"
 	| "cleaned-up";
 
+/** Origin of a transition call: the OMP host, the ship CLI, or a direct in-process call. */
+type TransitionSource = "omp" | "ship" | "direct";
+
 /** One transition attempt as recorded for audit. Timestamps are caller-supplied, so the pure decision stays I/O- and clock-free. */
 interface TransitionRecord {
 	/** Caller-supplied ISO 8601 timestamp of the attempt. */
@@ -145,6 +152,14 @@ interface TransitionRecord {
 	to: PhaseLifecycle;
 	accepted: boolean;
 	refusals: readonly string[];
+	/** Monotonic sequence within the loop, assigned when the record is appended. Absent on legacy records. */
+	seq?: number;
+	/** Where the attempt originated, when the caller supplied it. */
+	source?: TransitionSource;
+	/** Caller-supplied correlation id, when supplied. */
+	traceId?: string;
+	/** Refusal reasons as codes, on refused records recorded via `recordRefusals`. Absent on accepted and legacy records. */
+	refusalCodes?: readonly string[];
 }
 
 /** Error kinds that new, throwing APIs distinguish. Existing gated APIs keep returning `GateOutcome` for compatibility. */
@@ -191,6 +206,10 @@ interface PhaseTransitionSummary {
 	to: PhaseLifecycle;
 	accepted: boolean;
 	refusals: readonly string[];
+	seq?: number;
+	source?: TransitionSource;
+	traceId?: string;
+	refusalCodes?: readonly string[];
 }
 
 /** Derived operator signals from the persisted transition history. */
@@ -211,9 +230,12 @@ export interface PhaseLoopStatus {
 	nextEvents: readonly string[];
 }
 
-/** Options for transition calls that should record a transition. `at` is the caller-supplied timestamp; without it nothing is recorded. */
+/** Options for transition calls that should record a transition. `at` is the caller-supplied timestamp; without it nothing is recorded. Accepted transitions always record when `at` is present; refused ones record only when `recordRefusals` is true. `source` names the caller (host, ship, or direct) and `traceId` correlates the attempt. */
 export interface TransitionOptions {
 	at?: string;
+	recordRefusals?: boolean;
+	source?: TransitionSource;
+	traceId?: string;
 }
 
 /** Result of a resume (LIFE-04): what was restored, and whether an unreadable record was set aside. */
@@ -363,6 +385,7 @@ export function phaseLoopStatus(
 	const recentTransitions = transitions.slice(-5).map((item) => ({
 		...item,
 		refusals: [...item.refusals],
+		...(item.refusalCodes === undefined ? {} : { refusalCodes: [...item.refusalCodes] }),
 	}));
 	const acceptedByEvent = new Map<string, { count: number; at: string }>();
 	for (const item of transitions) {
@@ -395,7 +418,7 @@ export function phaseLoopStatus(
 			ship: row.shipStarts,
 			operatorConfirmations: row.operatorConfirmations,
 		},
-		transitionMetrics: { attempts: transitions.length, accepted, refused },
+		transitionMetrics,
 		recentTransitions,
 		signals: {
 			...(duplicate === undefined
@@ -418,7 +441,18 @@ const MAX_TRANSITIONS = 50;
 
 /** Appends one transition record, keeping the last MAX_TRANSITIONS. */
 function appendTransition(row: PhaseLoopState, record: TransitionRecord): void {
-	row.transitions = [...(row.transitions ?? []).slice(-(MAX_TRANSITIONS - 1)), record];
+	migrateTransitionCounters(row);
+	const seq = (row.transitionSeq ?? 0) + 1;
+	row.transitionSeq = seq;
+	const stats = row.transitionStats ?? { attempts: 0, accepted: 0, refused: 0 };
+	stats.attempts += 1;
+	if (record.accepted) stats.accepted += 1;
+	else stats.refused += 1;
+	row.transitionStats = stats;
+	row.transitions = [
+		...(row.transitions ?? []).slice(-(MAX_TRANSITIONS - 1)),
+		{ ...record, refusals: [...record.refusals], seq },
+	];
 }
 
 /** How many times a store mutation reloads and reapplies after a lost CAS race. */
@@ -612,42 +646,52 @@ function applyShipConfirmation(
 /**
  * Runs one gated transition. `apply` checks every gate, returns the reason for each failing one,
  * and changes the row only when there are none. With no store, the in-memory row is used. With a
- * store, the row is loaded from it and an accepted transition is saved, as one commit, before this
+ * store, the row is loaded from it and a recorded transition is saved, as one commit, before this
  * returns. The saved record carries no checkpoint, so an accepted transition clears one. A refused
- * transition calls no save. A quarantined record throws PhaseLoopCorruptError before any gate runs,
- * so nothing is written.
+ * transition without `recordRefusals` calls no save. A quarantined record throws
+ * PhaseLoopCorruptError before any gate runs, so nothing is written.
  */
 function transition(
 	runtimeId: string,
 	store: PhaseLoopStore | undefined,
 	apply: (row: PhaseLoopState) => readonly string[],
-	log?: { event: string; at?: string },
+	log?: {
+		event: string;
+		at?: string;
+		recordRefusals?: boolean;
+		source?: TransitionSource;
+		traceId?: string;
+	},
 ): GateOutcome {
-	const run = (row: PhaseLoopState): GateOutcome => {
+	const run = (row: PhaseLoopState): { outcome: GateOutcome; recorded: boolean } => {
 		const from = deriveLifecycle(row);
 		const refusals = apply(row);
 		const accepted = refusals.length === 0;
-		if (accepted) {
-			if (log?.at !== undefined) {
-				appendTransition(row, {
-					at: log.at,
-					from,
-					event: log.event,
-					to: deriveLifecycle(row),
-					accepted,
-					refusals,
-				});
-			}
-			if (row.schemaVersion === undefined) row.schemaVersion = FSM_SCHEMA_VERSION;
+		const at = log?.at;
+		// Accepted transitions always record when timestamped; refused ones only on opt-in.
+		const recorded = at !== undefined && (accepted || log?.recordRefusals === true);
+		if (recorded && at !== undefined) {
+			appendTransition(row, {
+				at,
+				from,
+				event: log?.event ?? "transition",
+				to: deriveLifecycle(row),
+				accepted,
+				refusals: [...refusals],
+				...(log?.source === undefined ? {} : { source: log.source }),
+				...(log?.traceId === undefined ? {} : { traceId: log.traceId }),
+				...(accepted ? {} : { refusalCodes: [...refusals] }),
+			});
 		}
-		return { accepted, state: snapshot(row), refusals };
+		if (accepted && row.schemaVersion === undefined) row.schemaVersion = FSM_SCHEMA_VERSION;
+		return { outcome: { accepted, state: snapshot(row), refusals }, recorded };
 	};
 	if (!store) {
-		return run(rowFor(runtimeId));
+		return run(rowFor(runtimeId)).outcome;
 	}
 	return commitStoreMutation(runtimeId, store, log?.event ?? "transition", (row) => {
 		const result = run(row);
-		return { value: result, shouldCommit: result.accepted };
+		return { value: result.outcome, shouldCommit: result.outcome.accepted || result.recorded };
 	});
 }
 
@@ -674,6 +718,9 @@ export function attemptPhase(
 	return transition(runtimeId, store, (row) => applyAttempt(runtimeId, row, input, isConnected), {
 		event: `attempt(${input.phase})`,
 		at: opts?.at,
+		recordRefusals: opts?.recordRefusals,
+		source: opts?.source,
+		traceId: opts?.traceId,
 	});
 }
 
@@ -700,7 +747,13 @@ export function confirmShip(
 		runtimeId,
 		store,
 		(row) => applyShipConfirmation(runtimeId, row, input, isConnected),
-		{ event: "confirmShip", at: opts?.at },
+		{
+			event: "confirmShip",
+			at: opts?.at,
+			recordRefusals: opts?.recordRefusals,
+			source: opts?.source,
+			traceId: opts?.traceId,
+		},
 	);
 }
 
@@ -739,7 +792,13 @@ export function open(
 			row.humanItems.push({ id: entry.id, owner: entry.owner, state: "open", ...origin });
 			return [];
 		},
-		{ event: `open(HTIL ${entry.id})`, at: opts?.at },
+		{
+			event: `open(HTIL ${entry.id})`,
+			at: opts?.at,
+			recordRefusals: opts?.recordRefusals,
+			source: opts?.source,
+			traceId: opts?.traceId,
+		},
 	);
 }
 
@@ -781,7 +840,13 @@ export function resolve(
 			entry.decisionId = resolution.decisionId;
 			return [];
 		},
-		{ event: `resolve(HTIL ${entryId})`, at: opts?.at },
+		{
+			event: `resolve(HTIL ${entryId})`,
+			at: opts?.at,
+			recordRefusals: opts?.recordRefusals,
+			source: opts?.source,
+			traceId: opts?.traceId,
+		},
 	);
 }
 
@@ -804,8 +869,55 @@ export function recordAudit(
 			row.audits = [...(row.audits ?? []).filter((item) => item.id !== audit.id), { ...audit }];
 			return [];
 		},
-		{ event: `recordAudit(${audit.id})`, at: opts?.at },
+		{
+			event: `recordAudit(${audit.id})`,
+			at: opts?.at,
+			recordRefusals: opts?.recordRefusals,
+			source: opts?.source,
+			traceId: opts?.traceId,
+		},
 	);
+}
+
+/**
+ * Owner repair (F5) of a record written before the runtime marker: sets `runtimeSessionId` to
+ * `runtimeId` and keeps the owner's reason and time as `runtimeRepair`, as one store commit. The
+ * ship CLI keeps its phase/directory precheck and delegates only the marker write here. Refused,
+ * with nothing written, when the reason or time is blank, when the marker is already set, or when
+ * the loop is cleaned up. An accepted repair appends a `repairRuntime` transition.
+ */
+export function repairRuntimeMarker(
+	store: PhaseLoopStore,
+	runtimeId: string,
+	repair: RuntimeRepair,
+	opts?: TransitionOptions,
+): GateOutcome {
+	return commitStoreMutation<GateOutcome>(runtimeId, store, "repairRuntime", (row) => {
+		const refusals: string[] = [];
+		if (isBlank(repair.reason)) refusals.push("repair needs a reason");
+		if (isBlank(repair.at)) refusals.push("repair needs an at timestamp");
+		if (row.runtimeSessionId !== undefined)
+			refusals.push(`runtime marker already set for ${row.runtimeSessionId}`);
+		if (row.cleanedUpAt !== undefined) refusals.push("loop is cleaned-up");
+		if (refusals.length > 0) {
+			return { value: { accepted: false, state: snapshot(row), refusals }, shouldCommit: false };
+		}
+		const from = deriveLifecycle(row);
+		row.runtimeSessionId = runtimeId;
+		row.runtimeRepair = { ...repair };
+		appendTransition(row, {
+			at: repair.at,
+			from,
+			event: "repairRuntime",
+			to: deriveLifecycle(row),
+			accepted: true,
+			refusals: [],
+			source: opts?.source,
+			traceId: opts?.traceId,
+		});
+		if (row.schemaVersion === undefined) row.schemaVersion = FSM_SCHEMA_VERSION;
+		return { value: { accepted: true, state: snapshot(row), refusals: [] }, shouldCommit: true };
+	});
 }
 
 /** Caller validation for a cleanup audit record. `actor` must equal `cleanedBy`; `allowedActors` is optional. */
