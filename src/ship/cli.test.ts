@@ -2804,3 +2804,95 @@ describe("phase repair-runtime", () => {
 		expect(calls.filter((call) => call.startsWith("merge:"))).toEqual(["merge:squash:abc"]);
 	});
 });
+
+describe("phase verify", () => {
+	const phaseLoopDir = () => join(dir, "phase-loop");
+	const recordFile = () => join(phaseLoopDir(), "73.json");
+	const verify = (d: ShipDeps, ...flags: string[]) =>
+		runShip(["phase", "verify", "--cwd", dir, ...flags], d);
+
+	/** A record with sequenced transitions, as timestamped attempts write them. */
+	const seedSequenced = (sessionId = "s"): void => {
+		const store = fileStore(phaseLoopDir());
+		const phases: PhaseName[] = ["Discuss", "Plan", "Execute", "Verify"];
+		phases.forEach((phase, index) => {
+			attemptPhase(
+				sessionId,
+				{ phase, completeUpliftCount: 1, unansweredBlockingClarifications: 0 },
+				() => true,
+				store,
+				{ at: `2026-11-01T00:00:0${index}.000Z`, source: "direct" },
+			);
+		});
+	};
+
+	test("a healthy record returns ok:true with named passing checks and writes nothing", async () => {
+		seedSequenced();
+		const before = readFileSync(recordFile(), "utf8");
+		const out = await verify(deps({ phases: [] }), "--session", "s");
+		expect(out.code).toBe(0);
+		expect(out.output).toMatchObject({ ok: true, verified: true, sessionId: "s" });
+		const checkList = out.output.checks as { name: string; ok: boolean }[];
+		const names = checkList.map((check) => [check.name, check.ok]);
+		expect(names).toEqual([
+			["record-present", true],
+			["transition-seq-contiguous", true],
+			["transition-stats-consistent", true],
+		]);
+		expect(readFileSync(recordFile(), "utf8")).toBe(before);
+	});
+
+	test("a record with no transitions verifies clean and writes nothing", async () => {
+		const d = deps();
+		const before = readFileSync(recordFile(), "utf8");
+		const out = await verify(d, "--session", "s");
+		expect(out.code).toBe(0);
+		expect(out.output).toMatchObject({ ok: true, verified: true });
+		expect(readFileSync(recordFile(), "utf8")).toBe(before);
+	});
+
+	test("a quarantined record reports the copy path with ok:false and exit 0", async () => {
+		mkdirSync(phaseLoopDir(), { recursive: true });
+		writeFileSync(recordFile(), "{not a phase record");
+		const out = await verify(deps({ phases: [] }), "--session", "s");
+		expect(out.code).toBe(0);
+		expect(out.output).toMatchObject({ ok: false, verified: false, quarantined: true });
+		const quarantinedAs = out.output.quarantinedAs as string;
+		expect(String(quarantinedAs)).toContain(".corrupt-");
+	});
+
+	test("a hand-edited record with a skipped seq fails the contiguity check and writes nothing", async () => {
+		seedSequenced();
+		const edited = JSON.parse(readFileSync(recordFile(), "utf8")) as {
+			transitions: { seq: number }[];
+		};
+		const second = edited.transitions[1];
+		if (second === undefined) throw new Error("expected a second transition");
+		second.seq = 3;
+		writeFileSync(recordFile(), JSON.stringify(edited));
+		const before = readFileSync(recordFile(), "utf8");
+		const out = await verify(deps({ phases: [] }), "--session", "s");
+		expect(out.code).toBe(0);
+		expect(out.output).toMatchObject({ ok: false, verified: false });
+		const tamperChecks = out.output.checks as { name: string; ok: boolean; detail: string }[];
+		expect(tamperChecks.find((check) => check.name === "transition-seq-contiguous")).toMatchObject({
+			ok: false,
+		});
+		expect(
+			String(tamperChecks.find((check) => check.name === "transition-seq-contiguous")?.detail),
+		).toContain("missing seq 2");
+		expect(readFileSync(recordFile(), "utf8")).toBe(before);
+	});
+
+	test("a missing record reports absent with ok:false and exit 0", async () => {
+		const out = await verify(deps({ phases: [] }), "--session", "nobody");
+		expect(out.code).toBe(0);
+		expect(out.output).toMatchObject({ ok: false, verified: false });
+	});
+
+	test("a missing --session is a usage error (exit 2)", async () => {
+		const out = await verify(deps());
+		expect(out.code).toBe(2);
+		expect(out.output).toMatchObject({ ok: false });
+	});
+});
