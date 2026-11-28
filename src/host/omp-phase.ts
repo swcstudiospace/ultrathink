@@ -23,18 +23,18 @@ import {
 	type OpenHtilOptions,
 	PhaseLoopCorruptError,
 	type PhaseAttemptInput,
+	type PhaseLoopStatus,
 	type PhaseName,
+	phaseLoopStatus,
 	restorePhaseLoop,
+	type TransitionOptions,
 } from "../workflow/phase-loop.ts";
 import type { PlanView } from "./view.ts";
 
-/**
- * What the host shows for a phase-loop outcome: a transcript message that starts no turn, a warning notice, or nothing.
- */
 export type PhaseReport =
-	| { kind: "none" }
-	| { kind: "message"; text: string }
-	| { kind: "notice"; text: string };
+	| { kind: "none"; status?: PhaseLoopStatus }
+	| { kind: "message"; text: string; status?: PhaseLoopStatus }
+	| { kind: "notice"; text: string; status?: PhaseLoopStatus };
 
 /** The planner result the phase attempt reads: the uplift text and the plan view it came with. */
 export interface PhasePlan {
@@ -191,6 +191,7 @@ export function openHtilEntries(
 	sessionId: string,
 	store: PhaseLoopStore,
 	options: OpenHtilOptions = {},
+	opts?: TransitionOptions,
 ): void {
 	for (const directory of htilPhases(cwd))
 		openHtilEntry(
@@ -198,6 +199,7 @@ export function openHtilEntries(
 			{ id: verificationEntryId(directory), owner: "human" },
 			store,
 			options,
+			opts,
 		);
 }
 
@@ -227,26 +229,31 @@ export function recordGsdPhase(options: {
 	sessionId: string;
 	prompt: string;
 	plan: PhasePlan;
+	now?: string;
 }): PhaseReport | undefined {
 	const phase = phaseForPrompt(options.prompt);
 	if (phase === undefined) return undefined;
 	const dir = join(options.stateDir, "phase-loop");
+	const at = options.now ?? new Date().toISOString();
 	return underPhaseLock(dir, (): PhaseReport => {
 		const store = fileStore(dir);
 		// A phase whose verification needs a human opens an HTIL entry (Q8); an entry already open is refused without a write.
-		openHtilEntries(options.cwd, options.sessionId, store);
+		openHtilEntries(options.cwd, options.sessionId, store, {}, { at });
 		// This host records only for its own session, so the connection check holds for that session.
 		const outcome = attemptPhase(
 			options.sessionId,
 			attemptInputOf(phase, options.plan),
 			(runtimeId) => runtimeId === options.sessionId,
 			store,
+			{ at },
 		);
-		if (outcome.accepted) return NONE;
+		const status = phaseLoopStatus(outcome.state);
+		if (outcome.accepted) return { kind: "none", status };
 		const refusals = outcome.refusals.join("; ");
 		return {
 			kind: "message",
 			text: `${phase} was not recorded: ${refusals}. The plan is unchanged. This is advisory: the merge gate refuses to merge until the phase record shows the phases in order.`,
+			status,
 		};
 	});
 }
@@ -267,9 +274,11 @@ export function restoreSessionPhases(session: PhaseSession): PhaseReport {
 		const pause = report.checkpoint
 			? ` The record holds a ${report.checkpoint.reason} checkpoint from ${report.checkpoint.at}.`
 			: "";
+		const status = phaseLoopStatus(report.state, report.checkpoint);
 		return {
 			kind: "message",
 			text: `Ultrathink restored this session's phase loop: ${phases}.${pause}`,
+			status,
 		};
 	});
 }

@@ -129,7 +129,7 @@ export type PhaseLifecycle =
 	| "cleaned-up";
 
 /** One transition attempt as recorded for audit. Timestamps are caller-supplied, so the pure decision stays I/O- and clock-free. */
-export interface TransitionRecord {
+interface TransitionRecord {
 	/** Caller-supplied ISO 8601 timestamp of the attempt. */
 	at: string;
 	from: PhaseLifecycle;
@@ -148,6 +148,7 @@ export class FsmError extends Error {
 	readonly state: PhaseLifecycle;
 	readonly event: string;
 	readonly legalEvents: readonly string[];
+	override readonly cause?: unknown;
 
 	constructor(
 		kind: FsmErrorKind,
@@ -155,6 +156,7 @@ export class FsmError extends Error {
 		event: string,
 		legalEvents: readonly string[],
 		message: string,
+		cause?: unknown,
 	) {
 		super(message);
 		this.name = "FsmError";
@@ -162,6 +164,7 @@ export class FsmError extends Error {
 		this.state = state;
 		this.event = event;
 		this.legalEvents = legalEvents;
+		this.cause = cause;
 	}
 }
 
@@ -336,6 +339,78 @@ function appendTransition(row: PhaseLoopState, record: TransitionRecord): void {
 	row.transitions = [...(row.transitions ?? []).slice(-(MAX_TRANSITIONS - 1)), record];
 }
 
+/** How many times a store mutation reloads and reapplies after a lost CAS race. */
+const CAS_ATTEMPTS = 3;
+
+/** Wraps a raw store failure as a structured transient failure; corrupt records stay `PhaseLoopCorruptError`. */
+function transientFailure(row: PhaseLoopState, event: string, error: unknown): FsmError {
+	if (error instanceof FsmError && error.kind === "transient") return error;
+	const lifecycle = deriveLifecycle(row);
+	const detail = error instanceof Error ? error.message : String(error);
+	return new FsmError(
+		"transient",
+		lifecycle,
+		event,
+		nextEvents(lifecycle),
+		`phase transition could not be persisted: ${detail}`,
+		error,
+	);
+}
+
+/**
+ * Loads, builds and commits one store mutation. A store with CAS reloads and reapplies when another
+ * writer wins the race, so a duplicate event is refused on the fresh row rather than committed twice.
+ */
+function commitStoreMutation<T>(
+	runtimeId: string,
+	store: PhaseLoopStore,
+	event: string,
+	build: (row: PhaseLoopState) => { value: T; shouldCommit: boolean; record?: PhaseLoopRecord },
+): T {
+	let lastRow: PhaseLoopState | undefined;
+	for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+		let expectedDigest: string | undefined;
+		try {
+			expectedDigest = store.digest?.(runtimeId);
+		} catch (error) {
+			throw transientFailure(lastRow ?? emptyState(runtimeId), event, error);
+		}
+		let outcome: LoadOutcome | undefined;
+		try {
+			outcome = store.load(runtimeId);
+		} catch (error) {
+			throw transientFailure(lastRow ?? emptyState(runtimeId), event, error);
+		}
+		if (outcome.status === "quarantined") {
+			throw new PhaseLoopCorruptError(runtimeId, outcome.quarantinedAs);
+		}
+		const row = outcome.status === "found" ? snapshot(outcome.record) : emptyState(runtimeId);
+		lastRow = row;
+		const built = build(row);
+		if (!built.shouldCommit) return built.value;
+		let saved: boolean;
+		try {
+			if (store.saveIfUnchanged) {
+				saved = store.saveIfUnchanged(runtimeId, built.record ?? row, expectedDigest);
+			} else {
+				store.save(runtimeId, built.record ?? row);
+				saved = true;
+			}
+		} catch (error) {
+			throw transientFailure(row, event, error);
+		}
+		if (saved) return built.value;
+	}
+	const lifecycle = deriveLifecycle(lastRow ?? emptyState(runtimeId));
+	throw new FsmError(
+		"transient",
+		lifecycle,
+		event,
+		nextEvents(lifecycle),
+		`phase transition could not be persisted: record changed ${CAS_ATTEMPTS} times`,
+	);
+}
+
 /** Applies one attempt to row in place. Returns the refusal reasons; none means it was applied. */
 function applyAttempt(
 	runtimeId: string,
@@ -488,14 +563,10 @@ function transition(
 	if (!store) {
 		return run(rowFor(runtimeId));
 	}
-	const outcome = store.load(runtimeId);
-	if (outcome.status === "quarantined") {
-		throw new PhaseLoopCorruptError(runtimeId, outcome.quarantinedAs);
-	}
-	const row = outcome.status === "found" ? snapshot(outcome.record) : emptyState(runtimeId);
-	const result = run(row);
-	if (result.accepted) store.save(runtimeId, row);
-	return result;
+	return commitStoreMutation(runtimeId, store, log?.event ?? "transition", (row) => {
+		const result = run(row);
+		return { value: result, shouldCommit: result.accepted };
+	});
 }
 
 /**
@@ -667,60 +738,57 @@ export function cleanupPhaseLoop(
 	cleanedBy: string,
 	now: string,
 ): void {
-	const outcome = store.load(runtimeId);
-	if (outcome.status === "quarantined") {
-		throw new PhaseLoopCorruptError(runtimeId, outcome.quarantinedAs);
-	}
-	const row = outcome.status === "found" ? snapshot(outcome.record) : emptyState(runtimeId);
-	const lifecycle = deriveLifecycle(row);
-	if (!isClosed(row)) {
-		throw new FsmError(
-			"guard",
-			lifecycle,
-			"cleanup",
-			nextEvents(lifecycle),
-			`cleanup requires a completed loop; loop is ${lifecycle}`,
-		);
-	}
-	if (row.closedBy === undefined) {
-		throw new FsmError(
-			"guard",
-			lifecycle,
-			"cleanup",
-			nextEvents(lifecycle),
-			"cleanup requires a recorded close (closedBy)",
-		);
-	}
-	if (row.cleanedUpAt !== undefined) {
-		throw new FsmError(
-			"rejection",
-			lifecycle,
-			"cleanup",
-			nextEvents(lifecycle),
-			"loop is already cleaned-up",
-		);
-	}
-	if (isBlank(cleanedBy)) {
-		throw new FsmError(
-			"guard",
-			lifecycle,
-			"cleanup",
-			nextEvents(lifecycle),
-			"cleanup needs a cleanedBy owner",
-		);
-	}
-	appendTransition(row, {
-		at: now,
-		from: lifecycle,
-		event: "cleanup",
-		to: "cleaned-up",
-		accepted: true,
-		refusals: [],
+	commitStoreMutation(runtimeId, store, "cleanup", (row) => {
+		const lifecycle = deriveLifecycle(row);
+		if (!isClosed(row)) {
+			throw new FsmError(
+				"guard",
+				lifecycle,
+				"cleanup",
+				nextEvents(lifecycle),
+				`cleanup requires a completed loop; loop is ${lifecycle}`,
+			);
+		}
+		if (row.closedBy === undefined) {
+			throw new FsmError(
+				"guard",
+				lifecycle,
+				"cleanup",
+				nextEvents(lifecycle),
+				"cleanup requires a recorded close (closedBy)",
+			);
+		}
+		if (row.cleanedUpAt !== undefined) {
+			throw new FsmError(
+				"rejection",
+				lifecycle,
+				"cleanup",
+				nextEvents(lifecycle),
+				"loop is already cleaned-up",
+			);
+		}
+		if (isBlank(cleanedBy)) {
+			throw new FsmError(
+				"guard",
+				lifecycle,
+				"cleanup",
+				nextEvents(lifecycle),
+				"cleanup needs a cleanedBy owner",
+			);
+		}
+		appendTransition(row, {
+			at: now,
+			from: lifecycle,
+			event: "cleanup",
+			to: "cleaned-up",
+			accepted: true,
+			refusals: [],
+		});
+		row.cleanedUpAt = now;
+		row.cleanedUpBy = cleanedBy;
+		if (row.schemaVersion === undefined) row.schemaVersion = FSM_SCHEMA_VERSION;
+		return { value: undefined, shouldCommit: true };
 	});
-	row.cleanedUpAt = now;
-	row.cleanedUpBy = cleanedBy;
-	if (row.schemaVersion === undefined) row.schemaVersion = FSM_SCHEMA_VERSION;
-	store.save(runtimeId, row);
 }
 
 /**
@@ -735,12 +803,11 @@ export function checkpointPhaseLoop(
 	reason: CheckpointReason,
 	now: string,
 ): void {
-	const outcome = store.load(runtimeId);
-	if (outcome.status === "quarantined") {
-		throw new PhaseLoopCorruptError(runtimeId, outcome.quarantinedAs);
-	}
-	const row = outcome.status === "found" ? snapshot(outcome.record) : emptyState(runtimeId);
-	store.save(runtimeId, { ...row, checkpoint: { reason, at: now } });
+	commitStoreMutation(runtimeId, store, "checkpoint", (row) => ({
+		value: undefined,
+		shouldCommit: true,
+		record: { ...row, checkpoint: { reason, at: now } },
+	}));
 }
 
 /**

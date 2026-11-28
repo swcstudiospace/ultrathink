@@ -18,7 +18,7 @@ import { TEST_STATE_DIR_PREFIX } from "../test.state-dir.ts";
 import { attemptPhase } from "../workflow/phase-loop.ts";
 import { fileStore } from "../workflow/phase-loop-store.ts";
 import type { OmpPlan, OmpPlanRequest } from "./omp.ts";
-import { killSessionPhases } from "./omp-phase.ts";
+import { killSessionPhases, restoreSessionPhases } from "./omp-phase.ts";
 import { flush, setup } from "./omp-test.helpers.ts";
 import type { PlanView } from "./view.ts";
 
@@ -50,6 +50,14 @@ interface StoredRecord {
 	executeStarts: number;
 	humanItems: { id: string; owner: string; state: string }[];
 	checkpoint?: { reason: string; at: string };
+	transitions?: {
+		at: string;
+		from: string;
+		event: string;
+		to: string;
+		accepted: boolean;
+		refusals: string[];
+	}[];
 }
 const readRecord = (root: string): StoredRecord =>
 	JSON.parse(readFileSync(recordPath(root), "utf8")) as StoredRecord;
@@ -126,6 +134,17 @@ describe("omp phase record", () => {
 		const record = readRecord(root);
 		expect(record.phaseOrder).toEqual(["Discuss", "Plan", "Execute"]);
 		expect(record.executeStarts).toBe(1);
+		expect(record.transitions?.map((item) => item.event)).toEqual([
+			"attempt(Discuss)",
+			"attempt(Plan)",
+			"attempt(Execute)",
+		]);
+		expect(record.transitions?.[0]).toMatchObject({
+			from: "ready",
+			to: "discussing",
+			accepted: true,
+		});
+		expect(typeof record.transitions?.[0]?.at).toBe("string");
 		expect(advisories(sent, "Execute gates are unmet")).toHaveLength(0);
 	});
 
@@ -146,6 +165,15 @@ describe("omp phase record", () => {
 		const { run } = setup(planner(), 1_000, { stateDir: root });
 		await discussAndPlan(run);
 		expect(readRecord(root).runtimeSessionId).toBe(SESSION);
+	});
+
+	test("restore reports lifecycle status and next events", () => {
+		const root = newRoot();
+		openLoop(root);
+		const report = restoreSessionPhases({ stateDir: root, sessionId: SESSION });
+		expect(report.status?.lifecycle).toBe("discussing");
+		expect(report.status?.completedStages).toEqual(["Discuss"]);
+		expect(report.status?.nextEvents).toEqual(["attempt(Plan)"]);
 	});
 
 	test("a plain prompt writes nothing under phase-loop", async () => {

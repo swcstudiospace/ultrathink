@@ -2509,14 +2509,19 @@ export function createOmpExtension(
 			report: PhaseReport | undefined,
 			ctx: ExtensionContext | undefined,
 		): void => {
+			const statusText =
+				report?.status === undefined
+					? ""
+					: ` State: ${report.status.lifecycle}; next: ${report.status.nextEvents.join(", ") || "none"}.`;
 			if (report?.kind === "message")
 				guard(() =>
 					pi.sendMessage(
-						{ content: report.text, display: true, attribution: "agent" },
+						{ content: report.text + statusText, display: true, attribution: "agent" },
 						{ triggerTurn: false },
 					),
 				);
-			if (report?.kind === "notice") guard(() => ctx?.ui?.notify?.(report.text, "warning"));
+			if (report?.kind === "notice")
+				guard(() => ctx?.ui?.notify?.(report.text + statusText, "warning"));
 		};
 		/** The session the kill hook checkpoints: set at session start or switch, cleared once shutdown pauses it. */
 		let livePhaseSession: PhaseSession | undefined;

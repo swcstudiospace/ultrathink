@@ -22,9 +22,13 @@ import { sleep } from "../resilience/sleep.ts";
 import type { ToolCaller } from "../track/create.ts";
 import { fileStore } from "../workflow/phase-loop-store.ts";
 import {
+	cleanupPhaseLoop,
 	confirmShip,
+	FsmError,
+	phaseLoopStatus,
 	recordAudit,
 	resolve as resolveHumanItem,
+	restorePhaseLoop,
 	type ShipConfirmationInput,
 } from "../workflow/phase-loop.ts";
 import { assessDecisionJson, assessDone } from "./assess.ts";
@@ -746,6 +750,31 @@ function underPhaseRecordLock<T>(dir: string, fn: () => T): { value: T } | undef
 }
 
 /**
+ * After a merge, cleans up a completed, audited phase record. A record without a close, or one already
+ * cleaned up, is skipped: a PR merged outside this flow does not make `cleanupPhaseLoop` a failure.
+ */
+function cleanupPhaseRecord(deps: ShipDeps, statePath: string, now: number): Output {
+	const sessionId = readRecord(statePath)?.sessionId ?? "";
+	if (!sessionId) return { phaseCleanup: "skipped" };
+	const store = fileStore(deps.phaseLoopDir);
+	try {
+		const loaded = store.load(sessionId);
+		if (loaded.status !== "found") return { phaseCleanup: "skipped" };
+		if (loaded.record.closedBy === undefined || loaded.record.cleanedUpAt !== undefined)
+			return { phaseCleanup: "skipped" };
+		const locked = underPhaseRecordLock(deps.phaseLoopDir, () =>
+			cleanupPhaseLoop(store, sessionId, "ship", new Date(now).toISOString()),
+		);
+		if (locked === undefined)
+			return { phaseCleanupError: "phase record lock not taken; cleanup not recorded" };
+		return { phaseCleanup: "completed" };
+	} catch (error) {
+		if (error instanceof FsmError && error.kind === "rejection") return { phaseCleanup: "skipped" };
+		return { phaseCleanupError: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+/**
  * The review stage's audit (LIFE-02): records the completed review of `headSha` in the phase record, passed or not, so
  * a merge of that head can cite it. Returns why it was not recorded, or undefined when it was.
  */
@@ -768,6 +797,7 @@ function recordReviewAudit(
 					recordedAt: new Date(at).toISOString(),
 				},
 				fileStore(dir),
+				{ at: new Date(at).toISOString() },
 			),
 		);
 		if (locked === undefined) return "phase record lock not taken; nothing recorded";
@@ -865,6 +895,7 @@ function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
 				closing,
 				() => record?.runtimeSessionId === sessionId,
 				store,
+				{ at: new Date(now).toISOString() },
 			);
 			if (outcome.accepted) return undefined;
 			const reason = outcome.refusals.join("; ");
@@ -1063,6 +1094,7 @@ function finishMerge(
 		{ phase: "merged", mergedAt: ship.mergedAt ?? now, waiting: undefined },
 		now,
 	);
+	const phaseCleanup = logged && recorded ? cleanupPhaseRecord(deps, statePath, now) : undefined;
 	const { method } = merged;
 	const outcome: Output = {
 		merged: true,
@@ -1073,6 +1105,7 @@ function finishMerge(
 			? { methodSubstituted: `${deps.config.mergeMethod} not allowed; used ${method}` }
 			: {}),
 		...cleanup,
+		...(phaseCleanup ?? {}),
 	};
 	// The merge already happened on GitHub: a failed write is reported with the merge, not as a failed merge.
 	if (!logged || !recorded)
@@ -1232,6 +1265,7 @@ function stepResolve(ctx: Ctx, resolution: Resolution | undefined): Output {
 				entryId,
 				{ state: "done", evidenceId: evidence, resolvedBy: owner, resolvedAt },
 				fileStore(deps.phaseLoopDir),
+				{ at: resolvedAt },
 			),
 		);
 		if (locked === undefined)
@@ -1444,9 +1478,20 @@ export async function runShip(
 				return { code: 0, output: stepResolve(ctx, resolution) };
 			case "status": {
 				const ship = readShip(ctx.statePath);
+				if (!ship) return { code: 0, output: { ok: false, reason: "no ship state" } };
+				const sessionId = readRecord(ctx.statePath)?.sessionId ?? "";
+				const report = sessionId
+					? restorePhaseLoop(fileStore(deps.phaseLoopDir), sessionId)
+					: undefined;
+				const phaseLoop =
+					report?.quarantined === true
+						? { lifecycle: "failed" as const, quarantinedAs: report.quarantinedAs ?? "" }
+						: report?.restored
+							? phaseLoopStatus(report.state, report.checkpoint)
+							: undefined;
 				return {
 					code: 0,
-					output: ship ? { ok: true, ship } : { ok: false, reason: "no ship state" },
+					output: { ok: true, ship, ...(phaseLoop ? { phaseLoop } : {}) },
 				};
 			}
 			default:

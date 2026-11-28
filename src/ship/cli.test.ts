@@ -2056,6 +2056,13 @@ describe("merge phase gate", () => {
 		expect(phaseRecord()?.audits).toEqual([
 			{ id: "review:abc", kind: "validation", result: "pass", recordedAt: CLOCK_AT },
 		]);
+		expect(phaseRecord()?.transitions).toContainEqual(
+			expect.objectContaining({
+				event: "recordAudit(review:abc)",
+				at: CLOCK_AT,
+				accepted: true,
+			}),
+		);
 		const out = await ship("merge", deps());
 		expect(out.output).toMatchObject({ ok: true, merged: true });
 		expect(phaseRecord()?.closedBy).toEqual({
@@ -2116,6 +2123,24 @@ describe("merge phase gate", () => {
 		expect(phaseRecord()).toMatchObject({
 			phaseOrder: ["Discuss", "Plan", "Execute", "Verify", "Ship"],
 			closedBy: { kind: "validation", recordId: "review:abc" },
+		});
+	});
+
+	test("after a merged ship, cleanup marks the phase record cleaned-up and status reports it", async () => {
+		await reviewStage();
+		const out = await ship("merge", deps());
+		expect(out.output).toMatchObject({ ok: true, merged: true, phaseCleanup: "completed" });
+		expect(phaseRecord()).toMatchObject({
+			cleanedUpBy: "ship",
+			cleanedUpAt: CLOCK_AT,
+		});
+		expect(phaseRecord()?.transitions).toContainEqual(
+			expect.objectContaining({ event: "cleanup", at: CLOCK_AT, to: "cleaned-up" }),
+		);
+		const status = await ship("status", deps());
+		expect(status.output).toMatchObject({
+			ok: true,
+			phaseLoop: { lifecycle: "cleaned-up", nextEvents: [] },
 		});
 	});
 

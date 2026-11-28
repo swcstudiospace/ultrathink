@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	closeSync,
 	fsyncSync,
@@ -14,6 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { withLockMutation } from "../claude/atomic.ts";
 import type {
 	AuditRecord,
 	ClosedBy,
@@ -45,7 +46,7 @@ type StoredRecord = Omit<PhaseLoopRecord, "humanItems"> & { humanItems?: HtilEnt
  * was moved aside under a new name with its bytes intact. `quarantinedAs` is the store's
  * locator for that moved copy.
  */
-type LoadOutcome =
+export type LoadOutcome =
 	| { status: "found"; record: PhaseLoopRecord }
 	| { status: "absent" }
 	| { status: "quarantined"; quarantinedAs: string };
@@ -59,6 +60,42 @@ export interface PhaseLoopStore {
 
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
+/** Canonical phase order; persisted `phaseOrder` must be a prefix of this list. */
+const PHASE_ORDER = ["Discuss", "Plan", "Execute", "Verify", "Ship"] as const;
+const LIFECYCLES: Record<string, true> = {
+	ready: true,
+	discussing: true,
+	planning: true,
+	executing: true,
+	verifying: true,
+	"awaiting-decision": true,
+	blocked: true,
+	paused: true,
+	failed: true,
+	completed: true,
+	"cleaned-up": true,
+};
+const RECORD_KEYS: Record<string, true> = {
+	runtimeId: true,
+	phaseOrder: true,
+	executeStarts: true,
+	shipStarts: true,
+	operatorConfirmations: true,
+	humanItems: true,
+	closedBy: true,
+	audits: true,
+	overrides: true,
+	runtimeSessionId: true,
+	runtimeRepair: true,
+	schemaVersion: true,
+	transitions: true,
+	cleanedUpAt: true,
+	cleanedUpBy: true,
+	checkpoint: true,
+};
+function isCount(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
 
 /** Hex of the UTF-8 id: filename-safe, injective, and unable to escape the directory. */
 function recordName(runtimeId: string): string {
@@ -132,9 +169,13 @@ function isTransition(value: unknown): boolean {
 	const row = value as Record<string, unknown>;
 	return (
 		typeof row.at === "string" &&
+		row.at !== "" &&
 		typeof row.from === "string" &&
+		LIFECYCLES[row.from] === true &&
 		typeof row.event === "string" &&
+		row.event !== "" &&
 		typeof row.to === "string" &&
+		LIFECYCLES[row.to] === true &&
 		typeof row.accepted === "boolean" &&
 		Array.isArray(row.refusals) &&
 		row.refusals.every((item) => typeof item === "string")
@@ -144,13 +185,14 @@ function isTransition(value: unknown): boolean {
 function isPhaseLoopRecord(value: unknown): value is StoredRecord {
 	if (typeof value !== "object" || value === null) return false;
 	const row = value as Record<string, unknown>;
+	if (!Object.keys(row).every((key) => RECORD_KEYS[key] === true)) return false;
 	return (
 		typeof row.runtimeId === "string" &&
 		Array.isArray(row.phaseOrder) &&
-		row.phaseOrder.every((phase) => typeof phase === "string") &&
-		typeof row.executeStarts === "number" &&
-		typeof row.shipStarts === "number" &&
-		typeof row.operatorConfirmations === "number" &&
+		row.phaseOrder.every((phase, index) => phase === PHASE_ORDER[index]) &&
+		isCount(row.executeStarts) &&
+		isCount(row.shipStarts) &&
+		isCount(row.operatorConfirmations) &&
 		(row.checkpoint === undefined || isCheckpoint(row.checkpoint)) &&
 		(row.humanItems === undefined ||
 			(Array.isArray(row.humanItems) && row.humanItems.every(isHtilEntry))) &&
@@ -160,7 +202,7 @@ function isPhaseLoopRecord(value: unknown): value is StoredRecord {
 			(Array.isArray(row.overrides) && row.overrides.every(isOverrideDecision))) &&
 		(row.runtimeSessionId === undefined || typeof row.runtimeSessionId === "string") &&
 		(row.runtimeRepair === undefined || isRuntimeRepair(row.runtimeRepair)) &&
-		(row.schemaVersion === undefined || typeof row.schemaVersion === "number") &&
+		(row.schemaVersion === undefined || row.schemaVersion === 1) &&
 		(row.transitions === undefined ||
 			(Array.isArray(row.transitions) && row.transitions.every(isTransition))) &&
 		(row.cleanedUpAt === undefined || typeof row.cleanedUpAt === "string") &&
@@ -190,6 +232,44 @@ function fsyncDirectory(dir: string): void {
 	} finally {
 		closeSync(fd);
 	}
+}
+
+function errorCodeOf(error: unknown): string | undefined {
+	return typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		typeof error.code === "string"
+		? error.code
+		: undefined;
+}
+
+/** The SHA-256 of the record file's exact bytes, or undefined when the file is absent. */
+function digestOfRecord(path: string): string | undefined {
+	try {
+		return createHash("sha256").update(readFileSync(path, "utf8")).digest("hex");
+	} catch (error) {
+		if (errorCodeOf(error) === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+/** Atomically replaces one record file with the next record. */
+function writeRecord(stateDir: string, target: string, record: PhaseLoopRecord): void {
+	const temp = `${target}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+	try {
+		const fd = openSync(temp, "wx", FILE_MODE);
+		try {
+			writeFileSync(fd, `${JSON.stringify(record)}\n`);
+			fsyncSync(fd);
+		} finally {
+			closeSync(fd);
+		}
+		renameSync(temp, target);
+	} catch (error) {
+		rmSync(temp, { force: true });
+		throw error;
+	}
+	fsyncDirectory(stateDir);
 }
 
 /** The one file call a store makes that a test can race: moving a corrupt record aside. */
@@ -269,21 +349,20 @@ export function fileStore(stateDir: string, fs: PhaseLoopFs = defaultFs): PhaseL
 		save(runtimeId, record) {
 			mkdirSync(stateDir, { recursive: true, mode: DIR_MODE });
 			const target = join(stateDir, recordName(runtimeId));
-			const temp = `${target}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
-			try {
-				const fd = openSync(temp, "wx", FILE_MODE);
-				try {
-					writeFileSync(fd, `${JSON.stringify(record)}\n`);
-					fsyncSync(fd);
-				} finally {
-					closeSync(fd);
-				}
-				renameSync(temp, target);
-			} catch (error) {
-				rmSync(temp, { force: true });
-				throw error;
-			}
-			fsyncDirectory(stateDir);
+			writeRecord(stateDir, target, record);
+		},
+		digest(runtimeId) {
+			return digestOfRecord(join(stateDir, recordName(runtimeId)));
+		},
+		saveIfUnchanged(runtimeId, record, expectedDigest) {
+			mkdirSync(stateDir, { recursive: true, mode: DIR_MODE });
+			const target = join(stateDir, recordName(runtimeId));
+			const wrote = withLockMutation(target, () => {
+				if (digestOfRecord(target) !== expectedDigest) return false;
+				writeRecord(stateDir, target, record);
+				return true;
+			});
+			return wrote === true;
 		},
 	};
 }
