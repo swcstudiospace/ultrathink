@@ -416,10 +416,10 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 			const second = await runPromptSubmit(input, deps);
 			expect(second.record?.plan?.graphId).toBe(first.record?.plan?.graphId);
 			expect(second.record?.tracking?.status).toBe("complete");
-			expect(world.linear.rows).toHaveLength(30);
-			expect(new Set(world.linear.rows.map((row) => row.title)).size).toBe(30);
-			expect(world.notion.rows).toHaveLength(31);
-			expect(new Set(world.notion.rows.map((row) => `${row.Level}${row.Item}`)).size).toBe(31);
+			expect(world.linear.rows).toHaveLength(36);
+			expect(new Set(world.linear.rows.map((row) => row.title)).size).toBe(36);
+			expect(world.notion.rows).toHaveLength(37);
+			expect(new Set(world.notion.rows.map((row) => `${row.Level}${row.Item}`)).size).toBe(37);
 		} finally {
 			cleanup();
 		}
@@ -437,8 +437,8 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 			const second = await runPromptSubmit(input, deps);
 			expect(second.record?.plan?.graphId).not.toBe(first.record?.plan?.graphId);
 			// A whole second set under its own id: no step row is created under an adopted node of the first attempt.
-			expect(linear.rows).toHaveLength(60);
-			expect(notion.rows).toHaveLength(62);
+			expect(linear.rows).toHaveLength(72);
+			expect(notion.rows).toHaveLength(74);
 			expect(second.record?.tracking?.status).toBe("complete");
 		} finally {
 			cleanup();
@@ -454,8 +454,8 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 			const first = await runPromptSubmit(input, deps);
 			const second = await runPromptSubmit(input, deps);
 			expect(second.record?.plan?.graphId).toBe(first.record?.plan?.graphId);
-			expect(linear.rows).toHaveLength(30);
-			expect(notion.rows).toHaveLength(31);
+			expect(linear.rows).toHaveLength(36);
+			expect(notion.rows).toHaveLength(37);
 		} finally {
 			cleanup();
 		}
@@ -474,8 +474,8 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 			);
 			await runPromptSubmit(input, deps);
 			expect(linear.calls.filter((call) => call.name === "list_issues").length).toBeGreaterThan(0);
-			expect(linear.rows).toHaveLength(30);
-			expect(notion.rows).toHaveLength(31);
+			expect(linear.rows).toHaveLength(36);
+			expect(notion.rows).toHaveLength(37);
 		} finally {
 			cleanup();
 		}
@@ -518,12 +518,12 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 				...Object.values(tracking?.notion.steps ?? {}),
 				tracking?.notion.taskUrl ?? "",
 			];
-			expect(refsUrls).toHaveLength(30);
+			expect(refsUrls).toHaveLength(36);
 			expect(refsUrls.some((url) => firstUrls.has(url))).toBe(false);
 			expect(refsPages.some((url) => firstPages.has(url))).toBe(false);
 			// The earlier rows are left alone, as orphans.
-			expect(linear.rows).toHaveLength(60);
-			expect(notion.rows).toHaveLength(62);
+			expect(linear.rows).toHaveLength(72);
+			expect(notion.rows).toHaveLength(74);
 		} finally {
 			cleanup();
 		}
@@ -540,8 +540,8 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 			world.heal();
 			const second = await runPromptSubmit(input, deps);
 			expect(second.record?.plan?.graphId).toBe(first.record?.plan?.graphId);
-			expect(world.linear.rows).toHaveLength(30);
-			expect(world.notion.rows).toHaveLength(31);
+			expect(world.linear.rows).toHaveLength(36);
+			expect(world.notion.rows).toHaveLength(37);
 		} finally {
 			cleanup();
 		}
@@ -589,8 +589,8 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 				false,
 			);
 			expect(refs?.notion.taskUrl && firstPages.has(refs.notion.taskUrl)).toBeFalsy();
-			expect(linear.rows).toHaveLength(60);
-			expect(notion.rows).toHaveLength(62);
+			expect(linear.rows).toHaveLength(72);
+			expect(notion.rows).toHaveLength(74);
 			// Back in the first repository the byte-identical graph has the first id again. B's save replaced the record, so
 			// no lookup runs and its rows are made again (the documented limit; the first rows stay as orphans).
 			const a2 = await runPromptSubmit(input, inRepo("acme/widgets"));
