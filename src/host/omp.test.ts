@@ -2076,7 +2076,17 @@ describe("native planner end to end (D-01, D-02)", () => {
 		);
 		expect(plan.skipped).toBeUndefined();
 		expect(plan.context).not.toBe("");
-		expect(stages).toEqual(["uplift", "graph", "fill", "fill", "fill", "fill", "fill", "fill", "clarify"]);
+		expect(stages).toEqual([
+			"uplift",
+			"graph",
+			"fill",
+			"fill",
+			"fill",
+			"fill",
+			"fill",
+			"fill",
+			"clarify",
+		]);
 		expect(rec.calls.every((call) => call.model === live && call.options?.sessionId === "s1")).toBe(
 			true,
 		);

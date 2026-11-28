@@ -56,6 +56,14 @@ export interface PhaseLoopStore {
 	load(runtimeId: string): LoadOutcome;
 	/** Commits the record before returning. Throws when the write fails. */
 	save(runtimeId: string, record: PhaseLoopRecord): void;
+	/** The SHA-256 hex digest of the current record file, or undefined when it is absent. */
+	digest?(runtimeId: string): string | undefined;
+	/** Atomically commits only when the current record still has the expected digest; a mismatch returns false. */
+	saveIfUnchanged?(
+		runtimeId: string,
+		record: PhaseLoopRecord,
+		expectedDigest: string | undefined,
+	): boolean;
 }
 
 const DIR_MODE = 0o700;

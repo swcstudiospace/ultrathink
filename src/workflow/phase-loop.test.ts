@@ -218,6 +218,124 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		return undefined;
 	}
 
+	/** A store whose first CAS loses to a concurrent writer that has already recorded through Execute. */
+	function concurrentOnceStore(stateDir: string): { store: PhaseLoopStore; saves: () => number } {
+		const inner = fileStore(stateDir);
+		let first = true;
+		let saves = 0;
+		const store: PhaseLoopStore = {
+			load: (runtimeId) => inner.load(runtimeId),
+			save: (runtimeId, record) => {
+				inner.save(runtimeId, record);
+			},
+			digest: (runtimeId) => inner.digest?.(runtimeId),
+			saveIfUnchanged: (runtimeId, record, expectedDigest) => {
+				saves += 1;
+				if (first) {
+					first = false;
+					inner.save(runtimeId, {
+						runtimeId,
+						phaseOrder: ["Discuss", "Plan", "Execute"],
+						executeStarts: 1,
+						shipStarts: 0,
+						operatorConfirmations: 0,
+						humanItems: [],
+						runtimeSessionId: runtimeId,
+					});
+					return false;
+				}
+				return inner.saveIfUnchanged?.(runtimeId, record, expectedDigest) ?? false;
+			},
+		};
+		return { store, saves: () => saves };
+	}
+
+	test("a repeated accepted event is refused instead of committed twice", () => {
+		const { store, saves } = countingStore(dir);
+		step("claude", "Discuss", store);
+		const repeated = attemptPhase("claude", { phase: "Discuss", ...READY }, CONNECTED, store);
+		expect(repeated).toMatchObject({
+			accepted: false,
+			refusals: ["Discuss is not the next phase"],
+		});
+		expect(saves()).toBe(1);
+		expect(storedRecord(dir, "claude")?.phaseOrder).toEqual(["Discuss"]);
+	});
+
+	test("a lost CAS race reloads and refuses the duplicate instead of applying it twice", () => {
+		const physical = fileStore(dir);
+		step("claude", "Discuss", physical);
+		step("claude", "Plan", physical);
+		const { store, saves } = concurrentOnceStore(dir);
+		const result = attemptPhase("claude", { phase: "Execute", ...READY }, CONNECTED, store);
+		expect(result).toMatchObject({
+			accepted: false,
+			refusals: ["Execute is not the next phase"],
+		});
+		expect(saves()).toBe(1);
+		const stored = storedRecord(dir, "claude");
+		expect(stored?.phaseOrder).toEqual(["Discuss", "Plan", "Execute"]);
+		expect(stored?.executeStarts).toBe(1);
+	});
+
+	test("a store save failure is classified as transient with the original cause", () => {
+		const cause = new Error("disk full");
+		const store: PhaseLoopStore = {
+			load: () => ({ status: "absent" }),
+			save: () => {
+				throw cause;
+			},
+		};
+		const error = captureError(() =>
+			attemptPhase("claude", { phase: "Discuss", ...READY }, CONNECTED, store),
+		);
+		expect(error).toBeInstanceOf(FsmError);
+		const fsmError = error as FsmError;
+		expect(fsmError.kind).toBe("transient");
+		expect(fsmError.state).toBe("discussing");
+		expect(fsmError.event).toBe("attempt(Discuss)");
+		expect(fsmError.legalEvents).toEqual(["attempt(Plan)"]);
+		expect(fsmError.message).toContain("disk full");
+		expect(fsmError.cause).toBe(cause);
+	});
+
+	test("checkpoint and cleanup save failures are classified as transient", () => {
+		const cause = new Error("write failed");
+		const saveFails: PhaseLoopStore = {
+			load: () => ({ status: "absent" }),
+			save: () => {
+				throw cause;
+			},
+		};
+		const checkpointError = captureError(() =>
+			checkpointPhaseLoop(saveFails, "claude", "pause", AT),
+		);
+		expect(checkpointError).toBeInstanceOf(FsmError);
+		expect((checkpointError as FsmError).kind).toBe("transient");
+		expect((checkpointError as FsmError).cause).toBe(cause);
+
+		const completed: PhaseLoopRecord = {
+			runtimeId: "claude",
+			phaseOrder: ["Discuss", "Plan", "Execute", "Verify", "Ship"],
+			executeStarts: 1,
+			shipStarts: 1,
+			operatorConfirmations: 1,
+			humanItems: [],
+			closedBy: { kind: "audit", recordId: "audit-1", recordedAt: AT },
+			schemaVersion: FSM_SCHEMA_VERSION,
+		};
+		const cleanupStore: PhaseLoopStore = {
+			load: () => ({ status: "found", record: completed }),
+			save: () => {
+				throw cause;
+			},
+		};
+		const cleanupError = captureError(() => cleanupPhaseLoop(cleanupStore, "claude", "alice", AT));
+		expect(cleanupError).toBeInstanceOf(FsmError);
+		expect((cleanupError as FsmError).kind).toBe("transient");
+		expect((cleanupError as FsmError).cause).toBe(cause);
+	});
+
 	test("an accepted transition is committed to the store before the call returns", () => {
 		const { store, saves } = countingStore(dir);
 		const returned = step("claude", "Discuss", store);

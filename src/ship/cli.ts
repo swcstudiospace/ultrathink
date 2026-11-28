@@ -845,7 +845,13 @@ function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
 			// LIFE-05: a human_needed phase whose verification was written after its settle-time record is opened here,
 			// before the same-head check below, so a re-merge of a confirmed head sees the entries too. This reconcile is the
 			// only caller that records on a Ship-closed loop.
-			openHtilEntries(cwd, sessionId, store, { afterShip: true });
+			openHtilEntries(
+				cwd,
+				sessionId,
+				store,
+				{ afterShip: true },
+				{ at: new Date(now).toISOString() },
+			);
 			const reconciled = store.load(sessionId);
 			const record = reconciled.status === "found" ? reconciled.record : undefined;
 			const closedBy = record?.closedBy;

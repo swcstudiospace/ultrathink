@@ -155,6 +155,79 @@ describe("file phase loop store", () => {
 		}
 	});
 
+	test("unsupported schema versions quarantine the record", () => {
+		const store = fileStore(stateDir);
+		for (const schemaVersion of [0, 2, "1"]) {
+			store.save("claude", STATE);
+			writeFileSync(
+				join(stateDir, nth(recordFiles(), 0)),
+				JSON.stringify({ ...STATE, schemaVersion }),
+			);
+			expect(store.load("claude").status).toBe("quarantined");
+		}
+	});
+
+	test("out-of-order or non-prefix phaseOrder records quarantine", () => {
+		const store = fileStore(stateDir);
+		const phaseOrders: string[][] = [
+			["Plan"],
+			["Discuss", "Ship"],
+			["Verify", "Discuss"],
+			["Discuss", "Plan", "Execute", "Verify", "Ship", "Discuss"],
+		];
+		for (const phaseOrder of phaseOrders) {
+			store.save("claude", STATE);
+			writeFileSync(
+				join(stateDir, nth(recordFiles(), 0)),
+				JSON.stringify({ ...STATE, phaseOrder }),
+			);
+			expect(store.load("claude").status).toBe("quarantined");
+		}
+	});
+
+	test("unknown top-level fields and invalid transition lifecycles quarantine", () => {
+		const store = fileStore(stateDir);
+		const at = "2026-11-17T10:00:00.000Z";
+		const malformed: unknown[] = [
+			{ ...STATE, futureField: true },
+			{
+				...STATE,
+				transitions: [
+					{
+						at,
+						from: "staging",
+						event: "attempt(Plan)",
+						to: "planning",
+						accepted: true,
+						refusals: [],
+					},
+				],
+			},
+		];
+		for (const record of malformed) {
+			store.save("claude", STATE);
+			writeFileSync(join(stateDir, nth(recordFiles(), 0)), JSON.stringify(record));
+			expect(store.load("claude").status).toBe("quarantined");
+		}
+	});
+
+	test("saveIfUnchanged only writes over the digest it was read from", () => {
+		const store = fileStore(stateDir);
+		store.save("claude", STATE);
+		const digest = store.digest?.("claude");
+		if (digest === undefined || store.saveIfUnchanged === undefined)
+			throw new Error("fileStore provides digest and saveIfUnchanged");
+		store.save("claude", { ...STATE, executeStarts: 9 });
+		expect(store.saveIfUnchanged("claude", { ...STATE, executeStarts: 2 }, digest)).toBe(false);
+		const current = store.load("claude");
+		expect(current.status === "found" && current.record.executeStarts).toBe(9);
+		const freshDigest = store.digest?.("claude");
+		if (freshDigest === undefined) throw new Error("fileStore digest is present");
+		expect(store.saveIfUnchanged("claude", { ...STATE, executeStarts: 2 }, freshDigest)).toBe(true);
+		const saved = store.load("claude");
+		expect(saved.status === "found" && saved.record.executeStarts).toBe(2);
+	});
+
 	test("a temp file left by a crash does not replace the record", () => {
 		fileStore(stateDir).save("claude", STATE);
 		const record = nth(recordFiles(), 0);

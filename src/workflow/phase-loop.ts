@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 
-import type { Checkpoint, CheckpointReason, PhaseLoopStore } from "./phase-loop-store.ts";
+import type {
+	Checkpoint,
+	CheckpointReason,
+	LoadOutcome,
+	PhaseLoopRecord,
+	PhaseLoopStore,
+} from "./phase-loop-store.ts";
 
 /** Canonical GSD phase order. Recorded order is only a prefix of this list. */
 const PHASE_ORDER = ["Discuss", "Plan", "Execute", "Verify", "Ship"] as const;
