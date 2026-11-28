@@ -763,7 +763,11 @@ function cleanupPhaseRecord(deps: ShipDeps, statePath: string, now: number): Out
 		if (loaded.record.closedBy === undefined || loaded.record.cleanedUpAt !== undefined)
 			return { phaseCleanup: "skipped" };
 		const locked = underPhaseRecordLock(deps.phaseLoopDir, () =>
-			cleanupPhaseLoop(store, sessionId, "ship", new Date(now).toISOString()),
+			cleanupPhaseLoop(store, sessionId, "ship", new Date(now).toISOString(), {
+				actor: "ship",
+				reason: "merge completed",
+				allowedActors: ["ship"],
+			}),
 		);
 		if (locked === undefined)
 			return { phaseCleanupError: "phase record lock not taken; cleanup not recorded" };
@@ -1493,7 +1497,7 @@ export async function runShip(
 					report?.quarantined === true
 						? { lifecycle: "failed" as const, quarantinedAs: report.quarantinedAs ?? "" }
 						: report?.restored
-							? phaseLoopStatus(report.state, report.checkpoint)
+							? phaseLoopStatus(report.state, report.checkpoint, new Date().toISOString())
 							: undefined;
 				return {
 					code: 0,

@@ -167,13 +167,16 @@ describe("omp phase record", () => {
 		expect(readRecord(root).runtimeSessionId).toBe(SESSION);
 	});
 
-	test("restore reports lifecycle status and next events", () => {
+	test("restore reports lifecycle status, transition metrics and next events", () => {
 		const root = newRoot();
 		openLoop(root);
 		const report = restoreSessionPhases({ stateDir: root, sessionId: SESSION });
 		expect(report.status?.lifecycle).toBe("discussing");
 		expect(report.status?.completedStages).toEqual(["Discuss"]);
 		expect(report.status?.nextEvents).toEqual(["attempt(Plan)"]);
+		expect(report.status?.transitionMetrics).toEqual({ attempts: 0, accepted: 0, refused: 0 });
+		expect(report.status?.recentTransitions).toEqual([]);
+		expect(report.status?.signals).toEqual({});
 	});
 
 	test("a plain prompt writes nothing under phase-loop", async () => {

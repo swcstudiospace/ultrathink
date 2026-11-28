@@ -2509,10 +2509,28 @@ export function createOmpExtension(
 			report: PhaseReport | undefined,
 			ctx: ExtensionContext | undefined,
 		): void => {
-			const statusText =
-				report?.status === undefined
+			const status = report?.status;
+			const lastTransition = status?.recentTransitions.at(-1);
+			const lastText =
+				lastTransition === undefined
 					? ""
-					: ` State: ${report.status.lifecycle}; next: ${report.status.nextEvents.join(", ") || "none"}.`;
+					: ` Last: ${lastTransition.event} ${lastTransition.from}->${lastTransition.to} ${lastTransition.accepted ? "accepted" : "refused"}.`;
+			const metricsText =
+				status === undefined
+					? ""
+					: ` Transitions: ${status.transitionMetrics.accepted} accepted / ${status.transitionMetrics.refused} refused.`;
+			const stuckText =
+				status?.signals.stuck === undefined
+					? ""
+					: ` Stuck in ${status.signals.stuck.lifecycle} since ${status.signals.stuck.since}.`;
+			const duplicateText =
+				status?.signals.duplicateAccepted === undefined
+					? ""
+					: ` Duplicate accepted event: ${status.signals.duplicateAccepted.event} (${status.signals.duplicateAccepted.count}).`;
+			const statusText =
+				status === undefined
+					? ""
+					: ` State: ${status.lifecycle}; next: ${status.nextEvents.join(", ") || "none"}.${lastText}${metricsText}${stuckText}${duplicateText}`;
 			if (report?.kind === "message")
 				guard(() =>
 					pi.sendMessage(

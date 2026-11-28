@@ -247,7 +247,7 @@ export function recordGsdPhase(options: {
 			store,
 			{ at },
 		);
-		const status = phaseLoopStatus(outcome.state);
+		const status = phaseLoopStatus(outcome.state, undefined, at);
 		if (outcome.accepted) return { kind: "none", status };
 		const refusals = outcome.refusals.join("; ");
 		return {
@@ -274,7 +274,7 @@ export function restoreSessionPhases(session: PhaseSession): PhaseReport {
 		const pause = report.checkpoint
 			? ` The record holds a ${report.checkpoint.reason} checkpoint from ${report.checkpoint.at}.`
 			: "";
-		const status = phaseLoopStatus(report.state, report.checkpoint);
+		const status = phaseLoopStatus(report.state, report.checkpoint, new Date().toISOString());
 		return {
 			kind: "message",
 			text: `Ultrathink restored this session's phase loop: ${phases}.${pause}`,

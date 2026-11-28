@@ -11,6 +11,7 @@ import {
 	type AuditRecord,
 	checkpointPhaseLoop,
 	cleanupPhaseLoop,
+	type PhaseLoopState,
 	confirmShip,
 	deriveLifecycle,
 	FsmError,
@@ -330,7 +331,13 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 				throw cause;
 			},
 		};
-		const cleanupError = captureError(() => cleanupPhaseLoop(cleanupStore, "claude", "alice", AT));
+		const cleanupError = captureError(() =>
+			cleanupPhaseLoop(cleanupStore, "claude", "alice", AT, {
+				actor: "alice",
+				reason: "merge completed",
+				allowedActors: ["alice"],
+			}),
+		);
 		expect(cleanupError).toBeInstanceOf(FsmError);
 		expect((cleanupError as FsmError).kind).toBe("transient");
 		expect((cleanupError as FsmError).cause).toBe(cause);
@@ -1069,7 +1076,11 @@ describe("FSM lifecycle, status, audit trail and cleanup", () => {
 			// Guard: not completed yet.
 			const early = (() => {
 				try {
-					cleanupPhaseLoop(store, "claude", "alice", AT);
+					cleanupPhaseLoop(store, "claude", "alice", AT, {
+						actor: "alice",
+						reason: "merge completed",
+						allowedActors: ["alice"],
+					});
 				} catch (error) {
 					return error;
 				}
@@ -1079,9 +1090,14 @@ describe("FSM lifecycle, status, audit trail and cleanup", () => {
 			expect((early as FsmError).kind).toBe("guard");
 			recordPassing("claude", store);
 			confirmShip("claude", passing(), CONNECTED, store);
-			cleanupPhaseLoop(store, "claude", "alice", AT);
+			cleanupPhaseLoop(store, "claude", "alice", AT, {
+				actor: "alice",
+				reason: "merge completed",
+				allowedActors: ["alice"],
+			});
 			const cleaned = localRecord(dir, "claude");
 			expect(cleaned?.cleanedUpBy).toBe("alice");
+
 			expect(deriveLifecycle(cleaned as never)).toBe("cleaned-up");
 			expect(nextEvents("cleaned-up")).toEqual([]);
 			// Second cleanup is a rejection; no phase events accepted after cleanup.
@@ -1089,6 +1105,96 @@ describe("FSM lifecycle, status, audit trail and cleanup", () => {
 				attemptPhase("claude", { phase: "Discuss", ...READY }, CONNECTED, store).accepted,
 			).toBe(false);
 			expect(recordAudit("claude", PASSING_AUDIT, store).accepted).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+	test("status derives transition metrics, duplicate accepted events and stuck signals", () => {
+		const row: PhaseLoopState = {
+			runtimeId: "claude",
+			phaseOrder: ["Discuss"],
+			executeStarts: 0,
+			shipStarts: 0,
+			operatorConfirmations: 0,
+			humanItems: [],
+			transitions: [
+				{
+					at: AT,
+					from: "ready",
+					event: "attempt(Discuss)",
+					to: "discussing",
+					accepted: true,
+					refusals: [],
+				},
+				{
+					at: AT,
+					from: "ready",
+					event: "attempt(Discuss)",
+					to: "discussing",
+					accepted: true,
+					refusals: [],
+				},
+			],
+		};
+		const status = phaseLoopStatus(row, undefined, "2026-11-20T10:00:00.000Z");
+		expect(status.transitionMetrics).toEqual({ attempts: 2, accepted: 2, refused: 0 });
+		expect(status.recentTransitions).toHaveLength(2);
+		expect(status.signals).toEqual({
+			duplicateAccepted: { event: "attempt(Discuss)", count: 2, at: AT },
+			stuck: { lifecycle: "discussing", since: AT },
+		});
+	});
+
+	test("cleanup validates actor authorization and records the reason", () => {
+		const root = mkdtempSync(join(tmpdir(), "phase-loop-cleanup-auth-"));
+		try {
+			const dir = join(root, "state");
+			const store = fileStore(dir);
+			for (const phase of ["Discuss", "Plan", "Execute", "Verify"] as const) {
+				attemptPhase("claude", { phase, ...READY }, CONNECTED, store);
+			}
+			recordPassing("claude", store);
+			confirmShip("claude", passing(), CONNECTED, store);
+			const captureError = (run: () => unknown): unknown => {
+				try {
+					run();
+				} catch (error) {
+					return error;
+				}
+				return undefined;
+			};
+			const unauthorized = captureError(() =>
+				cleanupPhaseLoop(store, "claude", "maillory", AT, {
+					actor: "maillory",
+					reason: "cleanup",
+					allowedActors: ["alice"],
+				}),
+			);
+			expect(unauthorized).toBeInstanceOf(FsmError);
+			expect((unauthorized as FsmError).kind).toBe("guard");
+			expect((unauthorized as FsmError).message).toContain("cleanup actor is not authorized");
+			const blankReason = captureError(() =>
+				cleanupPhaseLoop(store, "claude", "alice", AT, {
+					actor: "alice",
+					reason: "   ",
+					allowedActors: ["alice"],
+				}),
+			);
+			expect(blankReason).toBeInstanceOf(FsmError);
+			expect((blankReason as FsmError).message).toContain("cleanup needs a reason");
+			cleanupPhaseLoop(store, "claude", "alice", AT, {
+				actor: "alice",
+				reason: "merge completed",
+				allowedActors: ["alice"],
+			});
+			const cleaned = localRecord(dir, "claude");
+			expect(cleaned?.cleanedUpBy).toBe("alice");
+			expect(cleaned?.cleanedUpReason).toBe("merge completed");
+			expect(cleaned?.transitions?.at(-1)).toMatchObject({
+				event: "cleanup",
+				accepted: true,
+				at: AT,
+			});
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

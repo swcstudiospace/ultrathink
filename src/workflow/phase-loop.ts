@@ -115,6 +115,8 @@ export interface PhaseLoopState {
 	/** When the loop was cleaned up, and by whom. Only set after a closed, audited Ship. */
 	cleanedUpAt?: string;
 	cleanedUpBy?: string;
+	/** Why the loop was cleaned up. Absent before cleanup and on legacy cleaned-up records. */
+	cleanedUpReason?: string;
 }
 
 /** Current persisted-schema version. Records without it are legacy and migrate to this on first accepted transition. */
@@ -174,12 +176,38 @@ export class FsmError extends Error {
 	}
 }
 
-/** Operator status of a loop: current state, completed stages, active blocker, attempts and next legal events. */
+/** Bounded summary of transition attempts persisted for a loop. */
+interface TransitionMetrics {
+	attempts: number;
+	accepted: number;
+	refused: number;
+}
+
+/** One persisted transition attempt, exposed for operator visibility and tracing. */
+interface PhaseTransitionSummary {
+	at: string;
+	from: PhaseLifecycle;
+	event: string;
+	to: PhaseLifecycle;
+	accepted: boolean;
+	refusals: readonly string[];
+}
+
+/** Derived operator signals from the persisted transition history. */
+interface PhaseLoopSignals {
+	duplicateAccepted?: { event: string; count: number; at: string };
+	stuck?: { lifecycle: PhaseLifecycle; since: string };
+}
+
+/** Operator status of a loop: current state, completed stages, active blocker, attempts, metrics, signals and next legal events. */
 export interface PhaseLoopStatus {
 	lifecycle: PhaseLifecycle;
 	completedStages: readonly PhaseName[];
 	blocker: { id: string; owner: string } | undefined;
 	attempts: { execute: number; ship: number; operatorConfirmations: number };
+	transitionMetrics: TransitionMetrics;
+	recentTransitions: readonly PhaseTransitionSummary[];
+	signals: PhaseLoopSignals;
 	nextEvents: readonly string[];
 }
 
@@ -267,6 +295,7 @@ function snapshot(row: PhaseLoopState): PhaseLoopState {
 			: { transitions: row.transitions.map((item) => ({ ...item })) }),
 		...(row.cleanedUpAt === undefined ? {} : { cleanedUpAt: row.cleanedUpAt }),
 		...(row.cleanedUpBy === undefined ? {} : { cleanedUpBy: row.cleanedUpBy }),
+		...(row.cleanedUpReason === undefined ? {} : { cleanedUpReason: row.cleanedUpReason }),
 	};
 }
 
@@ -320,8 +349,12 @@ export function nextEvents(lifecycle: PhaseLifecycle): readonly string[] {
 	}
 }
 
-/** Operator status of a loop: current state, completed stages, active blocker, attempt counts and next legal events. */
-export function phaseLoopStatus(row: PhaseLoopState, checkpoint?: Checkpoint): PhaseLoopStatus {
+/** Operator status of a loop: current state, completed stages, active blocker, attempt counts, metrics, signals and next legal events. */
+export function phaseLoopStatus(
+	row: PhaseLoopState,
+	checkpoint?: Checkpoint,
+	now?: string,
+): PhaseLoopStatus {
 	const lifecycle = deriveLifecycle(row, checkpoint);
 	const open = row.humanItems.find((item) => item.state === "open");
 	return {
@@ -332,6 +365,20 @@ export function phaseLoopStatus(row: PhaseLoopState, checkpoint?: Checkpoint): P
 			execute: row.executeStarts,
 			ship: row.shipStarts,
 			operatorConfirmations: row.operatorConfirmations,
+		},
+		transitionMetrics: { attempts: transitions.length, accepted, refused },
+		recentTransitions,
+		signals: {
+			...(duplicate === undefined
+				? {}
+				: {
+						duplicateAccepted: {
+							event: duplicate[0],
+							count: duplicate[1].count,
+							at: duplicate[1].at,
+						},
+					}),
+			...(stuck === undefined ? {} : { stuck }),
 		},
 		nextEvents: nextEvents(lifecycle),
 	};
@@ -732,6 +779,13 @@ export function recordAudit(
 	);
 }
 
+/** Caller validation for a cleanup audit record. `actor` must equal `cleanedBy`; `allowedActors` is optional. */
+export interface CleanupAuthorization {
+	actor: string;
+	reason: string;
+	allowedActors?: readonly string[];
+}
+
 /**
  * Durably clean up historical artifacts for a loop. Guard: the loop is completed (Ship
  * recorded) with a recorded close (`closedBy`). Marks the loop `cleaned-up`, which is
@@ -743,6 +797,7 @@ export function cleanupPhaseLoop(
 	runtimeId: string,
 	cleanedBy: string,
 	now: string,
+	authorization: CleanupAuthorization,
 ): void {
 	commitStoreMutation(runtimeId, store, "cleanup", (row) => {
 		const lifecycle = deriveLifecycle(row);
@@ -782,6 +837,45 @@ export function cleanupPhaseLoop(
 				"cleanup needs a cleanedBy owner",
 			);
 		}
+		if (isBlank(authorization.actor)) {
+			throw new FsmError(
+				"guard",
+				lifecycle,
+				"cleanup",
+				nextEvents(lifecycle),
+				"cleanup needs an actor",
+			);
+		}
+		if (authorization.actor !== cleanedBy) {
+			throw new FsmError(
+				"guard",
+				lifecycle,
+				"cleanup",
+				nextEvents(lifecycle),
+				"cleanup actor does not match cleanedBy owner",
+			);
+		}
+		if (
+			authorization.allowedActors !== undefined &&
+			!authorization.allowedActors.includes(cleanedBy)
+		) {
+			throw new FsmError(
+				"guard",
+				lifecycle,
+				"cleanup",
+				nextEvents(lifecycle),
+				"cleanup actor is not authorized",
+			);
+		}
+		if (isBlank(authorization.reason)) {
+			throw new FsmError(
+				"guard",
+				lifecycle,
+				"cleanup",
+				nextEvents(lifecycle),
+				"cleanup needs a reason",
+			);
+		}
 		appendTransition(row, {
 			at: now,
 			from: lifecycle,
@@ -792,6 +886,7 @@ export function cleanupPhaseLoop(
 		});
 		row.cleanedUpAt = now;
 		row.cleanedUpBy = cleanedBy;
+		row.cleanedUpReason = authorization.reason;
 		if (row.schemaVersion === undefined) row.schemaVersion = FSM_SCHEMA_VERSION;
 		return { value: undefined, shouldCommit: true };
 	});

@@ -99,6 +99,7 @@ const RECORD_KEYS: Record<string, true> = {
 	transitions: true,
 	cleanedUpAt: true,
 	cleanedUpBy: true,
+	cleanedUpReason: true,
 	checkpoint: true,
 };
 function isCount(value: unknown): value is number {
@@ -214,7 +215,8 @@ function isPhaseLoopRecord(value: unknown): value is StoredRecord {
 		(row.transitions === undefined ||
 			(Array.isArray(row.transitions) && row.transitions.every(isTransition))) &&
 		(row.cleanedUpAt === undefined || typeof row.cleanedUpAt === "string") &&
-		(row.cleanedUpBy === undefined || typeof row.cleanedUpBy === "string")
+		(row.cleanedUpBy === undefined || typeof row.cleanedUpBy === "string") &&
+		(row.cleanedUpReason === undefined || typeof row.cleanedUpReason === "string")
 	);
 }
 
