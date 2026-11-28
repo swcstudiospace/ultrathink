@@ -2,12 +2,13 @@
 // Copyright (C) 2026 SWC Studio
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileStore, type PhaseLoopRecord, type PhaseLoopStore } from "./phase-loop-store.ts";
 import {
 	attemptPhase,
+	approveDecision,
 	type AuditRecord,
 	checkpointPhaseLoop,
 	cleanupPhaseLoop,
@@ -17,14 +18,19 @@ import {
 	escalateHtilEntry,
 	FsmError,
 	FSM_SCHEMA_VERSION,
+	isDecisionLive,
+	isQuorumMet,
 	nextEvents,
 	open,
 	type OverrideDecision,
+	type OverrideRevocation,
 	PhaseLoopCorruptError,
 	type PhaseName,
 	phaseLoopStatus,
 	recordAudit,
+	recordOverrideDecision,
 	resolve,
+	revokeDecision,
 	type RuntimeConnectedCheck,
 	resetPhaseLoopStateForTests,
 	repairRuntimeMarker,
@@ -1625,5 +1631,464 @@ describe("FSM lifecycle, status, audit trail and cleanup", () => {
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("override quorum, expiry, and revocation (SPE-39906)", () => {
+	let root: string;
+	let dir: string;
+
+	beforeEach(() => {
+		resetPhaseLoopStateForTests();
+		root = mkdtempSync(join(tmpdir(), "phase-loop-decision-"));
+		dir = join(root, "state");
+	});
+
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	function countingStore(stateDir: string): { store: PhaseLoopStore; saves: () => number } {
+		const inner = fileStore(stateDir);
+		let count = 0;
+		const store: PhaseLoopStore = {
+			load: (runtimeId) => inner.load(runtimeId),
+			save: (runtimeId, record) => {
+				count += 1;
+				inner.save(runtimeId, record);
+			},
+		};
+		return { store, saves: () => count };
+	}
+
+	function storedRecord(stateDir: string, runtimeId: string): PhaseLoopRecord | undefined {
+		const outcome = fileStore(stateDir).load(runtimeId);
+		return outcome.status === "found" ? outcome.record : undefined;
+	}
+
+	function step(runtimeId: string, phase: PhaseName, store: PhaseLoopStore) {
+		return attemptPhase(runtimeId, { phase, ...READY }, CONNECTED, store).state;
+	}
+
+	function reachVerify(runtimeId: string, store: PhaseLoopStore): void {
+		for (const phase of ["Discuss", "Plan", "Execute", "Verify"] as const) {
+			step(runtimeId, phase, store);
+		}
+	}
+
+	test("a legacy override without new fields still closes", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		const closed = confirmShip(
+			"claude",
+			{ afterVerify: true, override: OWNER_OVERRIDE },
+			CONNECTED,
+			store,
+		);
+		expect(closed.accepted).toBe(true);
+		expect(closed.state.closedBy).toEqual({
+			kind: "override",
+			recordId: "decision-1",
+			recordedAt: AT,
+		});
+		expect(storedRecord(dir, "claude")?.overrides).toEqual([OWNER_OVERRIDE]);
+		expect(isDecisionLive(OWNER_OVERRIDE)).toBe(true);
+		expect(isQuorumMet(OWNER_OVERRIDE)).toBe(true);
+	});
+
+	test("a legacy record on disk still defers and closes", () => {
+		const store = fileStore(dir);
+		mkdirSync(dir, { recursive: true });
+		const legacy = {
+			runtimeId: "legacy",
+			phaseOrder: ["Discuss", "Plan", "Execute", "Verify"],
+			executeStarts: 1,
+			shipStarts: 0,
+			operatorConfirmations: 0,
+			runtimeSessionId: "legacy",
+			overrides: [{ decisionId: "old-1", owner: "alice", decidedAt: AT, reason: "old" }],
+		};
+		writeFileSync(
+			join(dir, `${Buffer.from("legacy", "utf8").toString("hex")}.json`),
+			JSON.stringify(legacy),
+		);
+		expect(open("legacy", { id: "h1", owner: "alice" }, store).accepted).toBe(true);
+		expect(
+			resolve("legacy", "h1", { state: "deferred", decisionId: "old-1" }, store).accepted,
+		).toBe(true);
+		expect(
+			confirmShip(
+				"legacy",
+				{
+					afterVerify: true,
+					override: { decisionId: "old-1", owner: "alice", decidedAt: AT, reason: "old" },
+				},
+				CONNECTED,
+				store,
+			).accepted,
+		).toBe(true);
+	});
+
+	test("a quorum decision closes only after enough distinct approvals", () => {
+		const { store, saves } = countingStore(dir);
+		reachVerify("claude", store);
+		const decision: OverrideDecision = {
+			...OWNER_OVERRIDE,
+			decisionId: "quorum-1",
+			quorumRequired: 2,
+		};
+		expect(recordOverrideDecision("claude", decision, store, { at: AT }).accepted).toBe(true);
+		const before = saves();
+		const short = confirmShip(
+			"claude",
+			{ afterVerify: true, override: decision },
+			CONNECTED,
+			store,
+			{ at: AT },
+		);
+		expect(short.accepted).toBe(false);
+		expect(short.refusals).toEqual([
+			"no passing audit or override",
+			"override quorum-1 needs 2 approvals for quorum (1 recorded)",
+		]);
+		expect(saves()).toBe(before);
+		expect(approveDecision("claude", "quorum-1", "alice", store, { at: AT }).accepted).toBe(true);
+		// A repeated approval is accepted without inflating the quorum.
+		expect(approveDecision("claude", "quorum-1", "alice", store, { at: AT }).accepted).toBe(true);
+		expect(storedRecord(dir, "claude")?.overrides?.[0]?.approvals).toEqual(["alice"]);
+		expect(approveDecision("claude", "quorum-1", "bob", store, { at: AT }).accepted).toBe(true);
+		const closed = confirmShip(
+			"claude",
+			{ afterVerify: true, override: decision },
+			CONNECTED,
+			store,
+			{ at: AT },
+		);
+		expect(closed.accepted).toBe(true);
+		expect(closed.state.closedBy).toEqual({
+			kind: "override",
+			recordId: "quorum-1",
+			recordedAt: AT,
+		});
+		// The recorded decision is authoritative and kept as-is, not duplicated.
+		expect(storedRecord(dir, "claude")?.overrides).toHaveLength(1);
+		expect(storedRecord(dir, "claude")?.overrides?.[0]?.approvals).toEqual(["alice", "bob"]);
+	});
+
+	test("an expired override is refused with its reason; expiry needs the caller clock", () => {
+		const { store, saves } = countingStore(dir);
+		reachVerify("exp-a", store);
+		reachVerify("exp-b", store);
+		const decision: OverrideDecision = {
+			...OWNER_OVERRIDE,
+			decisionId: "exp-1",
+			expiresAt: "2026-11-18T00:00:00.000Z",
+		};
+		const before = saves();
+		const refused = confirmShip(
+			"exp-a",
+			{ afterVerify: true, override: decision },
+			CONNECTED,
+			store,
+			{ at: "2026-11-19T00:00:00.000Z" },
+		);
+		expect(refused.accepted).toBe(false);
+		expect(refused.refusals).toEqual(["no passing audit or override", "override exp-1 is expired"]);
+		expect(saves()).toBe(before);
+		// Without a caller clock expiry is not enforced: the legacy path still closes.
+		expect(
+			confirmShip("exp-b", { afterVerify: true, override: decision }, CONNECTED, store).accepted,
+		).toBe(true);
+		expect(isDecisionLive(decision, "2026-11-17T00:00:00.000Z")).toBe(true);
+		expect(isDecisionLive(decision, "2026-11-18T00:00:00.000Z")).toBe(false);
+		expect(isDecisionLive(decision)).toBe(true);
+		expect(isDecisionLive({ ...OWNER_OVERRIDE, revokedAt: AT })).toBe(false);
+		expect(isQuorumMet({ ...OWNER_OVERRIDE, quorumRequired: 2 })).toBe(false);
+	});
+
+	test("a revoked override never closes or defers again, but its close stands", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		expect(recordOverrideDecision("claude", OWNER_OVERRIDE, store, { at: AT }).accepted).toBe(true);
+		expect(
+			confirmShip("claude", { afterVerify: true, override: OWNER_OVERRIDE }, CONNECTED, store, {
+				at: AT,
+			}).accepted,
+		).toBe(true);
+		const revocation: OverrideRevocation = {
+			revokedBy: "alice",
+			revokeReason: "superseded",
+			revokedAt: AT,
+		};
+		expect(revokeDecision("claude", "decision-1", revocation, store, { at: AT }).accepted).toBe(
+			true,
+		);
+		// The close already made stands.
+		expect(storedRecord(dir, "claude")?.closedBy).toEqual({
+			kind: "override",
+			recordId: "decision-1",
+			recordedAt: AT,
+		});
+		expect(revokeDecision("claude", "decision-1", revocation, store, { at: AT }).refusals).toEqual([
+			"override decision-1 is already revoked",
+		]);
+		expect(approveDecision("claude", "decision-1", "bob", store, { at: AT }).refusals).toEqual([
+			"override decision-1 is revoked",
+		]);
+		open("claude", { id: "h1", owner: "alice" }, store, { afterShip: true });
+		const deferred = resolve(
+			"claude",
+			"h1",
+			{ state: "deferred", decisionId: "decision-1" },
+			store,
+			{ at: AT },
+		);
+		expect(deferred.accepted).toBe(false);
+		expect(deferred.refusals).toEqual(["deferred HTIL entry h1 cites revoked override decision-1"]);
+		// The stored record is authoritative: the same snapshot is refused on its own loop.
+		reachVerify("claude2", store);
+		recordOverrideDecision("claude2", { ...OWNER_OVERRIDE, decisionId: "rev-2" }, store, {
+			at: AT,
+		});
+		revokeDecision(
+			"claude2",
+			"rev-2",
+			{ revokedBy: "alice", revokeReason: "mistake", revokedAt: AT },
+			store,
+			{ at: AT },
+		);
+		const refused = confirmShip(
+			"claude2",
+			{ afterVerify: true, override: { ...OWNER_OVERRIDE, decisionId: "rev-2" } },
+			CONNECTED,
+			store,
+			{ at: AT },
+		);
+		expect(refused.accepted).toBe(false);
+		expect(refused.refusals).toEqual(["no passing audit or override", "override rev-2 is revoked"]);
+	});
+
+	test("deferred cites enforce liveness and quorum of the recorded override", () => {
+		const store = fileStore(dir);
+		recordOverrideDecision(
+			"claude",
+			{ ...OWNER_OVERRIDE, decisionId: "quorum-1", quorumRequired: 2 },
+			store,
+			{ at: AT },
+		);
+		recordOverrideDecision(
+			"claude",
+			{ ...OWNER_OVERRIDE, decisionId: "exp-1", expiresAt: "2026-11-18T00:00:00.000Z" },
+			store,
+			{ at: AT },
+		);
+		recordOverrideDecision("claude", { ...OWNER_OVERRIDE, decisionId: "live-1" }, store, {
+			at: AT,
+		});
+		open("claude", { id: "h1", owner: "alice" }, store);
+		open("claude", { id: "h2", owner: "alice" }, store);
+		open("claude", { id: "h3", owner: "alice" }, store);
+		const short = resolve("claude", "h1", { state: "deferred", decisionId: "quorum-1" }, store, {
+			at: AT,
+		});
+		expect(short.accepted).toBe(false);
+		expect(short.refusals).toEqual([
+			"deferred HTIL entry h1 cites override quorum-1 without quorum (1/2 approvals)",
+		]);
+		const expired = resolve("claude", "h2", { state: "deferred", decisionId: "exp-1" }, store, {
+			at: "2026-11-19T00:00:00.000Z",
+		});
+		expect(expired.accepted).toBe(false);
+		expect(expired.refusals).toEqual(["deferred HTIL entry h2 cites expired override exp-1"]);
+		expect(approveDecision("claude", "quorum-1", "alice", store, { at: AT }).accepted).toBe(true);
+		expect(approveDecision("claude", "quorum-1", "bob", store, { at: AT }).accepted).toBe(true);
+		expect(
+			resolve("claude", "h1", { state: "deferred", decisionId: "quorum-1" }, store, { at: AT })
+				.accepted,
+		).toBe(true);
+		expect(
+			resolve("claude", "h3", { state: "deferred", decisionId: "live-1" }, store, { at: AT })
+				.accepted,
+		).toBe(true);
+		expect(storedRecord(dir, "claude")?.humanItems.map((item) => item.state)).toEqual([
+			"deferred",
+			"open",
+			"deferred",
+		]);
+	});
+
+	test("approve and revoke transitions are logged and auditable", () => {
+		const store = fileStore(dir);
+		const decision: OverrideDecision = {
+			...OWNER_OVERRIDE,
+			decisionId: "audit-1",
+			quorumRequired: 2,
+		};
+		recordOverrideDecision("claude", decision, store, { at: AT, traceId: "t-1" });
+		approveDecision("claude", "audit-1", "alice", store, { at: AT, traceId: "t-2" });
+		revokeDecision(
+			"claude",
+			"audit-1",
+			{ revokedBy: "alice", revokeReason: "mistake", revokedAt: AT },
+			store,
+			{ at: AT },
+		);
+		const transitions = storedRecord(dir, "claude")?.transitions ?? [];
+		const governance = transitions.filter((item) => item.event.includes("Override"));
+		expect(governance.map((item) => item.event)).toEqual([
+			"recordOverride(audit-1)",
+			"approveOverride(audit-1)",
+			"revokeOverride(audit-1)",
+		]);
+		expect(governance.every((item) => item.accepted)).toBe(true);
+		const seqs = governance.map((item) => item.seq);
+		expect(seqs).toEqual([...seqs].sort((a, b) => (a ?? 0) - (b ?? 0)));
+		expect(storedRecord(dir, "claude")?.overrides?.[0]).toMatchObject({
+			decisionId: "audit-1",
+			approvals: ["alice"],
+			revokedBy: "alice",
+			revokeReason: "mistake",
+			revokedAt: AT,
+		});
+	});
+
+	test("invalid, duplicate, and post-ship proposals are refused and write nothing", () => {
+		const { store, saves } = countingStore(dir);
+		expect(
+			recordOverrideDecision("claude", { ...OWNER_OVERRIDE, quorumRequired: 0 }, store, {
+				at: AT,
+			}).refusals,
+		).toEqual(["override decision-1 has an invalid quorumRequired"]);
+		expect(
+			recordOverrideDecision(
+				"claude",
+				{ ...OWNER_OVERRIDE, decisionId: "bad-exp", expiresAt: "soon" },
+				store,
+				{ at: AT },
+			).refusals,
+		).toEqual(["override bad-exp has an invalid expiresAt"]);
+		expect(
+			recordOverrideDecision("claude", { ...OWNER_OVERRIDE, owner: " " }, store).refusals,
+		).toEqual(["override decision-1 is missing an owner decision field"]);
+		expect(recordOverrideDecision("claude", OWNER_OVERRIDE, store, { at: AT }).accepted).toBe(true);
+		expect(recordOverrideDecision("claude", OWNER_OVERRIDE, store, { at: AT }).refusals).toEqual([
+			"override decision-1 already exists",
+		]);
+		reachVerify("claude", store);
+		const beforeClose = saves();
+		expect(
+			confirmShip("claude", { afterVerify: true, override: OWNER_OVERRIDE }, CONNECTED, store)
+				.accepted,
+		).toBe(true);
+		expect(
+			recordOverrideDecision("claude", { ...OWNER_OVERRIDE, decisionId: "late" }, store).refusals,
+		).toEqual(["loop is closed by Ship; override late is not recorded"]);
+		expect(saves()).toBe(beforeClose + 1);
+	});
+
+	test("unknown, blank, and untimed approve/revoke transitions are refused", () => {
+		const store = fileStore(dir);
+		expect(approveDecision("claude", "missing", "alice", store).refusals).toEqual([
+			"override missing is not recorded",
+		]);
+		recordOverrideDecision("claude", OWNER_OVERRIDE, store, { at: AT });
+		expect(approveDecision("claude", "decision-1", " ", store).refusals).toEqual([
+			"override decision-1 needs an approver",
+		]);
+		expect(
+			revokeDecision(
+				"claude",
+				"missing",
+				{ revokedBy: "alice", revokeReason: "mistake", revokedAt: AT },
+				store,
+			).refusals,
+		).toEqual(["override missing is not recorded"]);
+		expect(
+			revokeDecision(
+				"claude",
+				"decision-1",
+				{ revokedBy: " ", revokeReason: "mistake", revokedAt: AT },
+				store,
+			).refusals,
+		).toEqual(["override decision-1 revocation needs revokedBy"]);
+		expect(
+			revokeDecision(
+				"claude",
+				"decision-1",
+				{ revokedBy: "alice", revokeReason: " ", revokedAt: AT },
+				store,
+			).refusals,
+		).toEqual(["override decision-1 revocation needs a revokeReason"]);
+		expect(
+			revokeDecision("claude", "decision-1", { revokedBy: "alice", revokeReason: "mistake" }, store)
+				.refusals,
+		).toEqual(["override decision-1 revocation needs a revokedAt timestamp"]);
+		// The transition clock supplies the timestamp when the revocation omits it.
+		expect(
+			revokeDecision(
+				"claude",
+				"decision-1",
+				{ revokedBy: "alice", revokeReason: "mistake" },
+				store,
+				{ at: AT },
+			).accepted,
+		).toBe(true);
+		expect(storedRecord(dir, "claude")?.overrides?.[0]).toMatchObject({
+			revokedBy: "alice",
+			revokeReason: "mistake",
+			revokedAt: AT,
+		});
+	});
+
+	test("same-record concurrent writers serialize through CAS without lost updates", () => {
+		const inner = fileStore(dir);
+		reachVerify("claude", inner);
+		recordOverrideDecision("claude", { ...OWNER_OVERRIDE, decisionId: "race-1" }, inner, {
+			at: AT,
+		});
+		let raced = false;
+		const store: PhaseLoopStore = {
+			load: (runtimeId) => inner.load(runtimeId),
+			save: (runtimeId, record) => inner.save(runtimeId, record),
+			digest: (runtimeId) => inner.digest?.(runtimeId),
+			saveIfUnchanged: (runtimeId, record, expectedDigest) => {
+				if (!raced) {
+					raced = true;
+					// A concurrent writer lands its own approval between our load and our save.
+					const loaded = inner.load(runtimeId);
+					if (loaded.status === "found") {
+						const first = loaded.record.overrides?.[0];
+						if (first !== undefined) {
+							inner.save(runtimeId, {
+								...loaded.record,
+								overrides: [{ ...first, approvals: ["carol"] }],
+							});
+						}
+					}
+					return false;
+				}
+				return inner.saveIfUnchanged?.(runtimeId, record, expectedDigest) ?? false;
+			},
+		};
+		expect(approveDecision("claude", "race-1", "alice", store, { at: AT }).accepted).toBe(true);
+		expect(approveDecision("claude", "race-1", "bob", store, { at: AT }).accepted).toBe(true);
+		expect(storedRecord(dir, "claude")?.overrides?.[0]?.approvals).toEqual([
+			"carol",
+			"alice",
+			"bob",
+		]);
+	});
+
+	test("different sessions write under different record guards and leave no residue", () => {
+		const store = fileStore(dir);
+		recordOverrideDecision("s1", { ...OWNER_OVERRIDE, decisionId: "d-s1" }, store, { at: AT });
+		recordOverrideDecision("s2", { ...OWNER_OVERRIDE, decisionId: "d-s2" }, store, { at: AT });
+		expect(approveDecision("s1", "d-s1", "alice", store, { at: AT }).accepted).toBe(true);
+		expect(approveDecision("s2", "d-s2", "bob", store, { at: AT }).accepted).toBe(true);
+		expect(storedRecord(dir, "s1")?.overrides?.[0]?.approvals).toEqual(["alice"]);
+		expect(storedRecord(dir, "s2")?.overrides?.[0]?.approvals).toEqual(["bob"]);
+		expect(
+			readdirSync(dir).filter((name) => name.includes("guard") || name.includes("lock")),
+		).toEqual([]);
 	});
 });

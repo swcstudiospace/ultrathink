@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
-import { checkPlanSet } from "./plan-check.ts";
+import { BLOAT_LIMIT, BLOAT_LINE_LIMIT, checkPlanSet, type PlanCheckResult } from "./plan-check.ts";
 
 /**
  * Fixture strings only — never read from .planning/.
@@ -143,5 +143,30 @@ describe("checkPlanSet", () => {
 		);
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.reason).toContain("frontmatter");
+	});
+});
+
+describe("checkPlanSet hardening", () => {
+	test("BLOAT_LIMIT keeps the 520-line contract", () => {
+		expect(BLOAT_LIMIT).toBe(520);
+		expect(BLOAT_LINE_LIMIT).toBe(BLOAT_LIMIT);
+	});
+
+	test("non-string input rejects as missing frontmatter instead of throwing", () => {
+		expect(checkPlanSet(undefined as unknown as string)).toEqual({
+			ok: false,
+			reason: "missing frontmatter: phase/plan ids",
+		});
+		expect(checkPlanSet(null as unknown as string)).toEqual({
+			ok: false,
+			reason: "missing frontmatter: phase/plan ids",
+		});
+	});
+
+	test("onDecision observes the verdict exactly once without changing it", () => {
+		const seen: PlanCheckResult[] = [];
+		const result = checkPlanSet(CONTRACT, { onDecision: (r) => seen.push(r) });
+		expect(result).toEqual({ ok: true });
+		expect(seen).toEqual([{ ok: true }]);
 	});
 });

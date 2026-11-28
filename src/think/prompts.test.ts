@@ -2,8 +2,12 @@
 // Copyright (C) 2026 SWC Studio
 import { describe, expect, test } from "bun:test";
 import {
+	buildCotSystemPrompt,
+	buildGraphSystemPrompt,
+	buildThinkAddendum,
 	COT_SYSTEM_PROMPT,
 	GRAPH_SYSTEM_PROMPT,
+	PromptValidationError,
 	THINK_ADDENDUM,
 	THINK_ADDENDUM_UNTRACKED,
 } from "./prompts.ts";
@@ -57,5 +61,24 @@ describe("THINK_ADDENDUM fleet routing", () => {
 				expect(addendum).toContain(skill);
 			}
 		}
+	});
+});
+
+describe("prompt builders", () => {
+	test("builders reproduce the exported constants byte-for-byte", () => {
+		expect(buildGraphSystemPrompt()).toBe(GRAPH_SYSTEM_PROMPT);
+		expect(buildCotSystemPrompt()).toBe(COT_SYSTEM_PROMPT);
+		expect(buildThinkAddendum({ tracked: true })).toBe(THINK_ADDENDUM);
+		expect(buildThinkAddendum({ tracked: false })).toBe(THINK_ADDENDUM_UNTRACKED);
+	});
+
+	test("buildCotSystemPrompt honors an explicit range and rejects bad input", () => {
+		const custom = buildCotSystemPrompt(3, 4);
+		expect(custom).toContain("between 3 and 4 numbered steps");
+		expect(() => buildCotSystemPrompt(0, 8)).toThrow(PromptValidationError);
+		expect(() => buildCotSystemPrompt(8, 5)).toThrow(PromptValidationError);
+		expect(() => buildThinkAddendum({ tracked: "yes" as unknown as boolean })).toThrow(
+			PromptValidationError,
+		);
 	});
 });

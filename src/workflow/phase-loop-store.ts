@@ -68,6 +68,8 @@ export interface PhaseLoopStore {
 
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
+/** How many times a blind save retries a held per-record guard before giving up. */
+const SAVE_LOCK_ATTEMPTS = 50;
 /** Canonical phase order; persisted `phaseOrder` must be a prefix of this list. */
 const PHASE_ORDER = ["Discuss", "Plan", "Execute", "Verify", "Ship"] as const;
 const LIFECYCLES: Record<string, true> = {
@@ -189,15 +191,48 @@ function isAuditRecord(value: unknown): value is AuditRecord {
 	);
 }
 
+/** A nonblank string. Runtime armor for callers that bypass the type checker. */
+function isNonBlankString(value: unknown): value is string {
+	return typeof value === "string" && value.trim() !== "";
+}
+
+/**
+ * An override decision: the four legacy fields plus the optional quorum, expiry,
+ * and revocation fields. New fields are validated only when present, so legacy
+ * records stay loadable; a partially revoked decision (only some of
+ * revokedAt/revokedBy/revokeReason) never loads.
+ */
 function isOverrideDecision(value: unknown): value is OverrideDecision {
 	if (typeof value !== "object" || value === null) return false;
 	const decision = value as Record<string, unknown>;
-	return (
-		typeof decision.decisionId === "string" &&
-		typeof decision.owner === "string" &&
-		typeof decision.decidedAt === "string" &&
-		typeof decision.reason === "string"
+	if (
+		typeof decision.decisionId !== "string" ||
+		typeof decision.owner !== "string" ||
+		typeof decision.decidedAt !== "string" ||
+		typeof decision.reason !== "string"
+	)
+		return false;
+	if (decision.expiresAt !== undefined && !isIsoString(decision.expiresAt)) return false;
+	if (
+		decision.quorumRequired !== undefined &&
+		(!Number.isInteger(decision.quorumRequired) || (decision.quorumRequired as number) < 1)
+	)
+		return false;
+	if (
+		decision.approvals !== undefined &&
+		(!Array.isArray(decision.approvals) || !decision.approvals.every(isNonBlankString))
+	)
+		return false;
+	const revocation = [decision.revokedAt, decision.revokedBy, decision.revokeReason].filter(
+		(field) => field !== undefined,
 	);
+	if (revocation.length > 0) {
+		if (revocation.length !== 3) return false;
+		if (!isIsoString(decision.revokedAt)) return false;
+		if (!isNonBlankString(decision.revokedBy) || !isNonBlankString(decision.revokeReason))
+			return false;
+	}
+	return true;
 }
 
 function isRuntimeRepair(value: unknown): value is RuntimeRepair {
@@ -469,7 +504,19 @@ export function fileStore(stateDir: string, fs: PhaseLoopFs = defaultFs): PhaseL
 		save(runtimeId, record) {
 			mkdirSync(stateDir, { recursive: true, mode: DIR_MODE });
 			const target = join(stateDir, recordName(runtimeId));
-			writeRecord(stateDir, target, record);
+			// The guard is keyed by the record file, so sessions writing different records
+			// never block each other. The callback never calls back into the store: the
+			// guard is non-reentrant, so a nested store call would fail its own lock.
+			const guard = new Int32Array(new SharedArrayBuffer(4));
+			for (let attempt = 0; attempt < SAVE_LOCK_ATTEMPTS; attempt++) {
+				const wrote = withLockMutation(target, () => {
+					writeRecord(stateDir, target, record);
+					return true;
+				});
+				if (wrote === true) return;
+				Atomics.wait(guard, 0, 0, 5);
+			}
+			throw new Error(`phase record for ${runtimeId} is locked; save not recorded`);
 		},
 		digest(runtimeId) {
 			return digestOfRecord(join(stateDir, recordName(runtimeId)));
@@ -477,6 +524,11 @@ export function fileStore(stateDir: string, fs: PhaseLoopFs = defaultFs): PhaseL
 		saveIfUnchanged(runtimeId, record, expectedDigest) {
 			mkdirSync(stateDir, { recursive: true, mode: DIR_MODE });
 			const target = join(stateDir, recordName(runtimeId));
+			// Per-record read-modify-write: the digest check and the write hold the same
+			// record-keyed guard, so a concurrent writer to this record loses CAS and
+			// retries on the fresh row instead of silently overwriting it. Writers to
+			// other records hold other guards and never wait here. The mutation callback
+			// never calls back into the store: the guard is non-reentrant.
 			const wrote = withLockMutation(target, () => {
 				if (digestOfRecord(target) !== expectedDigest) return false;
 				writeRecord(stateDir, target, record);

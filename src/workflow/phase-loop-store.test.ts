@@ -569,4 +569,104 @@ describe("file phase loop store", () => {
 			expect(store.load("claude").status).toBe("quarantined");
 		}
 	});
+	test("override decisions with quorum, expiry, and revocation fields round trip", () => {
+		const at = "2026-11-17T10:00:00.000Z";
+		const record: PhaseLoopRecord = {
+			...STATE,
+			overrides: [
+				{
+					decisionId: "override:abc",
+					owner: "alice",
+					decidedAt: at,
+					reason: "ship",
+					expiresAt: "2026-11-18T00:00:00.000Z",
+					quorumRequired: 2,
+					approvals: ["alice", "bob"],
+				},
+				{
+					decisionId: "override:revoked",
+					owner: "alice",
+					decidedAt: at,
+					reason: "stale",
+					revokedAt: at,
+					revokedBy: "alice",
+					revokeReason: "superseded",
+				},
+			],
+		};
+		fileStore(stateDir).save("claude", record);
+		expect(fileStore(stateDir).load("claude")).toEqual({ status: "found", record });
+	});
+
+	test("a legacy override without new fields loads unchanged", () => {
+		const legacy = {
+			...STATE,
+			overrides: [
+				{ decisionId: "d1", owner: "alice", decidedAt: "2026-11-17T10:00:00.000Z", reason: "ship" },
+			],
+		};
+		fileStore(stateDir).save("claude", STATE);
+		writeFileSync(join(stateDir, nth(recordFiles(), 0)), JSON.stringify(legacy));
+		expect(fileStore(stateDir).load("claude")).toEqual({ status: "found", record: legacy });
+	});
+
+	test("malformed quorum, expiry, or revocation fields quarantine the record", () => {
+		const store = fileStore(stateDir);
+		const at = "2026-11-17T10:00:00.000Z";
+		const base = { decisionId: "d1", owner: "alice", decidedAt: at, reason: "ship" };
+		const malformed: unknown[] = [
+			{ ...base, expiresAt: 7 },
+			{ ...base, expiresAt: "" },
+			{ ...base, expiresAt: "not-a-date" },
+			{ ...base, quorumRequired: 0 },
+			{ ...base, quorumRequired: -2 },
+			{ ...base, quorumRequired: 1.5 },
+			{ ...base, quorumRequired: "2" },
+			{ ...base, approvals: "alice" },
+			{ ...base, approvals: ["alice", 7] },
+			{ ...base, approvals: ["alice", " "] },
+			{ ...base, approvals: [""] },
+			{ ...base, revokedAt: at },
+			{ ...base, revokedBy: "alice" },
+			{ ...base, revokeReason: "stale" },
+			{ ...base, revokedAt: at, revokedBy: "alice" },
+			{ ...base, revokedAt: "not-a-date", revokedBy: "alice", revokeReason: "stale" },
+			{ ...base, revokedAt: at, revokedBy: " ", revokeReason: "stale" },
+			{ ...base, revokedAt: at, revokedBy: "alice", revokeReason: "" },
+		];
+		for (const override of malformed) {
+			store.save("claude", STATE);
+			writeFileSync(
+				join(stateDir, nth(recordFiles(), 0)),
+				JSON.stringify({ ...STATE, overrides: [override] }),
+			);
+			expect(store.load("claude").status).toBe("quarantined");
+		}
+	});
+
+	test("per-record saves leave other records alone and no guard residue", () => {
+		const store = fileStore(stateDir);
+		const a: PhaseLoopRecord = { ...STATE, runtimeId: "a" };
+		const b: PhaseLoopRecord = { ...STATE, runtimeId: "b" };
+		store.save("a", a);
+		store.save("b", b);
+		store.save("a", { ...a, executeStarts: 2 });
+		expect(store.load("a")).toEqual({ status: "found", record: { ...a, executeStarts: 2 } });
+		expect(store.load("b")).toEqual({ status: "found", record: b });
+		expect(
+			readdirSync(stateDir).filter((name) => name.includes("guard") || name.includes("lock")),
+		).toEqual([]);
+	});
+
+	test("saveIfUnchanged refuses a stale digest and commits a fresh one", () => {
+		const store = fileStore(stateDir);
+		store.save("claude", STATE);
+		const digest = store.digest?.("claude");
+		expect(store.saveIfUnchanged?.("claude", { ...STATE, executeStarts: 2 }, "stale")).toBe(false);
+		expect(store.saveIfUnchanged?.("claude", { ...STATE, executeStarts: 2 }, digest)).toBe(true);
+		expect(store.load("claude")).toEqual({
+			status: "found",
+			record: { ...STATE, executeStarts: 2 },
+		});
+	});
 });
