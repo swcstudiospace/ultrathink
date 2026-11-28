@@ -771,7 +771,11 @@ function cleanupPhaseRecord(deps: ShipDeps, statePath: string, now: number): Out
 		);
 		if (locked === undefined)
 			return { phaseCleanupError: "phase record lock not taken; cleanup not recorded" };
-		return { phaseCleanup: "completed" };
+		return {
+			phaseCleanup: "completed",
+			phaseCleanupBy: "ship",
+			phaseCleanupReason: "merge completed",
+		};
 	} catch (error) {
 		if (error instanceof FsmError && error.kind === "rejection") return { phaseCleanup: "skipped" };
 		return { phaseCleanupError: error instanceof Error ? error.message : String(error) };

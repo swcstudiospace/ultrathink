@@ -357,6 +357,35 @@ export function phaseLoopStatus(
 ): PhaseLoopStatus {
 	const lifecycle = deriveLifecycle(row, checkpoint);
 	const open = row.humanItems.find((item) => item.state === "open");
+	const transitions = row.transitions ?? [];
+	const accepted = transitions.filter((item) => item.accepted).length;
+	const refused = transitions.length - accepted;
+	const recentTransitions = transitions.slice(-5).map((item) => ({
+		...item,
+		refusals: [...item.refusals],
+	}));
+	const acceptedByEvent = new Map<string, { count: number; at: string }>();
+	for (const item of transitions) {
+		if (!item.accepted) continue;
+		const current = acceptedByEvent.get(item.event);
+		acceptedByEvent.set(item.event, {
+			count: (current?.count ?? 0) + 1,
+			at: item.at,
+		});
+	}
+	const duplicate = [...acceptedByEvent.entries()].filter(([, value]) => value.count > 1).at(-1);
+	const lastAt = transitions.at(-1)?.at ?? checkpoint?.at;
+	const nowMs = now === undefined ? Number.NaN : Date.parse(now);
+	const lastMs = lastAt === undefined ? Number.NaN : Date.parse(lastAt);
+	const terminal: readonly PhaseLifecycle[] = ["failed", "completed", "cleaned-up"];
+	const stuck =
+		Number.isFinite(nowMs) &&
+		Number.isFinite(lastMs) &&
+		nowMs - lastMs > 24 * 60 * 60 * 1_000 &&
+		!terminal.includes(lifecycle) &&
+		lastAt !== undefined
+			? { lifecycle, since: lastAt }
+			: undefined;
 	return {
 		lifecycle,
 		completedStages: [...row.phaseOrder],

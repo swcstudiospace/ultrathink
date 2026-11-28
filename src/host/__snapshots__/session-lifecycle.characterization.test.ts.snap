@@ -29,6 +29,13 @@ exports[`session start: restoreSessionPhases stored record of this session: the 
     "nextEvents": [
       "attempt(Plan)",
     ],
+    "recentTransitions": [],
+    "signals": {},
+    "transitionMetrics": {
+      "accepted": 0,
+      "attempts": 0,
+      "refused": 0,
+    },
   },
   "text": "Ultrathink restored this session's phase loop: Discuss.",
 }
@@ -57,6 +64,18 @@ exports[`session start: restoreSessionPhases paused record: the report names the
     "nextEvents": [
       "restore",
     ],
+    "recentTransitions": [],
+    "signals": {
+      "stuck": {
+        "lifecycle": "paused",
+        "since": "2026-11-17T10:00:00.000Z",
+      },
+    },
+    "transitionMetrics": {
+      "accepted": 0,
+      "attempts": 0,
+      "refused": 0,
+    },
   },
   "text": "Ultrathink restored this session's phase loop: Discuss. The record holds a pause checkpoint from 2026-11-17T10:00:00.000Z.",
 }
