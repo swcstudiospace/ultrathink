@@ -2,7 +2,34 @@
 // Copyright (C) 2026 SWC Studio
 import { MAX_STEPS, MIN_STEPS } from "./types.ts";
 
-export const GRAPH_SYSTEM_PROMPT = `You are Graph-of-Thought planner.
+/** Typed boundary error for invalid prompt-builder input; never swallowed. */
+export class PromptValidationError extends Error {
+	readonly code = "invalid-prompt-input";
+	constructor(message: string) {
+		super(message);
+		this.name = "PromptValidationError";
+	}
+}
+
+function assertStepRange(minSteps: number, maxSteps: number): void {
+	for (const [name, value] of [
+		["minSteps", minSteps],
+		["maxSteps", maxSteps],
+	] as const) {
+		if (!Number.isInteger(value) || value < 1) {
+			throw new PromptValidationError(`${name} must be a positive integer (got ${value})`);
+		}
+	}
+	if (minSteps > maxSteps) {
+		throw new PromptValidationError(
+			`minSteps (${minSteps}) must not exceed maxSteps (${maxSteps})`,
+		);
+	}
+}
+
+/** Builds the planner prompt; fixed text, no parameters by design. */
+export function buildGraphSystemPrompt(): string {
+	return `You are Graph-of-Thought planner.
 
 Build a directed acyclic graph of reasoning nodes. If each node is answered carefully in dependency order, a coding agent would be ready to execute the task.
 
@@ -36,8 +63,17 @@ Rules:
 - The final "synthesize" node's question must ask for an ordered execution plan grouped into waves: each wave is a set of file-disjoint units a coding agent can run in parallel; each unit names the files it owns, the change, and the verification commands; later waves depend on earlier ones.
 - Do not plan Linear issues, GitHub PRs, Greptile review, or a specialist swarm.
 - You cannot call tools here. Name files and checks the coding agent should use later.`;
+}
 
-export const COT_SYSTEM_PROMPT = `You are a planning-node analyst. Answer ONE graph node with a stepwise rationale (${MIN_STEPS} to ${MAX_STEPS} numbered steps) and a concrete conclusion — this is a compact plan artifact for a coding agent, not a transcript of any model's internal reasoning.
+export const GRAPH_SYSTEM_PROMPT = buildGraphSystemPrompt();
+
+/** Builds the per-node analyst prompt for the given rationale step range. */
+export function buildCotSystemPrompt(
+	minSteps: number = MIN_STEPS,
+	maxSteps: number = MAX_STEPS,
+): string {
+	assertStepRange(minSteps, maxSteps);
+	return `You are a planning-node analyst. Answer ONE graph node with a stepwise rationale (${minSteps} to ${maxSteps} numbered steps) and a concrete conclusion — this is a compact plan artifact for a coding agent, not a transcript of any model's internal reasoning.
 
 Return ONLY XML. No markdown fences, no commentary.
 
@@ -45,7 +81,7 @@ Return ONLY XML. No markdown fences, no commentary.
   <rationale>
     1. First step.
     2. Second step.
-    ... exactly ${MIN_STEPS} to ${MAX_STEPS} steps, numbered 1., 2., 3. in order, each on its own line.
+    ... exactly ${minSteps} to ${maxSteps} steps, numbered 1., 2., 3. in order, each on its own line.
   </rationale>
   <conclusion>
     The node's answer: dense and actionable. 1-2 short paragraphs or a compact bullet list.
@@ -53,7 +89,7 @@ Return ONLY XML. No markdown fences, no commentary.
 </node>
 
 Rules:
-- The rationale MUST contain between ${MIN_STEPS} and ${MAX_STEPS} numbered steps — never fewer, never more. Each step is tracked as its own sub-task, so make it a discrete, self-contained unit of reasoning or work (one or two sentences, phrased as a finding or an action), not a fragment of a longer sentence. Use predecessor conclusions. Do not restate the whole graph.
+- The rationale MUST contain between ${minSteps} and ${maxSteps} numbered steps — never fewer, never more. Each step is tracked as its own sub-task, so make it a discrete, self-contained unit of reasoning or work (one or two sentences, phrased as a finding or an action), not a fragment of a longer sentence. Use predecessor conclusions. Do not restate the whole graph.
 - Reason only about the current node question.
 - Prefer concrete next actions over abstractions.
 - If information is missing, state a working assumption and continue.
@@ -67,6 +103,9 @@ Rules:
   Verify: <commands>
   Units in the same wave must not edit the same files; mark a wave "(parallel)" only when it has more than one unit. A later wave may depend on earlier waves. End with exactly one "Verify:" line naming the commands that prove the whole task.
 - When the current node kind is "critique", end the conclusion with an "Open questions:" list — one line per question, each stating the option you would pick by default — or the single line "Open questions: none".`;
+}
+
+export const COT_SYSTEM_PROMPT = buildCotSystemPrompt();
 
 const THINK_ORCHESTRATION = `## Graph of Thought (Ultrathink orchestration)
 
@@ -85,7 +124,16 @@ const THINK_TRACKING = `The Notion Task/Issue/Sub-Issue rows and Linear issues f
 const THINK_CLOSING =
 	"Do not reprint the graph. Prefer repository evidence over the plan when they disagree. Start executing.";
 
-export const THINK_ADDENDUM = `${THINK_ORCHESTRATION}\n\n${THINK_TRACKING} ${THINK_CLOSING}\n`;
+/** Assembles the execution addendum; tracked variant carries the tracker-row sentences. */
+export function buildThinkAddendum(options: { tracked: boolean }): string {
+	if (typeof options?.tracked !== "boolean") {
+		throw new PromptValidationError(`tracked must be a boolean (got ${String(options?.tracked)})`);
+	}
+	if (options.tracked) return `${THINK_ORCHESTRATION}\n\n${THINK_TRACKING} ${THINK_CLOSING}\n`;
+	return `${THINK_ORCHESTRATION}\n\n${THINK_CLOSING}\n`;
+}
+
+export const THINK_ADDENDUM = buildThinkAddendum({ tracked: true });
 
 /** THINK_ADDENDUM without the tracker-row sentences, for prompts planned with tracking off. */
-export const THINK_ADDENDUM_UNTRACKED = `${THINK_ORCHESTRATION}\n\n${THINK_CLOSING}\n`;
+export const THINK_ADDENDUM_UNTRACKED = buildThinkAddendum({ tracked: false });

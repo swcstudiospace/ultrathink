@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
+//
+// Shared thought-graph vocabulary. The node/step windows are the ADR-0006
+// contract (MIN_NODES 6 / MAX_NODES 8, MIN_STEPS 5 / MAX_STEPS 8): do not
+// change the values without updating ADR-0006 and src/think/graph.test.ts.
 export const MIN_NODES = 6;
 export const MAX_NODES = 8;
 
@@ -28,6 +32,13 @@ export const NODE_KINDS: readonly NodeKind[] = [
 	"synthesize",
 ] as const;
 
+const NODE_KIND_SET: ReadonlySet<string> = new Set(NODE_KINDS);
+
+/** Boundary guard: true only for one of the eight planner node kinds. */
+export function isNodeKind(value: unknown): value is NodeKind {
+	return typeof value === "string" && NODE_KIND_SET.has(value);
+}
+
 export interface ThoughtNode {
 	id: string;
 	title: string;
@@ -49,6 +60,13 @@ export const THINK_ENGINES = ["auto", "claude", "grok", "muse"] as const;
 
 export type ThinkEngine = (typeof THINK_ENGINES)[number];
 
+const THINK_ENGINE_SET: ReadonlySet<string> = new Set(THINK_ENGINES);
+
+/** Boundary guard: true only for a known planning engine name. */
+export function isThinkEngine(value: unknown): value is ThinkEngine {
+	return typeof value === "string" && THINK_ENGINE_SET.has(value);
+}
+
 /** Highest provider reasoning effort a native planning call uses; "inherit" leaves the session's own level alone. */
 export const THINK_REASONING_CEILINGS = [
 	"minimal",
@@ -60,6 +78,13 @@ export const THINK_REASONING_CEILINGS = [
 	"inherit",
 ] as const;
 export type ThinkReasoningCeiling = (typeof THINK_REASONING_CEILINGS)[number];
+
+const THINK_REASONING_CEILING_SET: ReadonlySet<string> = new Set(THINK_REASONING_CEILINGS);
+
+/** Boundary guard: true only for a known reasoning ceiling. */
+export function isThinkReasoningCeiling(value: unknown): value is ThinkReasoningCeiling {
+	return typeof value === "string" && THINK_REASONING_CEILING_SET.has(value);
+}
 
 export interface ThinkConfig {
 	enabled: boolean;
@@ -74,7 +99,16 @@ export interface ThinkConfig {
 	repair: boolean;
 }
 
-export const FALLBACK_GRAPH: ThoughtGraph = {
+function freezeGraph(graph: ThoughtGraph): ThoughtGraph {
+	for (const node of graph.nodes) {
+		Object.freeze(node.dependsOn);
+		Object.freeze(node);
+	}
+	Object.freeze(graph.nodes);
+	return Object.freeze(graph) as ThoughtGraph;
+}
+
+export const FALLBACK_GRAPH: ThoughtGraph = freezeGraph({
 	goal: "Understand the request, decompose it, weigh approaches, and produce an execution plan",
 	nodes: [
 		{
@@ -122,4 +156,4 @@ export const FALLBACK_GRAPH: ThoughtGraph = {
 			dependsOn: ["n5"],
 		},
 	],
-};
+});

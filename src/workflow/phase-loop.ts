@@ -41,12 +41,32 @@ export interface AuditRecord {
 	recordedAt: string;
 }
 
-/** A recorded owner decision that closes a phase without a passing audit (LIFE-02). */
+/**
+ * A recorded owner decision that closes a phase without a passing audit (LIFE-02).
+ *
+ * Quorum and lifetime are optional, so records written before them stay loadable and
+ * still close: a decision without `expiresAt` never expires, one without
+ * `quorumRequired`/`approvals` counts its owner as the single approval, and one
+ * without revocation fields is not revoked.
+ * - `expiresAt` is the ISO 8601 time the decision stops closing or deferring
+ *   anything. Expiry is enforced only against a caller-supplied clock
+ *   (`TransitionOptions.at`); without one the decision reads as live unless revoked.
+ * - `quorumRequired` is how many distinct approver ids the decision needs (default 1).
+ * - `approvals` are the distinct approver ids collected for the decision.
+ * - `revokedAt`/`revokedBy`/`revokeReason` mark a withdrawn decision: it never
+ *   closes or defers again, but a close it already made stands.
+ */
 export interface OverrideDecision {
 	decisionId: string;
 	owner: string;
 	decidedAt: string;
 	reason: string;
+	expiresAt?: string;
+	quorumRequired?: number;
+	approvals?: string[];
+	revokedAt?: string;
+	revokedBy?: string;
+	revokeReason?: string;
 }
 
 /** Severity of a human-verification or owner-gated item; drives its SLA (P4). */
@@ -322,7 +342,12 @@ function snapshot(row: PhaseLoopState): PhaseLoopState {
 		...(row.audits === undefined ? {} : { audits: row.audits.map((item) => ({ ...item })) }),
 		...(row.overrides === undefined
 			? {}
-			: { overrides: row.overrides.map((item) => ({ ...item })) }),
+			: {
+					overrides: row.overrides.map((item) => ({
+						...item,
+						...(item.approvals === undefined ? {} : { approvals: [...item.approvals] }),
+					})),
+				}),
 		...(row.runtimeSessionId === undefined ? {} : { runtimeSessionId: row.runtimeSessionId }),
 		...(row.runtimeRepair === undefined ? {} : { runtimeRepair: { ...row.runtimeRepair } }),
 		...(row.schemaVersion === undefined ? {} : { schemaVersion: row.schemaVersion }),
@@ -634,15 +659,123 @@ function isClosed(row: PhaseLoopState): boolean {
 function overrideComplete(override: OverrideDecision): boolean {
 	return ![override.decisionId, override.owner, override.decidedAt, override.reason].some(isBlank);
 }
+/** ISO 8601 time: a nonblank string that parses as a date. */
+function isIsoTime(value: string): boolean {
+	return value !== "" && !Number.isNaN(Date.parse(value));
+}
+
+/** A stored copy of a decision with its own deduplicated approvals list. */
+function copyDecision(decision: OverrideDecision): OverrideDecision {
+	if (decision.approvals === undefined) return { ...decision };
+	const seen = new Set<string>();
+	const approvals: string[] = [];
+	for (const approver of decision.approvals) {
+		if (typeof approver !== "string") continue;
+		const trimmed = approver.trim();
+		if (trimmed === "" || seen.has(trimmed)) continue;
+		seen.add(trimmed);
+		approvals.push(trimmed);
+	}
+	return { ...decision, approvals };
+}
+
+/** Distinct approvals counted toward quorum and the required threshold. */
+function quorumStatus(decision: OverrideDecision): {
+	required: number;
+	have: number;
+	valid: boolean;
+} {
+	const required = decision.quorumRequired ?? 1;
+	if (!Number.isInteger(required) || required < 1) return { required: 1, have: 0, valid: false };
+	if (decision.approvals === undefined) return { required, have: 1, valid: true };
+	const have = new Set(
+		decision.approvals
+			.filter((approver) => typeof approver === "string")
+			.map((approver) => approver.trim())
+			.filter((approver) => approver !== ""),
+	).size;
+	return { required, have, valid: true };
+}
+
+/** Whether a revocation marker is present: any one of the three withdraws the decision. */
+function isRevoked(decision: OverrideDecision): boolean {
+	return (
+		!isBlank(decision.revokedAt) || !isBlank(decision.revokedBy) || !isBlank(decision.revokeReason)
+	);
+}
+
+/**
+ * Whether the decision may still close or defer at `now`. Revoked decisions never
+ * are; an unparseable `expiresAt` never is; an expired one is not once `now`
+ * reaches it. Without a caller-supplied clock expiry is not checked, so callers
+ * that pass no `at` keep the legacy behavior.
+ */
+export function isDecisionLive(decision: OverrideDecision, now?: string): boolean {
+	if (isRevoked(decision)) return false;
+	if (decision.expiresAt === undefined) return true;
+	if (!isIsoTime(decision.expiresAt)) return false;
+	if (now === undefined) return true;
+	if (!isIsoTime(now)) return false;
+	return Date.parse(now) < Date.parse(decision.expiresAt);
+}
+
+/**
+ * Whether the decision holds enough distinct approvals. A decision recorded
+ * without `approvals` counts its owner as the one approval, so legacy decisions
+ * meet the default quorum of one. An invalid `quorumRequired` never meets quorum.
+ */
+export function isQuorumMet(decision: OverrideDecision): boolean {
+	const status = quorumStatus(decision);
+	return status.valid && status.have >= status.required;
+}
+
+/**
+ * Every reason a decision cannot close or defer: an invalid `expiresAt` or
+ * `quorumRequired`, revocation, expiry against `now`, and a short quorum.
+ * None means the decision is live and holds quorum.
+ */
+function decisionRefusals(decision: OverrideDecision, now?: string): string[] {
+	const id = decision.decisionId;
+	const refusals: string[] = [];
+	const expiryValid = decision.expiresAt === undefined || isIsoTime(decision.expiresAt);
+	if (!expiryValid) refusals.push(`override ${id} has an invalid expiresAt`);
+	const status = quorumStatus(decision);
+	if (!status.valid) refusals.push(`override ${id} has an invalid quorumRequired`);
+	if (isRevoked(decision)) {
+		refusals.push(`override ${id} is revoked`);
+	} else if (expiryValid && !isDecisionLive(decision, now)) {
+		refusals.push(`override ${id} is expired`);
+	}
+	if (status.valid && !isQuorumMet(decision)) {
+		refusals.push(
+			`override ${id} needs ${status.required} approvals for quorum (${status.have} recorded)`,
+		);
+	}
+	return refusals;
+}
+
+/**
+ * The authoritative decision for a close: a recorded decision with the same id
+ * wins over the presented snapshot, so a revocation or expiry recorded after the
+ * snapshot was taken still refuses the close.
+ */
+function effectiveDecision(row: PhaseLoopState, override: OverrideDecision): OverrideDecision {
+	return row.overrides?.find((item) => item.decisionId === override.decisionId) ?? override;
+}
 
 /**
  * LIFE-02: the record a close is recorded against: a passing audit whose id the call cites AND that
  * was previously recorded in the loop's audit ledger (recordAudit), exactly as recorded, or a complete
- * owner override. An audit that was never recorded, that was re-recorded as a fail, or whose presented
- * snapshot differs from the recorded one (kind/recordedAt) is missing or stale and never closes.
- * Undefined when neither holds.
+ * owner override that is still live and holds its quorum. An audit that was never recorded, that was
+ * re-recorded as a fail, or whose presented snapshot differs from the recorded one (kind/recordedAt)
+ * is missing or stale and never closes. A revoked, expired, quorum-short, or invalid override never
+ * closes. `now` is the caller-supplied clock expiry is enforced against. Undefined when neither holds.
  */
-function closeRecord(row: PhaseLoopState, input: ShipConfirmationInput): ClosedBy | undefined {
+function closeRecord(
+	row: PhaseLoopState,
+	input: ShipConfirmationInput,
+	now?: string,
+): ClosedBy | undefined {
 	const { audit, auditId, override } = input;
 	if (audit !== undefined && audit.result === "pass" && audit.id === auditId) {
 		const stored = row.audits?.find((item) => item.id === audit.id);
@@ -656,13 +789,16 @@ function closeRecord(row: PhaseLoopState, input: ShipConfirmationInput): ClosedB
 		}
 	}
 	if (override !== undefined && overrideComplete(override)) {
-		return { kind: "override", recordId: override.decisionId, recordedAt: override.decidedAt };
+		const effective = effectiveDecision(row, override);
+		if (decisionRefusals(effective, now).length === 0) {
+			return { kind: "override", recordId: override.decisionId, recordedAt: override.decidedAt };
+		}
 	}
 	return undefined;
 }
 
 /** The reasons a close with no record is refused. Call only when closeRecord is undefined. */
-function closeRefusals(row: PhaseLoopState, input: ShipConfirmationInput): string[] {
+function closeRefusals(row: PhaseLoopState, input: ShipConfirmationInput, now?: string): string[] {
 	const { audit, auditId, override } = input;
 	const refusals = ["no passing audit or override"];
 	if (audit !== undefined && audit.id !== auditId) {
@@ -679,19 +815,24 @@ function closeRefusals(row: PhaseLoopState, input: ShipConfirmationInput): strin
 			refusals.push(`audit ${audit.id} is stale; it does not match the recorded audit`);
 		}
 	}
-	if (override !== undefined) refusals.push("override is missing an owner decision field");
+	if (override !== undefined) {
+		if (!overrideComplete(override)) refusals.push("override is missing an owner decision field");
+		else refusals.push(...decisionRefusals(effectiveDecision(row, override), now));
+	}
 	return refusals;
 }
 
 /**
  * Checks every gate of the close and collects each failing reason. The confirmation is applied
  * to row in place only when none fails. Returns the reasons; none means it was applied.
+ * `now` is the caller-supplied clock override expiry is enforced against.
  */
 function applyShipConfirmation(
 	runtimeId: string,
 	row: PhaseLoopState,
 	input: ShipConfirmationInput,
 	isConnected: RuntimeConnectedCheck,
+	now?: string,
 ): readonly string[] {
 	const refusals: string[] = [];
 	if (!input.afterVerify) refusals.push("confirmation is not after Verify");
@@ -699,8 +840,8 @@ function applyShipConfirmation(
 		refusals.push("Verify is not the last recorded phase");
 	}
 	if (!isConnected(runtimeId)) refusals.push("runtime is not connected");
-	const closedBy = closeRecord(row, input);
-	if (closedBy === undefined) refusals.push(...closeRefusals(row, input));
+	const closedBy = closeRecord(row, input, now);
+	if (closedBy === undefined) refusals.push(...closeRefusals(row, input, now));
 	for (const item of row.humanItems) {
 		if (item.state === "open") refusals.push(`open HTIL entry ${item.id}`);
 	}
@@ -710,7 +851,11 @@ function applyShipConfirmation(
 	row.operatorConfirmations += 1;
 	row.closedBy = closedBy;
 	if (closedBy.kind === "override" && input.override !== undefined) {
-		row.overrides = [...(row.overrides ?? []), { ...input.override }];
+		// A recorded decision with the same id is authoritative and already kept; only a
+		// first-seen decision is appended, with its own approvals list.
+		if (!row.overrides?.some((item) => item.decisionId === input.override?.decisionId)) {
+			row.overrides = [...(row.overrides ?? []), copyDecision(input.override)];
+		}
 	}
 	return [];
 }
@@ -801,9 +946,12 @@ export function attemptPhase(
  * confirmation follows a recorded Verify (the current phase) on a connected runtime, cites by id an
  * audit that was previously recorded in the loop's ledger and still passes exactly as recorded
  * (a missing, re-recorded-fail, or snapshot-mismatched audit is refused as missing/stale), or
- * carries a complete owner override (LIFE-02), and leaves no HTIL entry open (LIFE-05). An
+ * carries a complete owner override that is still live and holds its quorum (a revoked,
+ * expired, quorum-short, or invalid override is refused with its reason; pass the clock as
+ * `opts.at` to enforce expiry) (LIFE-02), and leaves no HTIL entry open (LIFE-05). An
  * accepted close records that audit or override in `closedBy` in the same save. An accepted
- * override is also kept in `overrides` with its reason. A refused
+ * override is also kept in `overrides` with its reason, unless a decision with the same id
+ * was already recorded. A refused
  * confirmation names each reason in `refusals`. A second confirmation after Ship is refused.
  * With a store, state is read from it and an accepted confirmation is committed before return.
  * A quarantined record throws PhaseLoopCorruptError.
@@ -818,7 +966,7 @@ export function confirmShip(
 	return transition(
 		runtimeId,
 		store,
-		(row) => applyShipConfirmation(runtimeId, row, input, isConnected),
+		(row) => applyShipConfirmation(runtimeId, row, input, isConnected, opts?.at),
 		{
 			event: "confirmShip",
 			at: opts?.at,
@@ -935,9 +1083,27 @@ export function resolve(
 			}
 			if (isBlank(resolution.decisionId))
 				return [`deferred HTIL entry ${entryId} needs decisionId`];
+			const storedOverride = (row.overrides ?? []).find(
+				(item) => item.decisionId === resolution.decisionId,
+			);
+			if (storedOverride !== undefined) {
+				// A recorded override defers only while it is live and holds its quorum; the
+				// caller-supplied `at` is the clock expiry is enforced against.
+				if (isRevoked(storedOverride))
+					return [`deferred HTIL entry ${entryId} cites revoked override ${resolution.decisionId}`];
+				if (!isDecisionLive(storedOverride, opts?.at))
+					return [`deferred HTIL entry ${entryId} cites expired override ${resolution.decisionId}`];
+				const status = quorumStatus(storedOverride);
+				if (!isQuorumMet(storedOverride))
+					return [
+						`deferred HTIL entry ${entryId} cites override ${resolution.decisionId} without quorum (${status.have}/${status.required} approvals)`,
+					];
+				entry.state = "deferred";
+				entry.decisionId = resolution.decisionId;
+				return [];
+			}
 			const recorded =
 				(row.audits ?? []).some((audit) => audit.id === resolution.decisionId) ||
-				(row.overrides ?? []).some((override) => override.decisionId === resolution.decisionId) ||
 				row.closedBy?.recordId === resolution.decisionId;
 			if (!recorded)
 				return [`deferred HTIL entry ${entryId} needs recorded decision ${resolution.decisionId}`];
@@ -1016,6 +1182,139 @@ export function recordAudit(
 		},
 		{
 			event: `recordAudit(${audit.id})`,
+			at: opts?.at,
+			recordRefusals: opts?.recordRefusals,
+			source: opts?.source,
+			traceId: opts?.traceId,
+		},
+	);
+}
+/**
+ * Proposes one owner decision for the loop's ledger, so later approvals and the close
+ * read the same recorded decision (LIFE-02). Refused once Ship is recorded, when the
+ * decision is incomplete or invalid, when it is already revoked, when it is expired
+ * against `opts.at`, or when a decision with the same id is already recorded. An
+ * accepted proposal is stored with a deduplicated approvals list and appends a
+ * `recordOverride(<decisionId>)` transition.
+ */
+export function recordOverrideDecision(
+	runtimeId: string,
+	decision: OverrideDecision,
+	store?: PhaseLoopStore,
+	opts?: TransitionOptions,
+): GateOutcome {
+	const id = isBlank(decision.decisionId) ? "(missing id)" : decision.decisionId;
+	return transition(
+		runtimeId,
+		store,
+		(row) => {
+			if (isClosed(row)) return [`loop is closed by Ship; override ${id} is not recorded`];
+			if (!overrideComplete(decision)) return [`override ${id} is missing an owner decision field`];
+			if (decision.expiresAt !== undefined && !isIsoTime(decision.expiresAt))
+				return [`override ${id} has an invalid expiresAt`];
+			if (!quorumStatus(decision).valid) return [`override ${id} has an invalid quorumRequired`];
+			if (isRevoked(decision)) return [`override ${id} is revoked`];
+			if (!isDecisionLive(decision, opts?.at)) return [`override ${id} is expired`];
+			if (row.overrides?.some((item) => item.decisionId === decision.decisionId))
+				return [`override ${id} already exists`];
+			row.overrides = [...(row.overrides ?? []), copyDecision(decision)];
+			return [];
+		},
+		{
+			event: `recordOverride(${id})`,
+			at: opts?.at,
+			recordRefusals: opts?.recordRefusals,
+			source: opts?.source,
+			traceId: opts?.traceId,
+		},
+	);
+}
+
+/**
+ * Adds one approval to a recorded owner decision, toward its quorum. Refused when
+ * the approver is blank, the decision is not recorded, or it is revoked or expired
+ * against `opts.at`. An approver already recorded is accepted without duplicating
+ * the entry, so retries do not inflate the quorum. An accepted approval appends an
+ * `approveOverride(<decisionId>)` transition; approvals recorded after the close
+ * are kept for audit but never reopen it.
+ */
+export function approveDecision(
+	runtimeId: string,
+	decisionId: string,
+	approver: string,
+	store?: PhaseLoopStore,
+	opts?: TransitionOptions,
+): GateOutcome {
+	return transition(
+		runtimeId,
+		store,
+		(row) => {
+			if (isBlank(decisionId)) return ["approval needs a decisionId"];
+			if (isBlank(approver)) return [`override ${decisionId} needs an approver`];
+			const stored = (row.overrides ?? []).find((item) => item.decisionId === decisionId);
+			if (stored === undefined) return [`override ${decisionId} is not recorded`];
+			if (isRevoked(stored)) return [`override ${decisionId} is revoked`];
+			if (!isDecisionLive(stored, opts?.at)) return [`override ${decisionId} is expired`];
+			const trimmed = approver.trim();
+			const approvals = stored.approvals ?? [];
+			if (!approvals.some((item) => item.trim() === trimmed)) {
+				stored.approvals = [...approvals, trimmed];
+			}
+			return [];
+		},
+		{
+			event: `approveOverride(${decisionId})`,
+			at: opts?.at,
+			recordRefusals: opts?.recordRefusals,
+			source: opts?.source,
+			traceId: opts?.traceId,
+		},
+	);
+}
+
+/** Who withdraws a recorded owner decision, why, and when. */
+export interface OverrideRevocation {
+	revokedBy: string;
+	revokeReason: string;
+	/** When the revocation takes effect (ISO 8601); falls back to `TransitionOptions.at`. */
+	revokedAt?: string;
+}
+
+/**
+ * Withdraws a recorded owner decision: a revoked decision never closes or defers
+ * again, but a close it already made stands. Refused when the decision is not
+ * recorded, is already revoked, or the revocation names no owner, reason, or
+ * time. An accepted revocation appends a `revokeOverride(<decisionId>)` transition.
+ */
+export function revokeDecision(
+	runtimeId: string,
+	decisionId: string,
+	revocation: OverrideRevocation,
+	store?: PhaseLoopStore,
+	opts?: TransitionOptions,
+): GateOutcome {
+	return transition(
+		runtimeId,
+		store,
+		(row) => {
+			if (isBlank(decisionId)) return ["revocation needs a decisionId"];
+			const stored = (row.overrides ?? []).find((item) => item.decisionId === decisionId);
+			if (stored === undefined) return [`override ${decisionId} is not recorded`];
+			if (isRevoked(stored)) return [`override ${decisionId} is already revoked`];
+			if (isBlank(revocation.revokedBy))
+				return [`override ${decisionId} revocation needs revokedBy`];
+			if (isBlank(revocation.revokeReason))
+				return [`override ${decisionId} revocation needs a revokeReason`];
+			const at = revocation.revokedAt ?? opts?.at;
+			if (at === undefined || isBlank(at))
+				return [`override ${decisionId} revocation needs a revokedAt timestamp`];
+			stored.revokedAt = at.trim();
+			stored.revokedBy = revocation.revokedBy;
+			stored.revokeReason = revocation.revokeReason;
+			return [];
+		},
+		{
+			event: `revokeOverride(${decisionId})`,
 			at: opts?.at,
 			recordRefusals: opts?.recordRefusals,
 			source: opts?.source,
