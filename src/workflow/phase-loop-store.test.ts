@@ -499,4 +499,74 @@ describe("file phase loop store", () => {
 			expect(store.load("claude").status).toBe("quarantined");
 		}
 	});
+	test("P4 HTIL fields round trip", () => {
+		const record = {
+			...STATE,
+			humanItems: [
+				{
+					id: "h1",
+					owner: "alice",
+					state: "open",
+					createdAt: "2026-11-17T10:00:00.000Z",
+					dueAt: "2026-11-17T14:00:00.000Z",
+					severity: "critical",
+					escalatedTo: "bob",
+					escalationCount: 2,
+				},
+				{
+					id: "h2",
+					owner: "carol",
+					state: "open",
+					createdAt: "2026-11-17T10:00:00.000Z",
+					dueAt: "2026-11-18T10:00:00.000Z",
+					severity: "high",
+					escalationCount: 0,
+				},
+			],
+		} as PhaseLoopRecord;
+		fileStore(stateDir).save("claude", record);
+		expect(fileStore(stateDir).load("claude")).toEqual({ status: "found", record });
+	});
+
+	test("legacy HTIL entries without P4 fields load unchanged", () => {
+		const legacy: PhaseLoopRecord = {
+			...STATE,
+			humanItems: [{ id: "h1", owner: "alice", state: "done", evidenceId: "e1" }],
+		};
+		fileStore(stateDir).save("claude", STATE);
+		writeFileSync(join(stateDir, nth(recordFiles(), 0)), JSON.stringify(legacy));
+		expect(fileStore(stateDir).load("claude")).toEqual({ status: "found", record: legacy });
+	});
+
+	test("malformed P4 HTIL fields quarantine the record", () => {
+		const store = fileStore(stateDir);
+		const at = "2026-11-17T10:00:00.000Z";
+		const open = { id: "h1", owner: "alice", state: "open" };
+		const malformed: unknown[] = [
+			[{ ...open, createdAt: 123 }],
+			[{ ...open, createdAt: "" }],
+			[{ ...open, createdAt: "not-a-date" }],
+			[{ ...open, dueAt: null }],
+			[{ ...open, dueAt: "not-a-date" }],
+			[{ ...open, severity: "urgent" }],
+			[{ ...open, severity: "LOW" }],
+			[{ ...open, severity: 1 }],
+			[{ ...open, escalatedTo: "" }],
+			[{ ...open, escalatedTo: "   " }],
+			[{ ...open, escalatedTo: 7 }],
+			[{ ...open, escalationCount: -1 }],
+			[{ ...open, escalationCount: 1.5 }],
+			[{ ...open, escalationCount: "2" }],
+			[{ ...open, futureField: true }],
+			[{ ...open, createdAt: at, severity: "normal", escalationCount: null }],
+		];
+		for (const humanItems of malformed) {
+			store.save("claude", STATE);
+			writeFileSync(
+				join(stateDir, nth(recordFiles(), 0)),
+				JSON.stringify({ ...STATE, humanItems }),
+			);
+			expect(store.load("claude").status).toBe("quarantined");
+		}
+	});
 });

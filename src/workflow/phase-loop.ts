@@ -49,6 +49,9 @@ export interface OverrideDecision {
 	reason: string;
 }
 
+/** Severity of a human-verification or owner-gated item; drives its SLA (P4). */
+type HtilSeverity = "critical" | "high" | "normal";
+
 /** A human-verification or owner-gated item (LIFE-05). An open entry blocks close. */
 export interface HtilEntry {
 	id: string;
@@ -61,6 +64,15 @@ export interface HtilEntry {
 	resolvedAt?: string;
 	/** Set when the merge gate's reconcile opened the entry on a Ship-closed loop. `resolve` may then act on it after Ship. */
 	afterShip?: true;
+	/** When the entry was opened (ISO 8601), from `TransitionOptions.at`. Absent on legacy records and opens without `at`. */
+	createdAt?: string;
+	/** SLA deadline derived from `createdAt` and `severity`. Absent on legacy records and opens without `at`. */
+	dueAt?: string;
+	severity?: HtilSeverity;
+	/** Latest escalation target (P4). */
+	escalatedTo?: string;
+	/** How many times the entry was escalated. Absent on legacy records. */
+	escalationCount?: number;
 }
 
 /** How an open HTIL entry leaves the open set. Each resolution needs its record. */
@@ -216,6 +228,8 @@ interface PhaseTransitionSummary {
 interface PhaseLoopSignals {
 	duplicateAccepted?: { event: string; count: number; at: string };
 	stuck?: { lifecycle: PhaseLifecycle; since: string };
+	/** Open entries past their SLA deadline, when `now` is supplied to `phaseLoopStatus`. */
+	overdue?: { entryId: string; owner: string; severity: HtilSeverity; dueAt: string }[];
 }
 
 /** Operator status of a loop: current state, completed stages, active blocker, attempts, metrics, signals and next legal events. */
@@ -368,7 +382,7 @@ export function nextEvents(lifecycle: PhaseLifecycle): readonly string[] {
 		case "blocked":
 			return ["confirmShip", "recordAudit", "open(HTIL)"];
 		case "awaiting-decision":
-			return ["resolve(HTIL)"];
+			return ["resolve(HTIL)", "escalate(HTIL)"];
 		case "paused":
 			return ["restore"];
 		case "completed":
@@ -429,6 +443,23 @@ export function phaseLoopStatus(
 		lastAt !== undefined
 			? { lifecycle, since: lastAt }
 			: undefined;
+	const overdue =
+		now !== undefined && Number.isFinite(nowMs)
+			? row.humanItems
+					.filter(
+						(item) =>
+							item.state === "open" &&
+							item.dueAt !== undefined &&
+							Number.isFinite(Date.parse(item.dueAt)) &&
+							Date.parse(item.dueAt) < nowMs,
+					)
+					.map((item) => ({
+						entryId: item.id,
+						owner: item.owner,
+						severity: item.severity ?? ("normal" as HtilSeverity),
+						dueAt: item.dueAt as string,
+					}))
+			: [];
 	return {
 		lifecycle,
 		completedStages: [...row.phaseOrder],
@@ -451,6 +482,7 @@ export function phaseLoopStatus(
 						},
 					}),
 			...(stuck === undefined ? {} : { stuck }),
+			...(overdue.length === 0 ? {} : { overdue }),
 		},
 		nextEvents: nextEvents(lifecycle),
 	};
@@ -797,15 +829,20 @@ export function confirmShip(
 	);
 }
 
-/** Options for `open`. `afterShip` is set only by the merge gate's reconcile, which records a verification entry on a Ship-closed loop (LIFE-05). */
+/** Options for `open`. `afterShip` is set only by the merge gate's reconcile, which records a verification entry on a Ship-closed loop (LIFE-05). `severity` drives the SLA deadline; it defaults to `normal`. */
 export interface OpenHtilOptions {
 	afterShip?: boolean;
+	severity?: HtilSeverity;
 }
+
+/** SLA hours per severity (P4). */
+const HTIL_SLA_HOURS: Record<HtilSeverity, number> = { critical: 4, high: 24, normal: 72 };
 
 /**
  * Record an open HTIL entry (LIFE-05). The entry starts in state open and blocks close until it
  * is resolved. A missing id or owner, or a duplicate id, is refused. Once Ship is recorded an entry is refused
- * unless `options.afterShip` is set.
+ * unless `options.afterShip` is set. When `opts.at` is present it is recorded as `createdAt` and
+ * `dueAt` is `createdAt` plus the severity SLA (critical 4h, high 24h, normal 72h).
  */
 export function open(
 	runtimeId: string,
@@ -829,7 +866,24 @@ export function open(
 			if (refusals.length > 0) return refusals;
 			// Ship-closed here only through the reconcile (afterShip), so this origin marks exactly those entries.
 			const origin: Pick<HtilEntry, "afterShip"> = isClosed(row) ? { afterShip: true } : {};
-			row.humanItems.push({ id: entry.id, owner: entry.owner, state: "open", ...origin });
+			const severity: HtilSeverity = options.severity ?? "normal";
+			const createdAt = opts?.at;
+			const createdMs = createdAt === undefined ? Number.NaN : Date.parse(createdAt);
+			const timing: Pick<HtilEntry, "createdAt" | "dueAt"> =
+				createdAt !== undefined && Number.isFinite(createdMs)
+					? {
+							createdAt,
+							dueAt: new Date(createdMs + HTIL_SLA_HOURS[severity] * 60 * 60 * 1_000).toISOString(),
+						}
+					: {};
+			row.humanItems.push({
+				id: entry.id,
+				owner: entry.owner,
+				state: "open",
+				severity,
+				...timing,
+				...origin,
+			});
 			return [];
 		},
 		{
@@ -843,9 +897,11 @@ export function open(
 }
 
 /**
- * Resolve an open HTIL entry (LIFE-05). `done` needs the evidence it was resolved by; `deferred`
- * needs the recorded owner decision that defers it. A missing record is refused and the entry
- * stays open. Refused once Ship is recorded, unless the entry was opened on the Ship-closed loop by the merge gate's reconcile (`afterShip`).
+ * Resolve an open HTIL entry (LIFE-05). `done` needs the evidence it was resolved by, plus a
+ * nonblank `resolvedBy` and `resolvedAt`; `deferred` needs the recorded owner decision that
+ * defers it (an audit id or an override decisionId recorded on the loop). A missing record is
+ * refused and the entry stays open. Refused once Ship is recorded, unless the entry was opened
+ * on the Ship-closed loop by the merge gate's reconcile (`afterShip`).
  */
 export function resolve(
 	runtimeId: string,
@@ -865,23 +921,72 @@ export function resolve(
 			if (entry.state !== "open") return [`HTIL entry ${entryId} is already ${entry.state}`];
 			if (resolution.state === "done") {
 				if (isBlank(resolution.evidenceId)) return [`done HTIL entry ${entryId} needs evidenceId`];
-				if (resolution.resolvedBy !== undefined && isBlank(resolution.resolvedBy)) {
+				if (isBlank(resolution.resolvedBy)) {
 					return [`done HTIL entry ${entryId} needs resolvedBy`];
+				}
+				if (isBlank(resolution.resolvedAt)) {
+					return [`done HTIL entry ${entryId} needs resolvedAt`];
 				}
 				entry.state = "done";
 				entry.evidenceId = resolution.evidenceId;
-				if (resolution.resolvedBy !== undefined) entry.resolvedBy = resolution.resolvedBy;
-				if (resolution.resolvedAt !== undefined) entry.resolvedAt = resolution.resolvedAt;
+				entry.resolvedBy = resolution.resolvedBy;
+				entry.resolvedAt = resolution.resolvedAt;
 				return [];
 			}
 			if (isBlank(resolution.decisionId))
 				return [`deferred HTIL entry ${entryId} needs decisionId`];
+			const recorded =
+				(row.audits ?? []).some((audit) => audit.id === resolution.decisionId) ||
+				(row.overrides ?? []).some((override) => override.decisionId === resolution.decisionId) ||
+				row.closedBy?.recordId === resolution.decisionId;
+			if (!recorded)
+				return [`deferred HTIL entry ${entryId} needs recorded decision ${resolution.decisionId}`];
 			entry.state = "deferred";
 			entry.decisionId = resolution.decisionId;
 			return [];
 		},
 		{
 			event: `resolve(HTIL ${entryId})`,
+			at: opts?.at,
+			recordRefusals: opts?.recordRefusals,
+			source: opts?.source,
+			traceId: opts?.traceId,
+		},
+	);
+}
+
+/**
+ * Escalate an open HTIL entry to a new owner (P4). Refused when the loop is closed by Ship,
+ * the entry does not exist, the entry is not open, the target owner is blank, or the target
+ * owner is the entry's current owner. An accepted escalation increments `escalationCount`,
+ * sets `escalatedTo` and the owner to the target, and records `escalate(HTIL <entryId>)`.
+ */
+export function escalateHtilEntry(
+	runtimeId: string,
+	entryId: string,
+	targetOwner: string,
+	store?: PhaseLoopStore,
+	opts?: TransitionOptions,
+): GateOutcome {
+	return transition(
+		runtimeId,
+		store,
+		(row) => {
+			const entry = row.humanItems.find((item) => item.id === entryId);
+			if (isClosed(row) && entry?.afterShip !== true)
+				return [`loop is closed by Ship; HTIL entry ${entryId} is not escalated`];
+			if (entry === undefined) return [`HTIL entry ${entryId} does not exist`];
+			if (entry.state !== "open") return [`HTIL entry ${entryId} is already ${entry.state}`];
+			if (isBlank(targetOwner)) return [`HTIL entry ${entryId} needs a target owner`];
+			if (targetOwner === entry.owner)
+				return [`HTIL entry ${entryId} target owner is the same as its current owner`];
+			entry.escalationCount = (entry.escalationCount ?? 0) + 1;
+			entry.escalatedTo = targetOwner;
+			entry.owner = targetOwner;
+			return [];
+		},
+		{
+			event: `escalate(HTIL ${entryId})`,
 			at: opts?.at,
 			recordRefusals: opts?.recordRefusals,
 			source: opts?.source,

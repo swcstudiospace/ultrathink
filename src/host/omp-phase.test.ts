@@ -15,7 +15,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { UPLIFT } from "../test.helpers.ts";
 import { TEST_STATE_DIR_PREFIX } from "../test.state-dir.ts";
-import { attemptPhase } from "../workflow/phase-loop.ts";
+import { attemptPhase, open } from "../workflow/phase-loop.ts";
 import { fileStore } from "../workflow/phase-loop-store.ts";
 import type { OmpPlan, OmpPlanRequest } from "./omp.ts";
 import { killSessionPhases, restoreSessionPhases } from "./omp-phase.ts";
@@ -48,7 +48,14 @@ interface StoredRecord {
 	phaseOrder: string[];
 	runtimeSessionId?: string;
 	executeStarts: number;
-	humanItems: { id: string; owner: string; state: string }[];
+	humanItems: {
+		id: string;
+		owner: string;
+		state: string;
+		severity?: string;
+		createdAt?: string;
+		dueAt?: string;
+	}[];
 	checkpoint?: { reason: string; at: string };
 	transitions?: {
 		at: string;
@@ -339,9 +346,15 @@ describe("omp phase record", () => {
 		const { run } = setup(planner(), 1_000, { stateDir: root }, { cwd: project });
 		await run(DISCUSS);
 		await flush();
-		expect(readRecord(root).humanItems).toEqual([
-			{ id: `verification:${needsHuman}`, owner: "human", state: "open" },
+		expect(readRecord(root).humanItems).toMatchObject([
+			{ id: `verification:${needsHuman}`, owner: "human", state: "open", severity: "high" },
 		]);
+		const entry = readRecord(root).humanItems[0];
+		expect(entry?.createdAt).toBeDefined();
+		expect(entry?.dueAt).toBeDefined();
+		expect(Date.parse(entry?.dueAt ?? "") - Date.parse(entry?.createdAt ?? "")).toBe(
+			24 * 60 * 60 * 1_000,
+		);
 	});
 
 	test("gaps_found is not a human item and opens no entry", async () => {

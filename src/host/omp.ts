@@ -2530,7 +2530,7 @@ export function createOmpExtension(
 			const statusText =
 				status === undefined
 					? ""
-					: ` State: ${status.lifecycle}; next: ${status.nextEvents.join(", ") || "none"}.${lastText}${metricsText}${stuckText}${duplicateText}`;
+					: ` State: ${status.lifecycle}; next: ${status.nextEvents.join(", ") || "none"}.${lastText}${metricsText}${stuckText}${duplicateText}${overdueText}`;
 			if (report?.kind === "message")
 				guard(() =>
 					pi.sendMessage(

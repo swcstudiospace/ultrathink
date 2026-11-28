@@ -863,7 +863,7 @@ function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
 				cwd,
 				sessionId,
 				store,
-				{ afterShip: true },
+				{ afterShip: true, severity: "high" },
 				{
 					at: new Date(now).toISOString(),
 					source: "ship",

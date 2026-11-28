@@ -2373,6 +2373,7 @@ describe("merge phase gate", () => {
 				evidenceId: "UAT passed",
 				resolvedBy: "alice",
 				resolvedAt: CLOCK_AT,
+				severity: "normal",
 			},
 		]);
 		const merged = await ship("merge", deps());
@@ -2396,7 +2397,14 @@ describe("merge phase gate", () => {
 		});
 		expect(mergeCalls()).toEqual([]);
 		expect(phaseRecord()?.humanItems).toEqual([
-			{ id: "verification:01-core", owner: "human", state: "open" },
+			{
+				id: "verification:01-core",
+				owner: "human",
+				state: "open",
+				severity: "high",
+				createdAt: CLOCK_AT,
+				dueAt: "1970-01-02T00:00:01.000Z",
+			},
 		]);
 		expect(phaseRecord()?.closedBy).toBeUndefined();
 	});
@@ -2421,7 +2429,15 @@ describe("merge phase gate", () => {
 		});
 		expect(mergeCalls()).toEqual(["merge:squash:abc"]);
 		expect(phaseRecord()?.humanItems).toEqual([
-			{ id: "verification:01-core", owner: "human", state: "open", afterShip: true },
+			{
+				id: "verification:01-core",
+				owner: "human",
+				state: "open",
+				afterShip: true,
+				severity: "high",
+				createdAt: CLOCK_AT,
+				dueAt: "1970-01-02T00:00:01.000Z",
+			},
 		]);
 		expect(phaseRecord()?.closedBy).toBeDefined();
 	});
@@ -2468,6 +2484,9 @@ describe("merge phase gate", () => {
 				resolvedBy: "alice",
 				resolvedAt: CLOCK_AT,
 				afterShip: true,
+				severity: "high",
+				createdAt: CLOCK_AT,
+				dueAt: "1970-01-02T00:00:01.000Z",
 			},
 		]);
 		// The next same-head retry is no longer refused by HTIL: it merges.

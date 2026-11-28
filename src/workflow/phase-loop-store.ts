@@ -122,9 +122,31 @@ function isCheckpoint(value: unknown): value is Checkpoint {
 	);
 }
 
+const HTIL_KEYS: Record<string, true> = {
+	id: true,
+	owner: true,
+	state: true,
+	evidenceId: true,
+	decisionId: true,
+	resolvedBy: true,
+	resolvedAt: true,
+	afterShip: true,
+	createdAt: true,
+	dueAt: true,
+	severity: true,
+	escalatedTo: true,
+	escalationCount: true,
+};
+
+/** ISO 8601 time when present: a nonblank string that parses as a date. */
+function isIsoString(value: unknown): value is string {
+	return typeof value === "string" && value !== "" && !Number.isNaN(Date.parse(value));
+}
+
 function isHtilEntry(value: unknown): value is HtilEntry {
 	if (typeof value !== "object" || value === null) return false;
 	const entry = value as Record<string, unknown>;
+	if (!Object.keys(entry).every((key) => HTIL_KEYS[key] === true)) return false;
 	return (
 		typeof entry.id === "string" &&
 		typeof entry.owner === "string" &&
@@ -133,7 +155,16 @@ function isHtilEntry(value: unknown): value is HtilEntry {
 		(entry.decisionId === undefined || typeof entry.decisionId === "string") &&
 		(entry.resolvedBy === undefined || typeof entry.resolvedBy === "string") &&
 		(entry.resolvedAt === undefined || typeof entry.resolvedAt === "string") &&
-		(entry.afterShip === undefined || entry.afterShip === true)
+		(entry.afterShip === undefined || entry.afterShip === true) &&
+		(entry.createdAt === undefined || isIsoString(entry.createdAt)) &&
+		(entry.dueAt === undefined || isIsoString(entry.dueAt)) &&
+		(entry.severity === undefined ||
+			entry.severity === "critical" ||
+			entry.severity === "high" ||
+			entry.severity === "normal") &&
+		(entry.escalatedTo === undefined ||
+			(typeof entry.escalatedTo === "string" && entry.escalatedTo.trim() !== "")) &&
+		(entry.escalationCount === undefined || isCount(entry.escalationCount))
 	);
 }
 

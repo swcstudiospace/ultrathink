@@ -237,12 +237,12 @@ export function recordGsdPhase(options: {
 	const at = options.now ?? new Date().toISOString();
 	return underPhaseLock(dir, (): PhaseReport => {
 		const store = fileStore(dir);
-		// A phase whose verification needs a human opens an HTIL entry (Q8); an entry already open is refused without a write.
+		// A phase whose verification needs a human opens a high-severity HTIL entry (Q8); an entry already open is refused without a write.
 		openHtilEntries(
 			options.cwd,
 			options.sessionId,
 			store,
-			{},
+			{ severity: "high" },
 			{
 				at,
 				source: "omp",

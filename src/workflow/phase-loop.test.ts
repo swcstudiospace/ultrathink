@@ -14,6 +14,7 @@ import {
 	type PhaseLoopState,
 	confirmShip,
 	deriveLifecycle,
+	escalateHtilEntry,
 	FsmError,
 	FSM_SCHEMA_VERSION,
 	nextEvents,
@@ -658,7 +659,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		expect(blocked.refusals).toEqual(["open HTIL entry h1"]);
 		expect(blocked.state.phaseOrder).not.toContain("Ship");
 		expect(storedRecord(dir, "claude")?.humanItems).toEqual([
-			{ id: "h1", owner: "alice", state: "open" },
+			{ id: "h1", owner: "alice", state: "open", severity: "normal" },
 		]);
 	});
 
@@ -680,6 +681,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		const { store } = countingStore(dir);
 		reachVerify("claude", store);
 		recordPassing("claude", store);
+		recordAudit("claude", { ...PASSING_AUDIT, id: "decision-2" }, store);
 		open("claude", { id: "h1", owner: "alice" }, store);
 		const deferred = resolve(
 			"claude",
@@ -689,7 +691,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		);
 		expect(deferred.accepted).toBe(true);
 		expect(deferred.state.humanItems).toEqual([
-			{ id: "h1", owner: "alice", state: "deferred", decisionId: "decision-2" },
+			{ id: "h1", owner: "alice", state: "deferred", decisionId: "decision-2", severity: "normal" },
 		]);
 		const closed = confirmShip("claude", passing(), CONNECTED, store);
 		expect(closed.accepted).toBe(true);
@@ -882,7 +884,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		);
 		expect(blankResolver.refusals).toEqual(["done HTIL entry h1 needs resolvedBy"]);
 		expect(storedRecord(dir, "claude")?.humanItems).toEqual([
-			{ id: "h1", owner: "alice", state: "open" },
+			{ id: "h1", owner: "alice", state: "open", severity: "normal" },
 		]);
 		const done = resolve(
 			"claude",
@@ -899,6 +901,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 				evidenceId: "e1",
 				resolvedBy: "alice",
 				resolvedAt: AT,
+				severity: "normal",
 			},
 		]);
 	});
@@ -922,7 +925,7 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		]);
 		expect(saves()).toBe(before);
 		expect(storedRecord(dir, "claude")?.humanItems).toEqual([
-			{ id: "h2", owner: "alice", state: "open", afterShip: true },
+			{ id: "h2", owner: "alice", state: "open", severity: "normal", afterShip: true },
 		]);
 		expect(storedRecord(dir, "claude")?.audits).toEqual([PASSING_AUDIT]);
 		const cleared = resolve("claude", "h2", { state: "done", evidenceId: "e2" }, store);
@@ -992,8 +995,8 @@ describe("FSM lifecycle, status, audit trail and cleanup", () => {
 		const status = phaseLoopStatus(waiting);
 		expect(status.lifecycle).toBe("awaiting-decision");
 		expect(status.blocker).toEqual({ id: "h1", owner: "alice" });
-		expect(status.nextEvents).toEqual(["resolve(HTIL)"]);
-		resolve(id, "h1", { state: "done", evidenceId: "e1" });
+		expect(status.nextEvents).toEqual(["resolve(HTIL)", "escalate(HTIL)"]);
+		resolve(id, "h1", { state: "done", evidenceId: "e1", resolvedBy: "alice", resolvedAt: AT });
 		const after = attemptPhase(id, { phase: "Execute", ...READY }, CONNECTED).state;
 		expect(deriveLifecycle(after)).toBe("executing");
 	});
