@@ -77,7 +77,7 @@ function smartComplete(
 			const steps = Array.from({ length: 5 }, (_, i) => `${i + 1}. ${id} step ${i + 1}`).join(" ");
 			return `<node><rationale>${steps}</rationale><conclusion>c ${id}</conclusion></node>`;
 		}
-		return graphJson(5);
+		return graphJson(6);
 	};
 }
 

@@ -74,10 +74,17 @@ const GRAPH = JSON.stringify({
 		},
 		{
 			id: "n5",
+			title: "Implementation",
+			kind: "generate",
+			question: "How is the driver loop implemented and driven to a plan?",
+			depends_on: ["n4"],
+		},
+		{
+			id: "n6",
 			title: "Execution plan",
 			kind: "synthesize",
 			question: "What is the ordered wave plan?",
-			depends_on: ["n4"],
+			depends_on: ["n5"],
 		},
 	],
 });

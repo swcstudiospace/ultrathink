@@ -220,7 +220,7 @@ export async function runPipeline(scenario: Scenario, deps: PipelineDeps): Promi
 	const stateRoot = deps.stateRoot ?? mkdtempSync(join(tmpdir(), "chaos-pipeline-"));
 	const clock = createVirtualClock();
 	const config = scenario.config;
-	const nodeRange: [number, number] = [config.thinkMinNodes ?? 5, config.thinkMaxNodes ?? 8];
+	const nodeRange: [number, number] = [config.thinkMinNodes ?? 6, config.thinkMaxNodes ?? 8];
 	const provider = createScriptedProvider([...scenario.faults, ...(deps.providerRules ?? [])], {
 		sleep: clock.sleep,
 		now: clock.now,

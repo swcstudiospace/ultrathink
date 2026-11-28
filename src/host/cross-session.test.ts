@@ -95,7 +95,7 @@ function smartComplete(): (system: string, user: string) => Promise<string> {
 			const steps = Array.from({ length: 5 }, (_, i) => `${i + 1}. ${id} step ${i + 1}`).join(" ");
 			return `<node><rationale>${steps}</rationale><conclusion>c ${id}</conclusion></node>`;
 		}
-		return graphJson();
+		return graphJson(6);
 	};
 }
 

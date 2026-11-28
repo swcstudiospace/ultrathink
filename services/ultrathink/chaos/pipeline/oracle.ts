@@ -261,7 +261,7 @@ function cotOf(outcome: PromptOutcome, options: JudgeOptions): string[] {
 	const record = outcome.record;
 	if (record === undefined) return [];
 	const violations: string[] = [];
-	const minNodes = options.minNodes ?? 5;
+	const minNodes = options.minNodes ?? 6;
 	const maxNodes = options.maxNodes ?? 8;
 	const id = outcome.promptId;
 	const tokens = tokensOf(outcome);

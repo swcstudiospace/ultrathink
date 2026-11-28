@@ -683,10 +683,17 @@ describe("end to end with the real planner", () => {
 			},
 			{
 				id: "n5",
+				title: "Implementation",
+				kind: "generate",
+				question: "How is the CLI implemented and tested?",
+				depends_on: ["n4"],
+			},
+			{
+				id: "n6",
 				title: "Execution plan",
 				kind: "synthesize",
 				question: "What is the ordered wave plan?",
-				depends_on: ["n4"],
+				depends_on: ["n5"],
 			},
 		],
 	});

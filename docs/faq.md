@@ -22,7 +22,7 @@ Short answers to the questions people ask first. Each links to the page with the
 
 ultrathink itself is free (AGPL-3.0-or-later). The planning runs on your own engine login. The Claude route calls `claude -p` on your Claude plan login (Pro, Max, Team or Enterprise), so it draws from your plan's usage limits (the 5-hour session and weekly limits) and not from an API key: with the default `claude.auth: "plan"`, `ANTHROPIC_API_KEY` is kept away from the child process. Max and Team monthly API credits do not cover plan-login `claude -p`. The Grok route uses your Grok account if you switched engines or turned on `claude.fallbackToGrok`. On Omp it runs on the session's own model and counts against that provider account, like the rest of the session. The plan is yours alone: Anthropic does not permit routing other people's requests through plan credentials.
 
-Each planned prompt makes several engine calls: one to write the spec, one to draft the Graph of Thought, one per node (5 to 8 by default), and one for clarifying questions. The default Claude model is `claude-haiku-5-5` (`claude.model`), which needs Claude Code 2.1.293 or newer.
+Each planned prompt makes several engine calls: one to write the spec, one to draft the Graph of Thought, one per node (6 to 8 by default), and one for clarifying questions. The default Claude model is `claude-haiku-5-5` (`claude.model`), which needs Claude Code 2.1.293 or newer.
 
 To spend less:
 

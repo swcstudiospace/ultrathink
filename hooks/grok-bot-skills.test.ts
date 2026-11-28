@@ -287,7 +287,7 @@ describe("Grok Bot skill-protocol files", () => {
 			"<ACCEPTANCE_CRITERIA>",
 			"<OUT_OF_SCOPE>",
 			"do not invent repository facts",
-			"5 to 8",
+			"6 to 8",
 			"<WORKFLOW>",
 			"Verify:",
 			"at most 4",

@@ -107,10 +107,17 @@ const GRAPH = JSON.stringify({
 		},
 		{
 			id: "n5",
+			title: "Implementation",
+			kind: "generate",
+			question: "How is the CLI implemented and tested?",
+			depends_on: ["n4"],
+		},
+		{
+			id: "n6",
 			title: "Execution plan",
 			kind: "synthesize",
 			question: "What is the ordered wave plan?",
-			depends_on: ["n4"],
+			depends_on: ["n5"],
 		},
 	],
 });
@@ -1577,8 +1584,8 @@ describe("headless planner: graph view", () => {
 			if (!graph) return;
 			expect(graph.version).toBe(1);
 			expect(graph.goal).toBe("Ship a streaming CSV to JSON CLI");
-			expect(graph.counts).toMatchObject({ nodes: 5, edges: 5, waves: 4 });
-			expect(graph.waves.map((w) => w.ids)).toEqual([["n1"], ["n2", "n3"], ["n4"], ["n5"]]);
+			expect(graph.counts).toMatchObject({ nodes: 6, edges: 6, waves: 5 });
+			expect(graph.waves.map((w) => w.ids)).toEqual([["n1"], ["n2", "n3"], ["n4"], ["n5"], ["n6"]]);
 			expect(graph.waves[1]?.parallel).toBe(true);
 			for (const node of graph.nodes) {
 				expect(node.steps).toHaveLength(8);
@@ -1600,7 +1607,7 @@ describe("headless planner: graph view", () => {
 		const result = await h.planner.result({ sessionId, waitSeconds: 0 });
 		expect(result).toMatchObject({ ok: true, data: { status: "planned", mode: "client" } });
 		if (!result.ok) return;
-		expect(result.data.graph).toMatchObject({ version: 1, counts: { nodes: 5, waves: 4 } });
+		expect(result.data.graph).toMatchObject({ version: 1, counts: { nodes: 6, waves: 5 } });
 		expect(result.data.text).toContain("```mermaid\nflowchart TD\n");
 	});
 

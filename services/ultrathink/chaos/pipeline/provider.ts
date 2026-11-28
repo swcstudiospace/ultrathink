@@ -79,7 +79,7 @@ interface ProviderSeams {
 	now?: () => number;
 	/** Varies the written graph size and step count with the prompt index. */
 	seed?: number;
-	/** Inclusive node count of the graph the provider writes. Default 5 to 8. */
+	/** Inclusive node count of the graph the provider writes. Default 6 to 8. */
 	nodeRange?: [number, number];
 	/** Hard cap on logged calls; later calls are refused before they reach an inner completer. */
 	maxCalls?: number;
@@ -88,7 +88,7 @@ interface ProviderSeams {
 const NONCE = /pl-\d+-\d{6}(?!\d)/g;
 const NONCE_PARTS = /^pl-\d+-(\d{6})$/;
 const CURRENT_NODE = /current_node id="([^"]+)"/;
-const DEFAULT_NODE_RANGE: [number, number] = [5, 8];
+const DEFAULT_NODE_RANGE: [number, number] = [6, 8];
 
 function abortError(): Error {
 	return Object.assign(new Error("The operation was aborted"), { name: "AbortError" });

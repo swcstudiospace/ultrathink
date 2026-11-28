@@ -34,7 +34,7 @@ function smartComplete(): (system: string, user: string) => Promise<string> {
 			const steps = Array.from({ length: 5 }, (_, i) => `${i + 1}. ${id} step ${i + 1}`).join(" ");
 			return `<node><rationale>${steps}</rationale><conclusion>c ${id}</conclusion></node>`;
 		}
-		return graphJson(5);
+		return graphJson(6);
 	};
 }
 
@@ -355,7 +355,7 @@ function modelFor(
 		const graphCall = !user.includes("<user_request>") && !user.startsWith("<spec>");
 		if (variant() === "fallback" && graphCall) return "not a graph";
 		if (variant() === "b" && graphCall)
-			return graphJson(5).replace('"title":"T2"', '"title":"Rewritten"');
+			return graphJson(6).replace('"title":"T2"', '"title":"Rewritten"');
 		return base(system, user);
 	};
 }
@@ -599,7 +599,7 @@ describe("the graph id is content-addressed (greptile r3)", () => {
 			// An unchanged repository keeps the id and adopts.
 			const a3 = await runPromptSubmit(input, inRepo("acme/widgets"));
 			expect(a3.record?.plan?.graphId).toBe(idA);
-			expect(linear.rows).toHaveLength(90);
+			expect(linear.rows).toHaveLength(108);
 		} finally {
 			cleanup();
 		}
