@@ -244,12 +244,34 @@ interface PhaseTransitionSummary {
 	refusalCodes?: readonly string[];
 }
 
+/**
+ * Output-only per-decision liveness and quorum derived from a recorded owner
+ * decision (FSM Slice 1). Additive and never persisted: absent when the loop
+ * records no overrides.
+ */
+interface PhaseDecisionSignal {
+	decisionId: string;
+	live: boolean;
+	quorumHave: number;
+	quorumRequired: number;
+	/** Echo of the decision's `expiresAt`, when one was recorded. */
+	expiresAt?: string;
+	revoked: boolean;
+	/**
+	 * Every reason the decision cannot close or defer at the status clock.
+	 * Empty means the decision is live and holds quorum.
+	 */
+	refusals: string[];
+}
+
 /** Derived operator signals from the persisted transition history. */
 interface PhaseLoopSignals {
 	duplicateAccepted?: { event: string; count: number; at: string };
 	stuck?: { lifecycle: PhaseLifecycle; since: string };
 	/** Open entries past their SLA deadline, when `now` is supplied to `phaseLoopStatus`. */
 	overdue?: { entryId: string; owner: string; severity: HtilSeverity; dueAt: string }[];
+	/** Per-decision liveness/quorum. Present only when the loop records overrides. */
+	decisions?: readonly PhaseDecisionSignal[];
 }
 
 /** Operator status of a loop: current state, completed stages, active blocker, attempts, metrics, signals and next legal events. */
@@ -262,6 +284,8 @@ export interface PhaseLoopStatus {
 	recentTransitions: readonly PhaseTransitionSummary[];
 	signals: PhaseLoopSignals;
 	nextEvents: readonly string[];
+	/** Echo of the record the accepted close was recorded against. Absent until a close is accepted. */
+	closedBy?: ClosedBy;
 }
 
 /** Options for transition calls that should record a transition. `at` is the caller-supplied timestamp; without it nothing is recorded. Accepted transitions always record when `at` is present; refused ones record only when `recordRefusals` is true. `source` names the caller (host, ship, or direct) and `traceId` correlates the attempt. */
@@ -485,10 +509,27 @@ export function phaseLoopStatus(
 						dueAt: item.dueAt as string,
 					}))
 			: [];
+	const overrides = row.overrides;
+	const decisions =
+		overrides === undefined
+			? undefined
+			: overrides.map((decision) => {
+					const quorum = quorumStatus(decision);
+					return {
+						decisionId: decision.decisionId,
+						live: isDecisionLive(decision, now),
+						quorumHave: quorum.have,
+						quorumRequired: quorum.required,
+						...(decision.expiresAt === undefined ? {} : { expiresAt: decision.expiresAt }),
+						revoked: isRevoked(decision),
+						refusals: decisionRefusals(decision, now),
+					};
+				});
 	return {
 		lifecycle,
 		completedStages: [...row.phaseOrder],
 		blocker: open === undefined ? undefined : { id: open.id, owner: open.owner },
+		...(row.closedBy === undefined ? {} : { closedBy: { ...row.closedBy } }),
 		attempts: {
 			execute: row.executeStarts,
 			ship: row.shipStarts,
@@ -508,6 +549,7 @@ export function phaseLoopStatus(
 					}),
 			...(stuck === undefined ? {} : { stuck }),
 			...(overdue.length === 0 ? {} : { overdue }),
+			...(decisions === undefined ? {} : { decisions }),
 		},
 		nextEvents: nextEvents(lifecycle),
 	};
