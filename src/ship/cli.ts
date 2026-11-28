@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 /**
- * ultrathink-ship: assess | pr | review | merge | run | resolve <phase> | status --state <sessions/<id>.json> [--cwd <dir>] | phase repair-runtime --phase <phase> --session <id> --reason <text> --owner <name> [--cwd <dir>].
+ * ultrathink-ship: assess | pr | review | merge | run | resolve <phase> | status --state <sessions/<id>.json> [--cwd <dir>] | phase repair-runtime --phase <phase> --session <id> --reason <text> --owner <name> [--cwd <dir>] | phase verify --session <id> [--cwd <dir>].
  * Prints one JSON object; always exits 0 except usage errors (2). Fails open; the merge gate on the phase record fails closed.
+ * `phase verify` is read-only: it checks the phase record and never writes.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -30,6 +31,7 @@ import {
 	repairRuntimeMarker,
 	resolve as resolveHumanItem,
 	restorePhaseLoop,
+	type RestoreReport,
 	type ShipConfirmationInput,
 } from "../workflow/phase-loop.ts";
 import { assessDecisionJson, assessDone } from "./assess.ts";
@@ -89,9 +91,10 @@ type ShipRecord = SessionRecord & { ship?: ShipState };
  * passing audit, and the reason is kept in the phase record. `resolve <phase>` closes the phase's open HTIL entry
  * (`verification:<phase directory>`) with `--owner <name>` and `--evidence <text>` as the owner's evidence.
  * `phase repair-runtime` takes `--owner <name>` too, checked against `ship.owners` the same way before any write.
+ * `phase verify` is read-only: it checks the session's phase record and never writes.
  */
 const USAGE =
-	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd] [--approve] [--owner <name> --owner-override <reason>] | ultrathink-ship resolve <phase> --state <sessions/<id>.json> --owner <name> --evidence <text> [--cwd <dir>] | ultrathink-ship phase repair-runtime --phase <phase> --session <sessionId> --reason <text> --owner <name> [--cwd <dir>]";
+	"usage: ultrathink-ship assess|pr|review|merge|run|status --state <sessions/<id>.json> [--cwd <dir>] [--ignore-gsd] [--approve] [--owner <name> --owner-override <reason>] | ultrathink-ship resolve <phase> --state <sessions/<id>.json> --owner <name> --evidence <text> [--cwd <dir>] | ultrathink-ship phase repair-runtime --phase <phase> --session <sessionId> --reason <text> --owner <name> [--cwd <dir>] | ultrathink-ship phase verify --session <sessionId> [--cwd <dir>]";
 const NEXT_FIX =
 	"fix the listed findings, commit only the files you edited, push, then run review again";
 const NEXT_PENDING =
@@ -1350,6 +1353,135 @@ function stepRepairRuntime(input: RepairInput): Output {
 		return { ok: false, error: `phase record unavailable: ${detail}` };
 	}
 }
+/**
+ * Read-only check of a session's phase record (no writes): loads via
+ * `fileStore(deps.phaseLoopDir)` + `restorePhaseLoop` and checks transition-seq
+ * contiguity (seqs run without gaps or duplicates over the bounded ring, accounting
+ * for eviction via `transitionStats`), `transitionStats` internal consistency
+ * (`attempts == accepted + refused`; when `transitionSeq` is present,
+ * `stats.attempts == transitionSeq`), and quarantined-vs-found reporting. Always
+ * exits 0; only usage errors exit 2.
+ */
+function stepVerifyPhase(input: { deps: ShipDeps; sessionId: string }): Output {
+	const { deps, sessionId } = input;
+	const store = deps.phaseLoopStore ?? fileStore(deps.phaseLoopDir);
+	let report: RestoreReport;
+	try {
+		report = restorePhaseLoop(store, sessionId);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		return {
+			ok: false,
+			verified: false,
+			sessionId,
+			checks: [{ name: "record-readable", ok: false, detail }],
+		};
+	}
+	if (report.quarantined)
+		return {
+			ok: false,
+			verified: false,
+			sessionId,
+			quarantined: true,
+			quarantinedAs: report.quarantinedAs ?? "",
+			checks: [
+				{
+					name: "record-readable",
+					ok: false,
+					detail: `phase record is corrupt; set aside at ${report.quarantinedAs ?? ""}`,
+				},
+			],
+		};
+	if (!report.restored)
+		return {
+			ok: false,
+			verified: false,
+			sessionId,
+			checks: [
+				{
+					name: "record-present",
+					ok: false,
+					detail: `no phase record for session ${sessionId}`,
+				},
+			],
+		};
+	const { state } = report;
+	const transitions = state.transitions ?? [];
+	const seqs = transitions
+		.map((item) => item.seq)
+		.filter((seq): seq is number => typeof seq === "number");
+	const stats = state.transitionStats;
+	const seqCheck =
+		seqs.length === 0
+			? {
+					name: "transition-seq-contiguous",
+					ok: true,
+					detail: "no sequenced transitions recorded",
+				}
+			: (() => {
+					const sorted = [...seqs].sort((a, b) => a - b);
+					const duplicates = sorted.filter((seq, index) => index > 0 && seq === sorted[index - 1]);
+					const total = stats?.attempts ?? state.transitionSeq ?? sorted[sorted.length - 1] ?? 0;
+					const start = total - sorted.length + 1;
+					const expected =
+						Number.isInteger(total) && total >= sorted.length && start >= 1
+							? Array.from({ length: sorted.length }, (_, index) => start + index)
+							: Array.from({ length: sorted.length }, (_, index) => index + 1);
+					const missing = expected.filter((seq) => !sorted.includes(seq));
+					const extra = sorted.filter((seq) => !expected.includes(seq));
+					const ok = duplicates.length === 0 && missing.length === 0 && extra.length === 0;
+					return {
+						name: "transition-seq-contiguous",
+						ok,
+						...(ok
+							? { detail: `seqs ${sorted[0]}..${sorted[sorted.length - 1]} contiguous` }
+							: {
+									detail: [
+										...(missing.length > 0 ? [`missing seq ${missing.join(", ")}`] : []),
+										...(extra.length > 0 ? [`unexpected seq ${extra.join(", ")}`] : []),
+										...(duplicates.length > 0
+											? [`duplicate seq ${[...new Set(duplicates)].join(", ")}`]
+											: []),
+									].join("; "),
+								}),
+					};
+				})();
+	const statsCheck =
+		stats === undefined
+			? { name: "transition-stats-consistent", ok: true, detail: "no cumulative stats recorded" }
+			: (() => {
+					const sumOk = stats.attempts === stats.accepted + stats.refused;
+					const seqOk = state.transitionSeq === undefined || stats.attempts === state.transitionSeq;
+					const ok = sumOk && seqOk;
+					return {
+						name: "transition-stats-consistent",
+						ok,
+						...(ok
+							? {
+									detail: `attempts ${stats.attempts} = accepted ${stats.accepted} + refused ${stats.refused}`,
+								}
+							: {
+									detail: [
+										...(sumOk
+											? []
+											: [
+													`attempts ${stats.attempts} != accepted ${stats.accepted} + refused ${stats.refused}`,
+												]),
+										...(seqOk
+											? []
+											: [`attempts ${stats.attempts} != transitionSeq ${state.transitionSeq}`]),
+									].join("; "),
+								}),
+					};
+				})();
+	const checks = [
+		{ name: "record-present", ok: true, detail: "phase record found" },
+		seqCheck,
+		statsCheck,
+	];
+	const ok = checks.every((check) => check.ok);
+	return { ok, verified: ok, sessionId, checks };
+}
 
 async function stepRun(ctx: Ctx): Promise<Output> {
 	const { config } = ctx.deps;
@@ -1382,7 +1514,7 @@ export async function runShip(
 	deps: ShipDeps,
 ): Promise<{ code: number; output: Output }> {
 	const [command, ...afterCommand] = argv;
-	// `phase` has one subcommand, `repair-runtime`, which comes before its flags.
+	// `phase` has the `repair-runtime` and `verify` subcommands, which come before their flags.
 	const subcommand = command === "phase" ? afterCommand[0] : undefined;
 	const rest = command === "phase" ? afterCommand.slice(1) : afterCommand;
 	let state: string | undefined;
@@ -1419,8 +1551,16 @@ export async function runShip(
 	const present = (value: string | undefined): value is string =>
 		value !== undefined && value.trim() !== "";
 	if (command === "phase") {
+		if (subcommand === "verify") {
+			if (!present(repairSession)) return usageError("phase verify needs --session <sessionId>");
+			if (repairPhase !== undefined || repairReason !== undefined || owner !== undefined)
+				return usageError("phase verify takes --session only");
+			if (evidence !== undefined || overrideReason !== undefined)
+				return usageError("phase verify takes --session only");
+			return { code: 0, output: stepVerifyPhase({ deps, sessionId: repairSession }) };
+		}
 		if (subcommand !== "repair-runtime")
-			return usageError("phase needs the repair-runtime subcommand");
+			return usageError("phase needs one of the subcommands: repair-runtime, verify");
 		if (!present(repairPhase)) return usageError("phase repair-runtime needs --phase <phase>");
 		if (!present(repairSession))
 			return usageError("phase repair-runtime needs --session <sessionId>");

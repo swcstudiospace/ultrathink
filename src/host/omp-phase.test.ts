@@ -479,3 +479,61 @@ describe("omp phase record", () => {
 		expect(readRecord(root).checkpoint).toEqual({ reason: "kill", at: KILL_AT });
 	});
 });
+
+describe("restoreSessionPhases signals", () => {
+	test("a restore without signals reports only the phase list", () => {
+		const root = newRoot();
+		openLoop(root);
+		const report = restoreSessionPhases({ stateDir: root, sessionId: SESSION });
+		expect(report.kind).toBe("message");
+		if (report.kind !== "message") throw new Error("expected a restore message");
+		expect(report.text).toBe("Ultrathink restored this session's phase loop: Discuss.");
+	});
+
+	test("a restore appends the overdue count and quorum-short ids only when present, without writing", () => {
+		const root = newRoot();
+		openLoop(root);
+		const store = fileStore(join(root, "phase-loop"));
+		expect(
+			open(
+				SESSION,
+				{ id: "verification:01-core", owner: "human" },
+				store,
+				{},
+				{
+					at: "2020-01-01T00:00:00.000Z",
+				},
+			).accepted,
+		).toBe(true);
+		const edited = {
+			...JSON.parse(readFileSync(recordPath(root), "utf8")),
+			overrides: [
+				{
+					decisionId: "d1",
+					owner: "alice",
+					decidedAt: "2026-11-01T00:00:00.000Z",
+					reason: "ship it",
+					quorumRequired: 2,
+					approvals: ["alice"],
+				},
+				{
+					decisionId: "d2",
+					owner: "alice",
+					decidedAt: "2026-11-01T00:00:00.000Z",
+					reason: "ship it too",
+				},
+			],
+		};
+		writeFileSync(recordPath(root), JSON.stringify(edited));
+		const before = readFileSync(recordPath(root), "utf8");
+		const report = restoreSessionPhases({ stateDir: root, sessionId: SESSION });
+		expect(report.kind).toBe("message");
+		if (report.kind !== "message") throw new Error("expected a restore message");
+		expect(report.text).toContain("1 HTIL entry is overdue.");
+		expect(report.text).toContain("Decisions short of quorum: d1.");
+		expect(report.text).not.toContain("d2");
+		expect(report.status?.signals.overdue).toHaveLength(1);
+		// The enrichment is read-only: the stored record is byte-identical afterwards.
+		expect(readFileSync(recordPath(root), "utf8")).toBe(before);
+	});
+});

@@ -29,7 +29,52 @@ The Ultrathink plugin's phase loop (`src/workflow/phase-loop.ts`) is the harness
   - `expiresAt` — echo of the decision's `expiresAt`, when one was recorded.
   - `revoked` — whether a revocation marker (`revokedAt`/`revokedBy`/`revokeReason`, any one) is present.
   - `refusals` — every reason the decision cannot close or defer at the status clock (invalid `expiresAt`/`quorumRequired`, revocation, expiry, quorum shortfall). Empty means the decision is live and holds quorum.
-- Refused transitions are durable when recorded with `recordRefusals` — a transition records only when the caller supplies `opts.at`; accepted transitions always record, refused ones record only when `recordRefusals: true`. A recorded refusal is persisted like any transition (bounded ring, `transitionMetrics.refused`, `recentTransitions`) and carries `refusalCodes`; a refused transition without `recordRefusals` still saves nothing.
+- Refused transitions are durable when recorded with `recordRefusals` — a transition records only when the caller supplies `opts.at`; accepted transitions always record, refused ones record only when `recordRefusals: true`. A recorded refusal is persisted like any transition (bounded ring, `transitionMetrics`, `recentTransitions`) and carries `refusalCodes`; a refused transition without `recordRefusals` still saves nothing.
+
+## Orchestration-state vocabulary
+
+The status object names the loop the same way everywhere (ship CLI `status`, Omp restore transcript, `phase verify`):
+
+| Term | Meaning |
+|------|---------|
+| `lifecycle` | one of `ready`, `discussing`, `planning`, `executing`, `verifying`, `awaiting-decision`, `blocked`, `paused`, `completed`, `cleaned-up`; `failed` is never derived from state — it names the quarantined/corrupt path only |
+| `completedStages` | recorded phase prefix (`Discuss` … `Ship`), in order |
+| `blocker` | the open HTIL entry `{id, owner}` blocking close, when one is open |
+| `attempts` | `{execute, ship, operatorConfirmations}` counters |
+| `transitionMetrics` | cumulative `{attempts, accepted, refused}` over the whole loop, including attempts evicted from the ring |
+| `recentTransitions` | last 5 transition records (bounded window into the 50-entry ring) |
+| `signals` | derived, never persisted: `duplicateAccepted`, `stuck`, `overdue`, `decisions` |
+| `nextEvents` | legal events for the current lifecycle; terminal states accept none |
+| `closedBy` | `{kind: "audit" | "validation" | "override", recordId, recordedAt}` echo of the accepted close |
+
+## Plain-text status contract
+
+- Status is plain text and JSON only: no attachments, no rich formatting, no embedded objects beyond the shapes above.
+- Bounded: `transitions` ring holds the last 50 attempts; `recentTransitions` exposes the last 5; `overdue` lists open entries past their SLA; `decisions` lists one entry per recorded override. Nothing grows without bound.
+- Secret-free: status carries ids, counts, timestamps, refusal reasons and quorum tallies only. It never carries keys, tokens, credentials, judge prompts, model outputs, diffs, file contents or config secrets. The Omp restore transcript redacts through the same rule before it reaches the model.
+- Derived signals are output-only: `phaseLoopStatus` computes them from the persisted record at read time; they are never written back.
+
+## HITL payload shape
+
+An HTIL entry (`HtilEntry`, LIFE-05) is one human-verification or owner-gated item:
+
+- `id` — `verification:<phase directory>` for phase verifications; merge-gate reconcile entries carry `afterShip: true`.
+- `owner` — who must act; `state` — `open`, `done` or `deferred`.
+- `done` resolutions record `evidenceId` plus `resolvedBy`/`resolvedAt`; `deferred` resolutions record the `decisionId` of a recorded owner decision.
+- Timing is SLA-derived: `createdAt` (from the caller's `at`) plus severity (`critical` 4h, `high` 24h, `normal` 72h) yields `dueAt`. Entries past `dueAt` surface as `signals.overdue` (`{entryId, owner, severity, dueAt}`); the Omp restore transcript reports only the overdue count.
+- Quorum (`quorumRequired`, distinct `approvals`, revocation via `revokedAt`/`revokedBy`/`revokeReason`) surfaces per decision as `signals.decisions` (`{decisionId, live, quorumHave, quorumRequired, expiresAt?, revoked, refusals}`); the Omp restore transcript names only the decision ids short of quorum.
+
+## `phase verify` command
+
+`ultrathink-ship phase verify --session <sessionId> [--cwd <dir>]` is the read-only record check. It loads the session's phase record via `fileStore(phaseLoopDir)` + `restorePhaseLoop`, runs three named checks, prints one JSON object `{ok, verified, checks[]}` (quarantined reports add `quarantined: true` and `quarantinedAs`), and never writes. Exit is always 0; only usage errors (missing `--session`, extra phase flags) exit 2.
+
+| Check | Meaning |
+|-------|---------|
+| `record-present` / `record-readable` | found vs absent vs quarantined (quarantined names the copy path; `ok: false`) |
+| `transition-seq-contiguous` | `seq`s run without gaps or duplicates over the bounded ring; with eviction, the ring holds `(N - len + 1)..N` where `N` is `transitionStats.attempts` (else `transitionSeq`) |
+| `transition-stats-consistent` | `attempts == accepted + refused`; when `transitionSeq` is present, `stats.attempts == transitionSeq` |
+
+A hand-edited record with a skipped `seq` fails `transition-seq-contiguous` (`missing seq …`) with `ok: false, verified: false`.
 
 ## Events, guards, errors
 

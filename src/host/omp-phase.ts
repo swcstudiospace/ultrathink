@@ -295,9 +295,21 @@ export function restoreSessionPhases(session: PhaseSession): PhaseReport {
 			? ` The record holds a ${report.checkpoint.reason} checkpoint from ${report.checkpoint.at}.`
 			: "";
 		const status = phaseLoopStatus(report.state, report.checkpoint, new Date().toISOString());
+		// Read-only enrichment from the derived status signals: an overdue HTIL count
+		// and the quorum-short decision ids, appended only when present.
+		const overdueCount = status.signals.overdue?.length ?? 0;
+		const quorumShort = (status.signals.decisions ?? [])
+			.filter((decision) => decision.quorumHave < decision.quorumRequired)
+			.map((decision) => decision.decisionId);
+		const overdueText =
+			overdueCount > 0
+				? ` ${overdueCount} HTIL ${overdueCount === 1 ? "entry is" : "entries are"} overdue.`
+				: "";
+		const quorumText =
+			quorumShort.length > 0 ? ` Decisions short of quorum: ${quorumShort.join(", ")}.` : "";
 		return {
 			kind: "message",
-			text: `Ultrathink restored this session's phase loop: ${phases}.${pause}`,
+			text: `Ultrathink restored this session's phase loop: ${phases}.${pause}${overdueText}${quorumText}`,
 			status,
 		};
 	});
