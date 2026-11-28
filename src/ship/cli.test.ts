@@ -2157,6 +2157,41 @@ describe("merge phase gate", () => {
 		});
 	});
 
+	test("ship status exposes overdue HTIL entries past their SLA deadline, and nothing extra when none is overdue", async () => {
+		expect(
+			open(
+				"s",
+				{ id: "verification:01-core", owner: "human" },
+				fileStore(phaseDir()),
+				{ severity: "high" },
+				{ at: CLOCK_AT },
+			).accepted,
+		).toBe(true);
+		const overdue = await ship("status", deps());
+		expect(overdue.output).toMatchObject({
+			ok: true,
+			phaseLoop: {
+				signals: {
+					overdue: [
+						{
+							entryId: "verification:01-core",
+							owner: "human",
+							severity: "high",
+							dueAt: "1970-01-02T00:00:01.000Z",
+						},
+					],
+				},
+			},
+		});
+	});
+
+	test("ship status carries no overdue signal when nothing is past due", async () => {
+		const status = await ship("status", deps());
+		expect(status.output).toMatchObject({ ok: true });
+		const phaseLoop = status.output.phaseLoop as { signals?: { overdue?: unknown } } | undefined;
+		expect(phaseLoop?.signals?.overdue).toBeUndefined();
+	});
+
 	test("an owner override with a reason lets the merge proceed without an audit, and the record keeps the reason", async () => {
 		const out = await withFlags(
 			"merge",

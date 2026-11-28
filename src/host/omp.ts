@@ -2527,6 +2527,16 @@ export function createOmpExtension(
 				status?.signals.duplicateAccepted === undefined
 					? ""
 					: ` Duplicate accepted event: ${status.signals.duplicateAccepted.event} (${status.signals.duplicateAccepted.count}).`;
+			const overdue = status?.signals.overdue ?? [];
+			const overdueText =
+				overdue.length === 0
+					? ""
+					: ` Overdue HTIL entries: ${overdue
+							.map(
+								(item) =>
+									`${item.entryId} (owner ${item.owner}, ${item.severity}, due ${item.dueAt})`,
+							)
+							.join("; ")}.`;
 			const statusText =
 				status === undefined
 					? ""

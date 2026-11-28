@@ -357,6 +357,35 @@ describe("omp phase record", () => {
 		);
 	});
 
+	test("status rendering appends overdue HTIL entries, and nothing extra when none is overdue", async () => {
+		const overdueRoot = newRoot();
+		openLoop(overdueRoot);
+		expect(
+			open(
+				SESSION,
+				{ id: "verification:overdue-phase", owner: "human" },
+				fileStore(join(overdueRoot, "phase-loop")),
+				{ severity: "high" },
+				{ at: "2026-01-01T00:00:00.000Z" },
+			).accepted,
+		).toBe(true);
+		const overdueSetup = setup(planner(), 1_000, { stateDir: overdueRoot });
+		overdueSetup.emit("session_start");
+		await flush();
+		const overdueText = overdueSetup.sent.map((entry) => contentOf(entry.message)).join("\n");
+		expect(overdueText).toContain("Overdue HTIL entries:");
+		expect(overdueText).toContain("verification:overdue-phase");
+
+		const calmRoot = newRoot();
+		openLoop(calmRoot);
+		const calmSetup = setup(planner(), 1_000, { stateDir: calmRoot });
+		calmSetup.emit("session_start");
+		await flush();
+		expect(calmSetup.sent.map((entry) => contentOf(entry.message)).join("\n")).not.toContain(
+			"Overdue",
+		);
+	});
+
 	test("gaps_found is not a human item and opens no entry", async () => {
 		const root = newRoot();
 		const project = newRoot();

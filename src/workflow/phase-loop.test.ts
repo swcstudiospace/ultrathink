@@ -706,7 +706,9 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		const refused = resolve("claude", "h1", { state: "deferred", decisionId: "" }, store);
 		expect(refused.accepted).toBe(false);
 		expect(refused.refusals).toEqual(["deferred HTIL entry h1 needs decisionId"]);
-		expect(refused.state.humanItems).toEqual([{ id: "h1", owner: "alice", state: "open" }]);
+		expect(refused.state.humanItems).toEqual([
+			{ id: "h1", owner: "alice", state: "open", severity: "normal" },
+		]);
 		expect(confirmShip("claude", passing(), CONNECTED, store).refusals).toEqual([
 			"open HTIL entry h1",
 		]);
@@ -723,10 +725,23 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		expect(resolve("claude", "h9", { state: "done", evidenceId: "e9" }, store).refusals).toEqual([
 			"HTIL entry h9 does not exist",
 		]);
-		const done = resolve("claude", "h1", { state: "done", evidenceId: "e1" }, store);
+		const done = resolve(
+			"claude",
+			"h1",
+			{ state: "done", evidenceId: "e1", resolvedBy: "alice", resolvedAt: AT },
+			store,
+		);
 		expect(done.accepted).toBe(true);
 		expect(done.state.humanItems).toEqual([
-			{ id: "h1", owner: "alice", state: "done", evidenceId: "e1" },
+			{
+				id: "h1",
+				owner: "alice",
+				state: "done",
+				evidenceId: "e1",
+				resolvedBy: "alice",
+				resolvedAt: AT,
+				severity: "normal",
+			},
 		]);
 		expect(resolve("claude", "h1", { state: "done", evidenceId: "e2" }, store).refusals).toEqual([
 			"HTIL entry h1 is already done",
@@ -738,11 +753,24 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 		const { store } = countingStore(dir);
 		reachVerify("claude", store);
 		open("claude", { id: "h1", owner: "alice" }, store);
-		resolve("claude", "h1", { state: "done", evidenceId: "e1" }, store);
+		resolve(
+			"claude",
+			"h1",
+			{ state: "done", evidenceId: "e1", resolvedBy: "alice", resolvedAt: AT },
+			store,
+		);
 		resetPhaseLoopStateForTests();
 		const restored = restorePhaseLoop(fileStore(dir), "claude");
 		expect(restored.state.humanItems).toEqual([
-			{ id: "h1", owner: "alice", state: "done", evidenceId: "e1" },
+			{
+				id: "h1",
+				owner: "alice",
+				state: "done",
+				evidenceId: "e1",
+				resolvedBy: "alice",
+				resolvedAt: AT,
+				severity: "normal",
+			},
 		]);
 		recordPassing("claude", fileStore(dir));
 		expect(confirmShip("claude", passing(), CONNECTED, fileStore(dir)).accepted).toBe(true);
@@ -928,10 +956,24 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 			{ id: "h2", owner: "alice", state: "open", severity: "normal", afterShip: true },
 		]);
 		expect(storedRecord(dir, "claude")?.audits).toEqual([PASSING_AUDIT]);
-		const cleared = resolve("claude", "h2", { state: "done", evidenceId: "e2" }, store);
+		const cleared = resolve(
+			"claude",
+			"h2",
+			{ state: "done", evidenceId: "e2", resolvedBy: "alice", resolvedAt: AT },
+			store,
+		);
 		expect(cleared.accepted).toBe(true);
 		expect(storedRecord(dir, "claude")?.humanItems).toEqual([
-			{ id: "h2", owner: "alice", state: "done", evidenceId: "e2", afterShip: true },
+			{
+				id: "h2",
+				owner: "alice",
+				state: "done",
+				evidenceId: "e2",
+				resolvedBy: "alice",
+				resolvedAt: AT,
+				severity: "normal",
+				afterShip: true,
+			},
 		]);
 	});
 
@@ -947,6 +989,195 @@ describe("phase loop persistence and close gates (LIFE-01, LIFE-02, LIFE-04, LIF
 			kind: "audit",
 			recordId: "audit-1",
 			recordedAt: AT,
+		});
+	});
+
+	test("P4 open with at sets createdAt and severity SLA dueAt (critical 4h, high 24h, normal 72h)", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		expect(
+			open("claude", { id: "hc", owner: "alice" }, store, { severity: "critical" }, { at: AT })
+				.accepted,
+		).toBe(true);
+		expect(
+			open("claude", { id: "hh", owner: "alice" }, store, { severity: "high" }, { at: AT })
+				.accepted,
+		).toBe(true);
+		expect(open("claude", { id: "hn", owner: "alice" }, store, {}, { at: AT }).accepted).toBe(true);
+		expect(open("claude", { id: "hx", owner: "alice" }, store).accepted).toBe(true);
+		const items = storedRecord(dir, "claude")?.humanItems ?? [];
+		expect(items.find((i) => i.id === "hc")).toMatchObject({
+			createdAt: AT,
+			severity: "critical",
+			dueAt: "2026-11-17T14:00:00.000Z",
+		});
+		expect(items.find((i) => i.id === "hh")).toMatchObject({
+			createdAt: AT,
+			severity: "high",
+			dueAt: "2026-11-18T10:00:00.000Z",
+		});
+		expect(items.find((i) => i.id === "hn")).toMatchObject({
+			createdAt: AT,
+			severity: "normal",
+			dueAt: "2026-11-20T10:00:00.000Z",
+		});
+		expect(items.find((i) => i.id === "hx")).toMatchObject({ severity: "normal" });
+		expect(items.find((i) => i.id === "hx")?.createdAt).toBeUndefined();
+		expect(items.find((i) => i.id === "hx")?.dueAt).toBeUndefined();
+	});
+
+	test("P4 done needs resolvedBy and resolvedAt; missing either is refused and stays open", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		open("claude", { id: "h1", owner: "alice" }, store);
+		expect(resolve("claude", "h1", { state: "done", evidenceId: "e1" }, store).refusals).toEqual([
+			"done HTIL entry h1 needs resolvedBy",
+		]);
+		expect(
+			resolve("claude", "h1", { state: "done", evidenceId: "e1", resolvedBy: "alice" }, store)
+				.refusals,
+		).toEqual(["done HTIL entry h1 needs resolvedAt"]);
+		expect(storedRecord(dir, "claude")?.humanItems).toEqual([
+			{ id: "h1", owner: "alice", state: "open", severity: "normal" },
+		]);
+		const done = resolve(
+			"claude",
+			"h1",
+			{ state: "done", evidenceId: "e1", resolvedBy: "alice", resolvedAt: AT },
+			store,
+		);
+		expect(done.accepted).toBe(true);
+		expect(done.state.humanItems[0]).toMatchObject({
+			state: "done",
+			resolvedBy: "alice",
+			resolvedAt: AT,
+		});
+	});
+
+	test("P4 deferred needs a recorded decision; audit id and override decisionId are accepted", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		recordPassing("claude", store);
+		open("claude", { id: "h1", owner: "alice" }, store);
+		const unknown = resolve("claude", "h1", { state: "deferred", decisionId: "nope" }, store);
+		expect(unknown.accepted).toBe(false);
+		expect(unknown.refusals[0]).toContain("recorded decision");
+		expect(unknown.refusals[0]).toContain("nope");
+		expect(unknown.state.humanItems[0]?.state).toBe("open");
+		expect(
+			resolve("claude", "h1", { state: "deferred", decisionId: "audit-1" }, store).accepted,
+		).toBe(true);
+		expect(storedRecord(dir, "claude")?.humanItems[0]?.state).toBe("deferred");
+		// Override decisionId on a Ship-closed loop's reconcile entry.
+		const { store: store2 } = countingStore(dir);
+		reachVerify("bob", store2);
+		expect(
+			confirmShip("bob", { afterVerify: true, override: OWNER_OVERRIDE }, CONNECTED, store2)
+				.accepted,
+		).toBe(true);
+		open("bob", { id: "h2", owner: "alice" }, store2, { afterShip: true });
+		expect(
+			resolve("bob", "h2", { state: "deferred", decisionId: "decision-1" }, store2).accepted,
+		).toBe(true);
+	});
+
+	test("P4 escalation moves owner, counts, logs transition, and refuses bad targets", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		open("claude", { id: "h1", owner: "alice" }, store, { severity: "high" }, { at: AT });
+		expect(escalateHtilEntry("claude", "missing", "bob", store).refusals).toEqual([
+			"HTIL entry missing does not exist",
+		]);
+		expect(escalateHtilEntry("claude", "h1", " ", store).accepted).toBe(false);
+		expect(escalateHtilEntry("claude", "h1", "alice", store).refusals).toEqual([
+			"HTIL entry h1 target owner is the same as its current owner",
+		]);
+		const first = escalateHtilEntry("claude", "h1", "bob", store, { at: AT });
+		expect(first.accepted).toBe(true);
+		expect(first.state.humanItems[0]).toMatchObject({
+			owner: "bob",
+			escalatedTo: "bob",
+			escalationCount: 1,
+		});
+		expect(first.state.transitions?.map((t) => t.event)).toContain("escalate(HTIL h1)");
+		const second = escalateHtilEntry("claude", "h1", "carol", store, { at: AT });
+		expect(second.state.humanItems[0]).toMatchObject({
+			owner: "carol",
+			escalatedTo: "carol",
+			escalationCount: 2,
+		});
+		resolve(
+			"claude",
+			"h1",
+			{ state: "done", evidenceId: "e1", resolvedBy: "carol", resolvedAt: AT },
+			store,
+		);
+		expect(escalateHtilEntry("claude", "h1", "dave", store).refusals).toEqual([
+			"HTIL entry h1 is already done",
+		]);
+	});
+
+	test("P4 escalation on a closed loop is refused", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		recordPassing("claude", store);
+		open("claude", { id: "h1", owner: "alice" }, store);
+		resolve(
+			"claude",
+			"h1",
+			{ state: "done", evidenceId: "e1", resolvedBy: "alice", resolvedAt: AT },
+			store,
+		);
+		expect(confirmShip("claude", passing(), CONNECTED, store).accepted).toBe(true);
+		expect(escalateHtilEntry("claude", "h1", "bob", store).accepted).toBe(false);
+	});
+
+	test("P4 status overdue lists open entries past dueAt, skips legacy entries without dueAt", () => {
+		const { store } = countingStore(dir);
+		reachVerify("claude", store);
+		open("claude", { id: "h1", owner: "alice" }, store, { severity: "high" }, { at: AT });
+		const state = storedRecord(dir, "claude") as unknown as PhaseLoopState;
+		const before = phaseLoopStatus(state, undefined, "2026-11-18T09:59:59.000Z");
+		expect(before.signals.overdue).toBeUndefined();
+		const after = phaseLoopStatus(state, undefined, "2026-11-18T10:00:01.000Z");
+		expect(after.signals.overdue).toEqual([
+			{ entryId: "h1", owner: "alice", severity: "high", dueAt: "2026-11-18T10:00:00.000Z" },
+		]);
+		expect(after.nextEvents).toEqual(["resolve(HTIL)", "escalate(HTIL)"]);
+		const legacy: PhaseLoopState = {
+			runtimeId: "legacy",
+			phaseOrder: ["Discuss"],
+			executeStarts: 0,
+			shipStarts: 0,
+			operatorConfirmations: 0,
+			humanItems: [{ id: "old", owner: "alice", state: "open" }],
+		};
+		expect(
+			phaseLoopStatus(legacy, undefined, "2027-01-01T00:00:00.000Z").signals.overdue,
+		).toBeUndefined();
+		expect(phaseLoopStatus(legacy).lifecycle).toBe("awaiting-decision");
+	});
+
+	test("P4 legacy entry without escalation fields escalates from count zero", () => {
+		const { store } = countingStore(dir);
+		step("claude", "Discuss", store);
+		writeFileSync(
+			join(dir, nth(recordFiles(), 0)),
+			JSON.stringify({
+				runtimeId: "claude",
+				phaseOrder: ["Discuss"],
+				executeStarts: 0,
+				shipStarts: 0,
+				operatorConfirmations: 0,
+				humanItems: [{ id: "old", owner: "alice", state: "open" }],
+			}),
+		);
+		const escalated = escalateHtilEntry("claude", "old", "bob", store, { at: AT });
+		expect(escalated.accepted).toBe(true);
+		expect(escalated.state.humanItems[0]).toMatchObject({
+			owner: "bob",
+			escalatedTo: "bob",
+			escalationCount: 1,
 		});
 	});
 });
