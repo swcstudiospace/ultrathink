@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 SWC Studio
 /**
- * Omp host side of the GSD phase record. The record is one JSON file per session under `<stateDir>/phase-loop/`, the
- * directory and lock the CLI merge gate uses, so both writers take turns. Every load-decide-save runs under that lock:
- * a lock that cannot be taken, or any store failure, yields one notice and writes nothing. Only a GSD-skill prompt
- * records a phase; plain prompts write nothing. The Omp refusal is advisory; the merge gate enforces the record.
+ * Omp host side of the GSD phase record. The record is one JSON file per session under `<stateDir>/phase-loop/`,
+ * written store-direct: the store serializes writers per record (CAS plus a record-keyed guard), so a held
+ * directory lock never blocks a prompt. Any store failure yields one notice and writes nothing. Only a GSD-skill
+ * prompt records a phase; plain prompts write nothing. The Omp refusal is advisory; the merge gate enforces the record.
+ * Only the restore path still takes the directory lock, to report a quarantined record.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
@@ -221,7 +222,8 @@ export function findPhaseDirectory(phaseArg: string, phasesDir: string): string 
 
 /**
  * Attempts the GSD phase a skill prompt names, once its plan has settled. Returns undefined for a prompt that records no
- * phase. An accepted attempt is silent; a refused one is a transcript message; a failure is a notice.
+ * phase. An accepted attempt is silent; a refused one is a transcript message; a failure is a notice. The write goes
+ * store-direct (the store serializes per record), so a held directory lock never blocks it.
  */
 export function recordGsdPhase(options: {
 	stateDir: string;
@@ -235,7 +237,7 @@ export function recordGsdPhase(options: {
 	if (phase === undefined) return undefined;
 	const dir = join(options.stateDir, "phase-loop");
 	const at = options.now ?? new Date().toISOString();
-	return underPhaseLock(dir, (): PhaseReport => {
+	try {
 		const store = fileStore(dir);
 		// A phase whose verification needs a human opens a high-severity HTIL entry (Q8); an entry already open is refused without a write.
 		openHtilEntries(
@@ -271,7 +273,9 @@ export function recordGsdPhase(options: {
 			text: `${phase} was not recorded: ${refusals}. The plan is unchanged. This is advisory: the merge gate refuses to merge until the phase record shows the phases in order.`,
 			status,
 		};
-	});
+	} catch (error) {
+		return { kind: "notice", text: failureText(error) };
+	}
 }
 
 /**
@@ -300,8 +304,9 @@ export function restoreSessionPhases(session: PhaseSession): PhaseReport {
 }
 
 /**
- * Checkpoints the session's stored phase record with `reason`, under the phase-record lock. A session with no record has
- * no loop to checkpoint and writes nothing.
+ * Checkpoints the session's stored phase record with `reason`, store-direct (the store serializes per record), so a
+ * held directory lock never blocks it. A session with no record has no loop to checkpoint and writes nothing; any
+ * store failure is a notice.
  */
 function checkpointSessionPhases(
 	session: PhaseSession & { at: string },
@@ -309,12 +314,14 @@ function checkpointSessionPhases(
 ): PhaseReport {
 	const dir = join(session.stateDir, "phase-loop");
 	if (session.sessionId === "" || !existsSync(dir)) return NONE;
-	return underPhaseLock(dir, (): PhaseReport => {
+	try {
 		const store = fileStore(dir);
 		if (store.load(session.sessionId).status === "absent") return NONE;
 		checkpointPhaseLoop(store, session.sessionId, reason, session.at);
 		return NONE;
-	});
+	} catch (error) {
+		return { kind: "notice", text: failureText(error) };
+	}
 }
 
 /**
@@ -360,7 +367,7 @@ function checkpointOnKill(
 
 /**
  * Installs the host's kill hook (LIFE-04). On SIGINT or SIGTERM the live session's phase record is checkpointed as
- * killed, synchronously and under the phase-record lock, before the process ends. When no other listener is registered
+ * killed, synchronously and store-direct, before the process ends. When no other listener is registered
  * for the signal, the hook removes its listeners and re-raises the signal, so the exit status is that signal. When
  * another listener is registered, that listener owns termination and the hook only checkpoints. A later install
  * replaces an earlier one. Returns the dispose that removes this registration.

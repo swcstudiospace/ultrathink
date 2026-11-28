@@ -10,7 +10,7 @@ import { DEFAULT_DECISIONS_CONFIG } from "../decisions/types.ts";
 import type { DecisionsConfig, DecisionsErrorKind } from "../decisions/types.ts";
 import { engineForSessionModel } from "../host/engine.ts";
 import { hangingFetch, JEV, recordingFetch } from "../test.helpers.ts";
-import { fileStore } from "../workflow/phase-loop-store.ts";
+import { fileStore, type PhaseLoopStore } from "../workflow/phase-loop-store.ts";
 import { attemptPhase, open, recordAudit, type PhaseName } from "../workflow/phase-loop.ts";
 import type { Github, LocalBranchDelete, ReviewThreads, ReviewThreadsOptions } from "./github.ts";
 import { assessDone } from "./assess.ts";
@@ -2075,13 +2075,15 @@ describe("merge phase gate", () => {
 	});
 
 	test("a review whose audit cannot be recorded reports it, and the merge stays refused", async () => {
+		const blockingFile = join(dir, "blocking-file");
+		writeFileSync(blockingFile, "blocking");
 		const review = await reviewStage({
 			...deps(),
-			phaseLoopDir: join(dir, "missing", "phase-loop"),
+			phaseLoopDir: blockingFile,
 		});
 		expect(review.output).toMatchObject({
 			ok: false,
-			error: "phase record lock not taken; nothing recorded",
+			error: expect.stringContaining("phase record unavailable"),
 		});
 		const out = await ship("merge", deps());
 		expect(out.output).toMatchObject({
@@ -2353,22 +2355,44 @@ describe("merge phase gate", () => {
 		expect(mergeCalls()).toEqual([]);
 	});
 
-	test("a phase record lock that cannot be taken refuses the merge: nothing is merged or recorded", async () => {
-		const current = deps();
-		// The lock's parent directory is missing, so the lock cannot be created and the callback would run unlocked.
+	test("a live-holder directory lock file no longer blocks the merge", async () => {
+		await reviewStage();
+		// The old directory-wide phase-record lock is gone: a stale live-holder lock file is ignored.
+		writeFileSync(`${phaseDir()}.lock`, "live-holder");
+		const out = await ship("merge", deps());
+		expect(out.output).toMatchObject({ ok: true, merged: true });
+		expect(mergeCalls()).toEqual(["merge:squash:abc"]);
+		expect(phaseRecord()?.closedBy).toMatchObject({ recordId: "review:abc" });
+	});
+
+	test("a transient phase record race retries instead of blocking", async () => {
+		await reviewStage();
+		const real = fileStore(phaseDir());
+		let failures = 1;
+		const flaky: PhaseLoopStore = {
+			load: (runtimeId) => real.load(runtimeId),
+			digest: (runtimeId) => real.digest?.(runtimeId),
+			save: (runtimeId, record) => {
+				if (failures > 0) {
+					failures -= 1;
+					throw new Error("simulated transient write race");
+				}
+				real.save(runtimeId, record);
+			},
+			saveIfUnchanged: (runtimeId, record, expectedDigest) => {
+				if (failures > 0) {
+					failures -= 1;
+					throw new Error("simulated transient write race");
+				}
+				return real.saveIfUnchanged?.(runtimeId, record, expectedDigest) ?? true;
+			},
+		};
 		const out = await ship("merge", {
-			...current,
-			phaseLoopDir: join(dir, "missing", "phase-loop"),
+			...deps({ config: { waitMs: 1000, pollMs: 10 } }),
+			phaseLoopStore: flaky,
 		});
-		expect(out.output).toMatchObject({
-			ok: false,
-			merged: false,
-			blocked: true,
-			reason: "phase record lock not taken; nothing merged",
-		});
-		expect(mergeCalls()).toEqual([]);
-		expect(phaseRecord()?.phaseOrder).toEqual(["Discuss", "Plan", "Execute", "Verify"]);
-		expect(phaseRecord()?.closedBy).toBeUndefined();
+		expect(out.output).toMatchObject({ ok: true, merged: true });
+		expect(phaseRecord()?.closedBy).toMatchObject({ recordId: "review:abc" });
 	});
 
 	test("ship resolve clears the phase's open HTIL entry with the owner's evidence, and the merge then proceeds", async () => {
