@@ -864,7 +864,12 @@ function confirmPhaseMerge(input: PhaseMergeInput): MergeStep | undefined {
 				sessionId,
 				store,
 				{ afterShip: true },
-				{ at: new Date(now).toISOString() },
+				{
+					at: new Date(now).toISOString(),
+					source: "ship",
+					traceId: `${sessionId}:open(HTIL)`,
+					recordRefusals: true,
+				},
 			);
 			const reconciled = store.load(sessionId);
 			const record = reconciled.status === "found" ? reconciled.record : undefined;

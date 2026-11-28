@@ -175,6 +175,59 @@ function isRuntimeRepair(value: unknown): value is RuntimeRepair {
 	return typeof repair.reason === "string" && typeof repair.at === "string";
 }
 
+/** P3 transition sources: which caller made the attempt. */
+const TRANSITION_SOURCES: Record<string, true> = {
+	omp: true,
+	ship: true,
+	direct: true,
+};
+
+function isTransitionStats(value: unknown): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	const stats = value as Record<string, unknown>;
+	if (
+		!Object.keys(stats).every(
+			(key) => key === "attempts" || key === "accepted" || key === "refused",
+		)
+	)
+		return false;
+	const attempts = stats.attempts;
+	const accepted = stats.accepted;
+	const refused = stats.refused;
+	return (
+		isCount(attempts) && isCount(accepted) && isCount(refused) && attempts === accepted + refused
+	);
+}
+
+/**
+ * Cross-field consistency between the P3 counters, checked only where the counters are present.
+ * The bounded transitions ring is a subset of the cumulative stats, so its counts never exceed them.
+ */
+function isTransitionConsistency(row: Record<string, unknown>): boolean {
+	const transitions = row.transitions;
+	const transitionSeq = row.transitionSeq;
+	const stats = row.transitionStats;
+	if (Array.isArray(transitions) && transitionSeq !== undefined) {
+		for (const item of transitions) {
+			const seq = (item as Record<string, unknown>).seq;
+			if (seq !== undefined && (seq as number) > (transitionSeq as number)) return false;
+		}
+	}
+	if (stats === undefined) return true;
+	const counters = stats as { attempts: number; accepted: number; refused: number };
+	if (transitionSeq !== undefined && counters.attempts !== transitionSeq) return false;
+	if (!Array.isArray(transitions)) return true;
+	const accepted = transitions.filter(
+		(item) => (item as Record<string, unknown>).accepted === true,
+	).length;
+	const refused = transitions.length - accepted;
+	return (
+		transitions.length <= counters.attempts &&
+		accepted <= counters.accepted &&
+		refused <= counters.refused
+	);
+}
+
 function isTransition(value: unknown): boolean {
 	if (typeof value !== "object" || value === null) return false;
 	const row = value as Record<string, unknown>;
@@ -203,7 +256,14 @@ function isTransition(value: unknown): boolean {
 		LIFECYCLES[row.to] === true &&
 		typeof row.accepted === "boolean" &&
 		Array.isArray(row.refusals) &&
-		row.refusals.every((item) => typeof item === "string")
+		row.refusals.every((item) => typeof item === "string") &&
+		(row.seq === undefined || isCount(row.seq)) &&
+		(row.source === undefined ||
+			(typeof row.source === "string" && TRANSITION_SOURCES[row.source] === true)) &&
+		(row.traceId === undefined || (typeof row.traceId === "string" && row.traceId.trim() !== "")) &&
+		(row.refusalCodes === undefined ||
+			(Array.isArray(row.refusalCodes) &&
+				row.refusalCodes.every((item) => typeof item === "string" && item.trim() !== "")))
 	);
 }
 

@@ -314,7 +314,15 @@ function snapshot(row: PhaseLoopState): PhaseLoopState {
 		...(row.schemaVersion === undefined ? {} : { schemaVersion: row.schemaVersion }),
 		...(row.transitions === undefined
 			? {}
-			: { transitions: row.transitions.map((item) => ({ ...item })) }),
+			: {
+					transitions: row.transitions.map((item) => ({
+						...item,
+						refusals: [...item.refusals],
+						...(item.refusalCodes === undefined ? {} : { refusalCodes: [...item.refusalCodes] }),
+					})),
+				}),
+		...(row.transitionSeq === undefined ? {} : { transitionSeq: row.transitionSeq }),
+		...(row.transitionStats === undefined ? {} : { transitionStats: { ...row.transitionStats } }),
 		...(row.cleanedUpAt === undefined ? {} : { cleanedUpAt: row.cleanedUpAt }),
 		...(row.cleanedUpBy === undefined ? {} : { cleanedUpBy: row.cleanedUpBy }),
 		...(row.cleanedUpReason === undefined ? {} : { cleanedUpReason: row.cleanedUpReason }),
@@ -380,8 +388,20 @@ export function phaseLoopStatus(
 	const lifecycle = deriveLifecycle(row, checkpoint);
 	const open = row.humanItems.find((item) => item.state === "open");
 	const transitions = row.transitions ?? [];
-	const accepted = transitions.filter((item) => item.accepted).length;
-	const refused = transitions.length - accepted;
+	const ringAccepted = transitions.filter((item) => item.accepted).length;
+	// Cumulative stats survive ring eviction; legacy rows without them derive metrics from the ring.
+	const transitionMetrics: TransitionMetrics =
+		row.transitionStats !== undefined
+			? {
+					attempts: row.transitionStats.attempts,
+					accepted: row.transitionStats.accepted,
+					refused: row.transitionStats.refused,
+				}
+			: {
+					attempts: transitions.length,
+					accepted: ringAccepted,
+					refused: transitions.length - ringAccepted,
+				};
 	const recentTransitions = transitions.slice(-5).map((item) => ({
 		...item,
 		refusals: [...item.refusals],
@@ -439,7 +459,27 @@ export function phaseLoopStatus(
 /** Max transition records kept: the oldest are dropped, so the log stays bounded. */
 const MAX_TRANSITIONS = 50;
 
-/** Appends one transition record, keeping the last MAX_TRANSITIONS. */
+/** Derives cumulative counters from the ring for a row written before they existed. */
+function migrateTransitionCounters(row: PhaseLoopState): void {
+	const existing = row.transitions ?? [];
+	if (row.transitionStats === undefined) {
+		const accepted = existing.filter((item) => item.accepted).length;
+		row.transitionStats = {
+			attempts: existing.length,
+			accepted,
+			refused: existing.length - accepted,
+		};
+	}
+	if (row.transitionSeq === undefined) {
+		let maxSeq = 0;
+		for (const item of existing) {
+			if (typeof item.seq === "number" && item.seq > maxSeq) maxSeq = item.seq;
+		}
+		row.transitionSeq = Math.max(maxSeq, existing.length);
+	}
+}
+
+/** Appends one transition record with the next sequence, keeping the last MAX_TRANSITIONS. Counters count every recorded attempt, including ones the ring later evicts. */
 function appendTransition(row: PhaseLoopState, record: TransitionRecord): void {
 	migrateTransitionCounters(row);
 	const seq = (row.transitionSeq ?? 0) + 1;

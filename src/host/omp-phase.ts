@@ -238,7 +238,18 @@ export function recordGsdPhase(options: {
 	return underPhaseLock(dir, (): PhaseReport => {
 		const store = fileStore(dir);
 		// A phase whose verification needs a human opens an HTIL entry (Q8); an entry already open is refused without a write.
-		openHtilEntries(options.cwd, options.sessionId, store, {}, { at });
+		openHtilEntries(
+			options.cwd,
+			options.sessionId,
+			store,
+			{},
+			{
+				at,
+				source: "omp",
+				traceId: `${options.sessionId}:open(HTIL)`,
+				recordRefusals: true,
+			},
+		);
 		// This host records only for its own session, so the connection check holds for that session.
 		const outcome = attemptPhase(
 			options.sessionId,

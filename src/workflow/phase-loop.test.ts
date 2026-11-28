@@ -1066,6 +1066,198 @@ describe("FSM lifecycle, status, audit trail and cleanup", () => {
 		});
 	});
 
+	test("P3 refused attempt without recordRefusals leaves the persisted store unchanged", () => {
+		const root = mkdtempSync(join(tmpdir(), "phase-loop-p3-unchanged-"));
+		try {
+			const dir = join(root, "state");
+			const store = fileStore(dir);
+			attemptPhase("claude", { phase: "Discuss", ...READY }, CONNECTED, store, { at: AT });
+			const file = readdirSync(dir).find((name) => name.endsWith(".json"));
+			if (file === undefined) throw new Error("no record file");
+			const before = readFileSync(join(dir, file), "utf8");
+			const refused = attemptPhase("claude", { phase: "Execute", ...READY }, CONNECTED, store, {
+				at: AT,
+			});
+			expect(refused.accepted).toBe(false);
+			expect(readFileSync(join(dir, file), "utf8")).toBe(before);
+			expect(localRecord(dir, "claude")?.transitions).toHaveLength(1);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("P3 refused attempt with at + recordRefusals persists seq/source/traceId/refusalCodes without moving counters", () => {
+		const root = mkdtempSync(join(tmpdir(), "phase-loop-p3-refused-"));
+		try {
+			const dir = join(root, "state");
+			const store = fileStore(dir);
+			attemptPhase("claude", { phase: "Discuss", ...READY }, CONNECTED, store, { at: AT });
+			const refused = attemptPhase("claude", { phase: "Execute", ...READY }, CONNECTED, store, {
+				at: AT,
+				recordRefusals: true,
+				source: "omp",
+				traceId: "trace-1",
+			});
+			expect(refused.accepted).toBe(false);
+			const stored = localRecord(dir, "claude");
+			expect(stored?.phaseOrder).toEqual(["Discuss"]);
+			expect(stored?.executeStarts).toBe(0);
+			expect(stored?.transitions).toHaveLength(2);
+			expect(stored?.transitions?.at(-1)).toMatchObject({
+				event: "attempt(Execute)",
+				accepted: false,
+				seq: 2,
+				source: "omp",
+				traceId: "trace-1",
+				refusalCodes: ["Execute is not the next phase"],
+				refusals: ["Execute is not the next phase"],
+			});
+			expect(stored?.transitionSeq).toBe(2);
+			expect(stored?.transitionStats).toEqual({ attempts: 2, accepted: 1, refused: 1 });
+			expect(refused.state.transitions?.at(-1)).toMatchObject({ seq: 2, source: "omp" });
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("P3 60 timestamped attempts keep the ring at 50 while status totals reach 60", () => {
+		const root = mkdtempSync(join(tmpdir(), "phase-loop-p3-sixty-"));
+		try {
+			const dir = join(root, "state");
+			const store = fileStore(dir);
+			const stamp = (index: number) => `2026-11-17T10:00:${String(index).padStart(2, "0")}.000Z`;
+			attemptPhase("claude", { phase: "Discuss", ...READY }, CONNECTED, store, { at: stamp(0) });
+			for (let index = 1; index < 60; index++) {
+				attemptPhase("claude", { phase: "Execute", ...READY }, CONNECTED, store, {
+					at: stamp(index),
+					recordRefusals: true,
+					source: "direct",
+				});
+			}
+			const stored = localRecord(dir, "claude");
+			expect(stored?.transitions?.length).toBeLessThanOrEqual(50);
+			expect(stored?.transitions).toHaveLength(50);
+			expect(stored?.transitionSeq).toBe(60);
+			expect(stored?.transitionStats).toEqual({ attempts: 60, accepted: 1, refused: 59 });
+			const status = phaseLoopStatus(stored as PhaseLoopState);
+			expect(status.transitionMetrics).toEqual({ attempts: 60, accepted: 1, refused: 59 });
+			expect(status.recentTransitions).toHaveLength(5);
+			expect(status.recentTransitions.at(-1)).toMatchObject({ seq: 60, accepted: false });
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("P3 snapshot deep-copies transition refusals arrays", () => {
+		const id = "claude";
+		const first = attemptPhase(id, { phase: "Discuss", ...READY }, CONNECTED, undefined, {
+			at: AT,
+		}).state;
+		(first.transitions?.[0]?.refusals as string[] | undefined)?.push("tampered");
+		const second = attemptPhase(id, { phase: "Plan", ...READY }, CONNECTED, undefined, {
+			at: AT,
+		}).state;
+		expect(second.transitions?.[0]?.refusals).toEqual([]);
+	});
+
+	test("P3 legacy transitions migrate counters on the next recorded attempt", () => {
+		const root = mkdtempSync(join(tmpdir(), "phase-loop-p3-legacy-"));
+		try {
+			const dir = join(root, "state");
+			const store = fileStore(dir);
+			store.save("legacy", {
+				runtimeId: "legacy",
+				phaseOrder: ["Discuss"],
+				executeStarts: 0,
+				shipStarts: 0,
+				operatorConfirmations: 0,
+				humanItems: [],
+				runtimeSessionId: "legacy",
+				transitions: [
+					{
+						at: AT,
+						from: "ready",
+						event: "attempt(Discuss)",
+						to: "discussing",
+						accepted: true,
+						refusals: [],
+					},
+					{
+						at: AT,
+						from: "discussing",
+						event: "attempt(Execute)",
+						to: "discussing",
+						accepted: false,
+						refusals: ["Execute is not the next phase"],
+					},
+				],
+			});
+			const legacyStatus = phaseLoopStatus(localRecord(dir, "legacy") as PhaseLoopState);
+			expect(legacyStatus.transitionMetrics).toEqual({ attempts: 2, accepted: 1, refused: 1 });
+			attemptPhase("legacy", { phase: "Plan", ...READY }, CONNECTED, store, { at: AT });
+			const stored = localRecord(dir, "legacy");
+			expect(stored?.transitionStats).toEqual({ attempts: 3, accepted: 2, refused: 1 });
+			expect(stored?.transitionSeq).toBe(3);
+			expect(stored?.transitions?.at(-1)).toMatchObject({ event: "attempt(Plan)", seq: 3 });
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("P3 repairRuntimeMarker sets the marker and records a repairRuntime transition", () => {
+		const root = mkdtempSync(join(tmpdir(), "phase-loop-p3-repair-"));
+		try {
+			const dir = join(root, "state");
+			const store = fileStore(dir);
+			const seed = (runtimeId: string, extra?: Partial<PhaseLoopRecord>): void =>
+				store.save(runtimeId, {
+					runtimeId,
+					phaseOrder: ["Discuss"],
+					executeStarts: 0,
+					shipStarts: 0,
+					operatorConfirmations: 0,
+					humanItems: [],
+					...extra,
+				});
+			seed("legacy");
+			const repaired = repairRuntimeMarker(store, "legacy", {
+				reason: "owner confirmed the session",
+				at: AT,
+			});
+			expect(repaired.accepted).toBe(true);
+			const stored = localRecord(dir, "legacy");
+			expect(stored?.runtimeSessionId).toBe("legacy");
+			expect(stored?.runtimeRepair).toEqual({ reason: "owner confirmed the session", at: AT });
+			expect(stored?.schemaVersion).toBe(FSM_SCHEMA_VERSION);
+			expect(stored?.transitions?.at(-1)).toMatchObject({
+				event: "repairRuntime",
+				accepted: true,
+				at: AT,
+			});
+			const again = repairRuntimeMarker(store, "legacy", { reason: "second", at: AT });
+			expect(again.accepted).toBe(false);
+			expect(again.refusals.join(" ")).toContain("already");
+			expect(localRecord(dir, "legacy")?.runtimeRepair?.reason).toBe("owner confirmed the session");
+			seed("blank-reason");
+			const blankReason = repairRuntimeMarker(store, "blank-reason", { reason: "  ", at: AT });
+			expect(blankReason.accepted).toBe(false);
+			expect(blankReason.refusals.join(" ")).toContain("reason");
+			expect(localRecord(dir, "blank-reason")?.runtimeSessionId).toBeUndefined();
+			seed("blank-at");
+			const blankAt = repairRuntimeMarker(store, "blank-at", { reason: "owner", at: "" });
+			expect(blankAt.accepted).toBe(false);
+			expect(blankAt.refusals.join(" ")).toContain("at");
+			expect(localRecord(dir, "blank-at")?.runtimeSessionId).toBeUndefined();
+			seed("cleaned", { cleanedUpAt: AT, cleanedUpBy: "alice" });
+			const cleaned = repairRuntimeMarker(store, "cleaned", { reason: "owner", at: AT });
+			expect(cleaned.accepted).toBe(false);
+			expect(cleaned.refusals.join(" ")).toContain("cleaned-up");
+			expect(localRecord(dir, "cleaned")?.runtimeSessionId).toBeUndefined();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("terminal completed accepts no phase events; cleanup requires completed+audited and is itself terminal", () => {
 		const root = mkdtempSync(join(tmpdir(), "phase-loop-cleanup-"));
 		try {
