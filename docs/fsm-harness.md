@@ -17,6 +17,20 @@ The Ultrathink plugin's phase loop (`src/workflow/phase-loop.ts`) is the harness
 
 `phaseLoopStatus(state, checkpoint?)` returns current state, completed stages, active blocker `{id, owner}`, attempt counts (`execute` / `ship` / `operatorConfirmations`) and `nextEvents`. Terminal states accept no phase events.
 
+## Status shape (Slice 1)
+
+`phaseLoopStatus(row, checkpoint?, now?)` returns `PhaseLoopStatus`: `lifecycle`, `completedStages`, active blocker `{id, owner}`, attempt counts, `transitionMetrics`, `recentTransitions` (last 5), `signals`, `nextEvents`, and `closedBy` when set.
+
+- `closedBy` echo — the record the accepted close was recorded against: `{kind: "audit" | "validation" | "override", recordId, recordedAt}`. `recordId` is the audit/validation id or the override's `decisionId`; `recordedAt` is the audit's `recordedAt` or the override's `decidedAt`. Absent until a close is accepted.
+- `signals.decisions` — output-only per-decision liveness and quorum, derived from the recorded owner decisions. Present only when the loop records overrides (`row.overrides`); never persisted. One entry per recorded decision:
+  - `decisionId` — the override's id.
+  - `live` — whether the decision may still close or defer at the status clock (`now`). Revoked decisions are never live; expiry is enforced against `now`, so without a clock a decision reads as live unless revoked.
+  - `quorumHave` / `quorumRequired` — distinct approver ids collected vs required (default 1). A decision recorded without `approvals` counts its owner as the single approval.
+  - `expiresAt` — echo of the decision's `expiresAt`, when one was recorded.
+  - `revoked` — whether a revocation marker (`revokedAt`/`revokedBy`/`revokeReason`, any one) is present.
+  - `refusals` — every reason the decision cannot close or defer at the status clock (invalid `expiresAt`/`quorumRequired`, revocation, expiry, quorum shortfall). Empty means the decision is live and holds quorum.
+- Refused transitions are durable when recorded with `recordRefusals` — a transition records only when the caller supplies `opts.at`; accepted transitions always record, refused ones record only when `recordRefusals: true`. A recorded refusal is persisted like any transition (bounded ring, `transitionMetrics.refused`, `recentTransitions`) and carries `refusalCodes`; a refused transition without `recordRefusals` still saves nothing.
+
 ## Events, guards, errors
 
 - `attemptPhase` — order-only growth; Ship refused; Execute needs 1 complete uplift + 0 unanswered blocking clarifications.

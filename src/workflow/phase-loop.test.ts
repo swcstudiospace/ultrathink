@@ -2092,3 +2092,131 @@ describe("override quorum, expiry, and revocation (SPE-39906)", () => {
 		).toEqual([]);
 	});
 });
+
+describe("FSM Slice 1 decision status surfacing (SPE-40093)", () => {
+	beforeEach(() => {
+		resetPhaseLoopStateForTests();
+	});
+
+	const LATER = "2026-11-19T10:00:00.000Z";
+
+	function reachVerifyState(runtimeId: string): PhaseLoopState {
+		let state = through(runtimeId, "Discuss");
+		for (const phase of ["Plan", "Execute", "Verify"] as const) {
+			state = through(runtimeId, phase);
+		}
+		return state;
+	}
+
+	test("a quorum-short decision reports liveness with its quorum shortfall", () => {
+		const id = "slice-quorum-short";
+		reachVerifyState(id);
+		const recorded = recordOverrideDecision(
+			id,
+			{ ...OWNER_OVERRIDE, decisionId: "quorum-short", quorumRequired: 2 },
+			undefined,
+			{ at: AT },
+		);
+		expect(recorded.accepted).toBe(true);
+		const status = phaseLoopStatus(recorded.state, undefined, AT);
+		expect(status.signals.decisions).toHaveLength(1);
+		expect(status.signals.decisions?.[0]).toMatchObject({
+			decisionId: "quorum-short",
+			live: true,
+			quorumHave: 1,
+			quorumRequired: 2,
+			revoked: false,
+		});
+		expect(status.signals.decisions?.[0]?.refusals.join(" ")).toContain(
+			"needs 2 approvals for quorum (1 recorded)",
+		);
+	});
+
+	test("an expired decision reports as not live with its expiry refusal", () => {
+		const id = "slice-expired";
+		reachVerifyState(id);
+		const recorded = recordOverrideDecision(
+			id,
+			{ ...OWNER_OVERRIDE, decisionId: "expiring", expiresAt: "2026-11-18T10:00:00.000Z" },
+			undefined,
+			{ at: AT },
+		);
+		expect(recorded.accepted).toBe(true);
+		const status = phaseLoopStatus(recorded.state, undefined, LATER);
+		expect(status.signals.decisions?.[0]).toMatchObject({
+			decisionId: "expiring",
+			live: false,
+			revoked: false,
+			expiresAt: "2026-11-18T10:00:00.000Z",
+		});
+		expect(status.signals.decisions?.[0]?.refusals.join(" ")).toContain("is expired");
+	});
+
+	test("a revoked decision reports as revoked and not live", () => {
+		const id = "slice-revoked";
+		reachVerifyState(id);
+		expect(
+			recordOverrideDecision(id, { ...OWNER_OVERRIDE, decisionId: "revoked-1" }, undefined, {
+				at: AT,
+			}).accepted,
+		).toBe(true);
+		const revoked = revokeDecision(
+			id,
+			"revoked-1",
+			{ revokedBy: "alice", revokeReason: "mistake" },
+			undefined,
+			{ at: AT },
+		);
+		expect(revoked.accepted).toBe(true);
+		const status = phaseLoopStatus(revoked.state, undefined, AT);
+		expect(status.signals.decisions?.[0]).toMatchObject({
+			decisionId: "revoked-1",
+			live: false,
+			revoked: true,
+		});
+		expect(status.signals.decisions?.[0]?.refusals.join(" ")).toContain("is revoked");
+	});
+
+	test("a legacy record without overrides reports no decisions and no closedBy", () => {
+		const row: PhaseLoopState = {
+			runtimeId: "slice-legacy",
+			phaseOrder: ["Discuss"],
+			executeStarts: 0,
+			shipStarts: 0,
+			operatorConfirmations: 0,
+			humanItems: [],
+		};
+		const status = phaseLoopStatus(row);
+		expect(status.signals.decisions).toBeUndefined();
+		expect("decisions" in status.signals).toBe(false);
+		expect(status.closedBy).toBeUndefined();
+		expect("closedBy" in status).toBe(false);
+	});
+
+	test("an accepted override close echoes closedBy in the status", () => {
+		const id = "slice-closed-by";
+		reachVerifyState(id);
+		const decision: OverrideDecision = { ...OWNER_OVERRIDE, decisionId: "close-1" };
+		expect(recordOverrideDecision(id, decision, undefined, { at: AT }).accepted).toBe(true);
+		const open = phaseLoopStatus(
+			recordOverrideDecision(id, { ...OWNER_OVERRIDE, decisionId: "close-2" }, undefined, {
+				at: AT,
+			}).state,
+		).closedBy;
+		expect(open).toBeUndefined();
+		const closed = confirmShip(id, { afterVerify: true, override: decision }, CONNECTED);
+		expect(closed.accepted).toBe(true);
+		const status = phaseLoopStatus(closed.state);
+		expect(status.closedBy).toEqual({
+			kind: "override",
+			recordId: "close-1",
+			recordedAt: AT,
+		});
+		expect(status.closedBy).toEqual(closed.state.closedBy);
+		expect(status.signals.decisions?.find((item) => item.decisionId === "close-1")).toMatchObject({
+			live: true,
+			revoked: false,
+			refusals: [],
+		});
+	});
+});
